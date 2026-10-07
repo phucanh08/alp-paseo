@@ -1,0 +1,5 @@
+node_modules/
+.tools/
+.alp-test/
+plugins/paseo/dist/
+plugins/paseo/server/dist/
