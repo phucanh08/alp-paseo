@@ -573,3 +573,20 @@ test('a child requester that exhausts its wakes fails instead of hanging', async
   assert.equal(result.status, 'failed');
   assert.match(result.error, /Wake limit \(8\)/);
 });
+
+test('alp_send accepts an agent name only when it names one live assignment', async t => {
+  const { runtimes } = await setup(t, { workflow: 'smart' });
+  const first = decode(await runtimes[0].tool('peer', 'A', { wait: false }, 'a'));
+  await started(runtimes, 1);
+  const waiting = runtimes[0].call('alp_wait', {}, 'wait');
+  const asked = runtimes[1].call('alp_ask', { question: 'Which?' }, 'ask');
+  const { events } = decode(await waiting);
+  assert.equal((await runtimes[0].call('alp_send', { to: 'peer', kind: 'answer', replyTo: events[0].id, body: 'this one' }, 'by-name')).success, true);
+  assert.equal(decode(await asked).answer, 'this one');
+  decode(await runtimes[0].tool('peer', 'B', { wait: false }, 'b'));
+  await started(runtimes, 2);
+  const ambiguous = await runtimes[0].call('alp_send', { to: 'peer', kind: 'note', body: 'which peer?' }, 'ambiguous');
+  assert.match(decode(ambiguous).error, /Several live peer assignments/);
+  assert.equal((await runtimes[0].call('alp_send', { to: first.assignmentId, kind: 'note', body: 'by id' }, 'by-id')).success, true);
+  runtimes[1].finish(); runtimes[2].finish();
+});
