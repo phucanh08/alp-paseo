@@ -30,7 +30,7 @@ let agent;
 try {
   await driver.connect();
   agent = await client.agents.create({ cwd: root, title: 'ALP main → lead → peer verification', config: {
-    provider: 'alp/gpt-5.6-sol', modeId: writeMode ? 'workspace-write' : 'read-only', thinkingOptionId: 'low',
+    provider: 'alp/gpt-5.6-sol', options: { workflow: 'supervised' }, modeId: writeMode ? 'workspace-write' : 'read-only', thinkingOptionId: 'low',
   } });
   console.log(JSON.stringify({ project: root, agent: agent.id }));
   const prompt = writeMode
@@ -46,8 +46,8 @@ try {
   assert.match(evidence, /ALP lead/);
   assert.match(evidence, /ALP peer/);
   assert.equal(children.error, null);
-  const lead = children.subagents.find(child => child.title === 'ALP lead');
-  const peer = children.subagents.find(child => child.title === 'ALP peer');
+  const lead = children.subagents.find(child => child.title?.startsWith('ALP lead'));
+  const peer = children.subagents.find(child => child.title?.startsWith('ALP peer'));
   assert.equal(lead.parentSubagentId, null);
   assert.equal(peer.parentSubagentId, lead.id);
   assert.equal(lead.status, 'completed');
