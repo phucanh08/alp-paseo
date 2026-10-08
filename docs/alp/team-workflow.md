@@ -179,7 +179,7 @@ local evidence, and archive the test agents. They make real model calls.
 
 Claude read-only uses an explicit read-tool allowlist rather than Plan mode, so
 advisors can read and delegate without asking to exit a plan or writing plan files.
-Shell tools are unavailable in these sessions: supply a diff in the review brief
+Shell and edit tools are denied at the permission gate in these sessions: supply a diff in the review brief
 or as a readable artifact when reviewing a Git change. Claude executables are
 resolved from PATH (or `ALP_CLAUDE_BIN`) and passed explicitly to the SDK to avoid
 trying to execute bundled binaries inside Paseo Desktop's Electron archive.

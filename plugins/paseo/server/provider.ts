@@ -732,7 +732,10 @@ export function createProvider(options: Options = {}): ProviderRegistration {
         } else if (session.active) {
           void steerMail(sessionId, session);
         } else if (!session.wakeBlocked && session.wakes < MAX_WAKES) {
-          void autoWake(sessionId, session);
+          autoWake(sessionId, session);
+        } else if (session.parent && !session.wakeBlocked) {
+          // A child never gets the user prompt that resets its wakes; report instead of waiting out the watchdog.
+          session.settle?.('failed', `Wake limit (${MAX_WAKES}) reached with mail outstanding`);
         }
       }
 
@@ -759,20 +762,33 @@ export function createProvider(options: Options = {}): ProviderRegistration {
         if (!received) deliver(sessionId, session);
       }
 
-      async function autoWake(sessionId: string, session: Session) {
+      /** Queued behind host operations, so a wake never races a user prompt or an interrupt. */
+      function autoWake(sessionId: string, session: Session) {
         const batch = takeBatch(session.mail, () => true);
         if (!batch.length) return;
-        session.wakes++;
-        const id = `alp-wake-${randomUUID()}`;
         for (const event of batch) event.deliveredTurn = STARTING;
-        wakePrompts.set(id, batch);
-        try {
-          await handle({ type: 'session.prompt', sessionId, prompt: { clientMessageId: id, delivery: 'auto', input: { type: 'message', content: [{ type: 'text', text: renderMail(batch, session.parentAgent) }] } } });
-        } catch {
-          wakePrompts.delete(id);
+        const release = () => {
           for (const event of batch) if (event.deliveredTurn === STARTING) event.deliveredTurn = undefined;
-          if (session.active) void steerMail(sessionId, session);
-        }
+        };
+        const work = queue.then(async () => {
+          if (closed || session.closed) return release();
+          // Whatever ran first decides: a running turn gets the mail by steering, an interrupt holds it.
+          if (session.wakeBlocked || session.active || session.pending) {
+            release();
+            return deliver(sessionId, session);
+          }
+          session.wakes++;
+          const id = `alp-wake-${randomUUID()}`;
+          wakePrompts.set(id, batch);
+          try {
+            await handle({ type: 'session.prompt', sessionId, prompt: { clientMessageId: id, delivery: 'auto', input: { type: 'message', content: [{ type: 'text', text: renderMail(batch, session.parentAgent) }] } } });
+          } catch {
+            wakePrompts.delete(id);
+            release();
+            deliver(sessionId, session);
+          }
+        });
+        queue = work.catch(() => {});
       }
 
       /**
@@ -1168,6 +1184,8 @@ export function createProvider(options: Options = {}): ProviderRegistration {
             },
           });
         } catch (error) {
+          // A child that failed while starting may already have reported by mail; report once.
+          session.mail = session.mail.filter(event => event.deliveredTurn || event.kind !== 'result' || event.assignment !== childId);
           await finishAssignment(sessionId, session, assignment, 'failed', error, true);
           return toolResult(false, {
             agent: args.agent,
@@ -1617,6 +1635,9 @@ export function createProvider(options: Options = {}): ProviderRegistration {
             ),
           );
 
+          // An idle requester waiting on its assignments has no turn to cancel; end its assignment now.
+          if (!activeTurn) session.settle?.('canceled', 'Interrupted');
+
           if (activeTurn) {
             await session.runtime.request(
               'turn/interrupt',
@@ -1839,6 +1860,9 @@ export function createProvider(options: Options = {}): ProviderRegistration {
               params,
             );
           }
+
+          // Mail beyond the first batch follows into the running turn.
+          if (hasActiveMail(session)) deliver(input.sessionId, session);
         }
       }
 

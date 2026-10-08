@@ -501,3 +501,75 @@ test('a concurrent catch-all alp_wait does not take a waiting delegate\'s result
   assert.equal(decode(await delegated).output, 'sync result');
   assert.deepEqual(decode(await waiting).events, []);
 });
+
+function gateWake(runtime) {
+  let release; let entered = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  const original = runtime.orchestrationContext.bind(runtime);
+  runtime.orchestrationContext = async () => { entered++; await gate; return original(); };
+  return { release, entered: () => entered };
+}
+const userPrompt = (id, text = 'Next') => ({ type: 'session.prompt', sessionId: 'root', prompt: { clientMessageId: id, delivery: 'auto', input: { type: 'message', content: [{ type: 'text', text }] } } });
+
+test('a user prompt arriving while a wake starts does not start a second turn', async t => {
+  const { runtimes, connection, events } = await setup(t, { workflow: 'smart' });
+  decode(await runtimes[0].tool('peer', 'Work', { wait: false }, 'async'));
+  await started(runtimes, 1);
+  runtimes[0].finish('main idle');
+  const wake = gateWake(runtimes[0]);
+  runtimes[1].finish('peer result');
+  await until(() => wake.entered() === 1);
+  const user = connection.send(userPrompt('next'));
+  wake.release();
+  await user;
+  assert.equal(turns(runtimes[0]).length, 2);
+  assert.equal(events.find(e => e.type === 'session.prompt_result' && e.clientMessageId === 'next').result.type, 'failed');
+});
+
+test('an interrupt during wake startup cancels the woken turn', async t => {
+  const { runtimes, connection, events } = await setup(t, { workflow: 'smart' });
+  decode(await runtimes[0].tool('peer', 'Work', { wait: false }, 'async'));
+  await started(runtimes, 1);
+  runtimes[0].finish('main idle');
+  const wake = gateWake(runtimes[0]);
+  runtimes[1].finish('peer result');
+  await until(() => wake.entered() === 1);
+  const stop = connection.send({ type: 'session.interrupt', sessionId: 'root', requestId: 'stop' });
+  wake.release();
+  await stop;
+  assert.ok(runtimes[0].calls.some(c => c.method === 'turn/interrupt'));
+  assert.equal(events.filter(e => e.type === 'session.turn' && e.sessionId === 'root').at(-1).state, 'canceled');
+});
+
+test('interrupting an idle requester ends its assignment for the parent', async t => {
+  const { runtimes, connection, events } = await setup(t);
+  const lead = runtimes[0].tool('lead', 'Coordinate', {}, 'lead');
+  await started(runtimes, 1);
+  decode(await runtimes[1].tool('peer', 'Read', { wait: false }, 'peer'));
+  await started(runtimes, 2);
+  runtimes[1].finish('lead waiting on peer');
+  await tick();
+  const leadId = events.find(e => e.type === 'session.opened' && e.parentSessionId === 'root').sessionId;
+  await connection.send({ type: 'session.interrupt', sessionId: leadId, requestId: 'stop-lead' });
+  const result = decode(await lead);
+  assert.equal(result.status, 'canceled');
+  assert.equal(runtimes[2].closed, true);
+});
+
+test('a child requester that exhausts its wakes fails instead of hanging', async t => {
+  const { runtimes } = await setup(t);
+  const lead = runtimes[0].tool('lead', 'Coordinate', {}, 'lead');
+  await started(runtimes, 1);
+  decode(await runtimes[1].tool('peer', 'Read', { wait: false }, 'peer'));
+  await started(runtimes, 2);
+  runtimes[1].finish('lead waiting');
+  for (let wake = 1; wake <= 8; wake++) {
+    await runtimes[2].call('alp_send', { to: 'parent', kind: 'note', body: `note ${wake}` }, `note-${wake}`);
+    await until(() => turns(runtimes[1]).length === wake + 1);
+    runtimes[1].finish(`handled ${wake}`);
+  }
+  await runtimes[2].call('alp_send', { to: 'parent', kind: 'note', body: 'one too many' }, 'note-9');
+  const result = decode(await lead);
+  assert.equal(result.status, 'failed');
+  assert.match(result.error, /Wake limit \(8\)/);
+});
