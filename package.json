@@ -24,6 +24,8 @@
     "test:e2e": "node scripts/paseo-e2e.mjs",
     "test:e2e:alpd": "node scripts/build-paseo.mjs && node scripts/alpd-e2e.mjs",
     "test:e2e:detach": "node scripts/viewer-detach-e2e.mjs",
+    "test:e2e:persistence": "node scripts/build-paseo.mjs && node scripts/persistence-e2e.mjs",
+    "test:e2e:import": "node scripts/import-e2e.mjs",
     "test:daemon": "node scripts/build-paseo.mjs && node --test test/daemon.test.js"
   },
   "engines": {
