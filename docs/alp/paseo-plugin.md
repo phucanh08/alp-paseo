@@ -1,6 +1,6 @@
 # ALP Paseo provider
 
-The server-only plugin in `plugins/paseo` registers `alp` through the public `ProviderRegistration` API. All Paseo SDK imports are isolated in `server/compat.ts`; core never imports the SDK. No Paseo fork or ACP shim is used. The selected runtime is local Codex app-server, implemented only inside the plugin to satisfy Phase 5's real session requirements. Phase 6 documents and experiments were not opened or implemented.
+The server-only plugin in `plugins/paseo` registers `alp` through the public `ProviderRegistration` API. All Paseo SDK imports are isolated in `server/compat.ts`; core and the runtime never import the SDK. No Paseo fork or ACP shim is used. Native runtimes (Codex app-server, Claude Agent SDK), sessions, delegation, and mail live in the viewer-neutral runtime under `src/runtime` (see [alpd](../../plans/reference/ALPD.md)); the plugin translates Paseo inputs into runtime calls and runtime events into Paseo events.
 
 ## Install
 

@@ -28,7 +28,7 @@ npm run check
 npm test
 ```
 
-`npm test` builds the Paseo bundle before running tests. `npm run build` builds only the plugin. Core has no external dependencies and can be tested without installing Paseo:
+`npm test` builds the Paseo bundle and the runtime bundle (`dist/runtime`) before running tests. `npm run build` builds both. The runtime in `src/runtime` owns native harnesses, sessions, delegation, and mail without importing Paseo; the plugin is a viewer over it, and the coming `alpd` daemon will host it ([design](plans/reference/ALPD.md)). Core has no external dependencies and can be tested without installing Paseo:
 
 ```sh
 node --test test/init.test.js test/upgrade.test.js test/delegation.test.js test/resolver.test.js test/ir.test.js test/adapter.test.js
