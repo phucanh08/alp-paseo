@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { initProject } from '../src/core/init.js';
@@ -18,7 +18,7 @@ async function setup(t, options = {}) {
   await initProject(root);
   await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify(options.workflow ? { workflow: { mode: options.workflow, maxPeers: options.maxPeers ?? 2 } } : { delegation: { main: ['lead'], lead: ['peer'] } }));
   const runtimes = [];
-  const provider = createProvider({ delegationTimeoutMs: options.timeout ?? 2000, transport: () => {
+  const provider = createProvider({ delegationTimeoutMs: options.timeout ?? 2000, runLogDir: options.runLogDir, transport: () => {
     const index = runtimes.length;
     const runtime = {
       calls: [], closed: false, threadId: `thread-${index}`, turnId: `turn-${index}`, notifications: [],
@@ -34,6 +34,12 @@ async function setup(t, options = {}) {
       },
       tool(agent, task = 'Return evidence for assigned read-only scope.', extra = {}, callId = `call-${index}`) {
         return this.serverRequest('item/tool/call', { threadId: this.threadId, turnId: this.turnId, callId, namespace: null, tool: 'alp_delegate', arguments: { agent, task, ...extra } });
+      },
+      handoff(args, callId = `handoff-${index}`) {
+        return this.serverRequest('item/tool/call', { threadId: this.threadId, turnId: this.turnId, callId, namespace: null, tool: 'alp_handoff', arguments: args });
+      },
+      say(text, id) {
+        this.notification('item/completed', { threadId: this.threadId, item: { type: 'agentMessage', id, text } });
       },
       finish(text = 'Evidence complete', status = 'completed') {
         this.notification('item/completed', { threadId: this.threadId, item: { type: 'agentMessage', id: `output-${index}`, text } });
@@ -61,7 +67,8 @@ test('real provider boundary routes main -> lead -> peer, isolates instructions 
   const peerResult = runtimes[1].tool('peer');
   await until(() => runtimes[2]?.calls.some(c => c.method === 'turn/start'));
   const peerConfig = runtimes[2].calls.find(c => c.method === 'thread/start').params;
-  assert.deepEqual(peerConfig.dynamicTools, []);
+  assert.deepEqual(peerConfig.dynamicTools.map(tool => tool.name), ['alp_handoff']);
+  assert.match(peerConfig.developerInstructions, /assignment from lead\. Before ending your turn, call alp_handoff/);
   assert.match(peerConfig.developerInstructions, /Peer — independent bounded contributor/);
   assert.doesNotMatch(peerConfig.developerInstructions, /# Main —/);
   assert.equal(peerConfig.sandbox, 'read-only');
@@ -225,7 +232,7 @@ test('oracle requires explicit premium selection and advisors are forced read-on
   const advice = runtimes[0].tool('oracle', 'Advice', { model: 'codex:premium-test', thinking: 'high', modelReason: 'Runtime catalog describes highest capability', mode: 'workspace-write' }, 'oracle');
   await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
   const cfg = runtimes[1].calls.find(c => c.method === 'thread/start').params;
-  assert.equal(cfg.model, 'premium-test'); assert.equal(cfg.sandbox, 'read-only'); assert.deepEqual(cfg.dynamicTools, []);
+  assert.equal(cfg.model, 'premium-test'); assert.equal(cfg.sandbox, 'read-only'); assert.deepEqual(cfg.dynamicTools.map(tool => tool.name), ['alp_handoff']);
   runtimes[1].finish(); await advice;
   const review = runtimes[0].tool('reviewer', 'Review diff', {}, 'review');
   await until(() => runtimes[2]?.calls.some(c => c.method === 'turn/start'));
@@ -264,4 +271,58 @@ test('interrupt closes both concurrent peers and releases their handoffs', async
   assert.equal((await second).success, false);
   assert.equal(runtimes[1].closed, true);
   assert.equal(runtimes[2].closed, true);
+});
+
+test('child files a structured handoff; parent gets it with only the final message', async t => {
+  const runLogDir = await mkdtemp(path.join(tmpdir(), 'alp-runs-'));
+  t.after(() => rm(runLogDir, { recursive: true, force: true }));
+  const { runtimes, root } = await setup(t, { workflow: 'smart', runLogDir });
+  const result = runtimes[0].tool('peer', 'Read proof.txt', {}, 'peer-call');
+  await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
+  const assignment = runtimes[1].calls.find(c => c.method === 'turn/start').params.input[1].text;
+  assert.match(assignment, /^Assignment from main\. Finish by filing your handoff for that agent with alp_handoff\./);
+  const handoff = { outcome: 'partial', summary: 'Read the file', scope: ['proof.txt'], verification: ['cat proof.txt: PROOF_1'] };
+  assert.equal((await runtimes[1].handoff({ ...handoff, outcome: 'done' }, 'bad-outcome')).success, false);
+  assert.equal((await runtimes[1].handoff({ ...handoff, extra: true }, 'bad-field')).success, false);
+  assert.equal((await runtimes[1].handoff({ ...handoff, risks: [''] }, 'bad-list')).success, false);
+  assert.equal((await runtimes[1].handoff({ ...handoff, summary: 'x'.repeat(33_000) }, 'too-long')).success, false);
+  const recorded = await runtimes[1].handoff(handoff, 'first');
+  assert.equal(recorded.success, true);
+  assert.equal(decode(recorded).to, 'main');
+  await runtimes[1].handoff({ ...handoff, outcome: 'complete' }, 'replace');
+  runtimes[1].say('Reading proof.txt now', 'interim');
+  runtimes[1].finish('PROOF_1');
+  const value = decode(await result);
+  assert.deepEqual(value.handoff, { ...handoff, outcome: 'complete' });
+  assert.equal(value.output, 'PROOF_1');
+  let lines = [];
+  for (let i = 0; i < 200 && lines.length < 2; i++) {
+    lines = (await readFile(path.join(runLogDir, 'root.jsonl'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  const [started, finished] = lines;
+  assert.equal(started.event, 'assignment.started');
+  assert.equal(started.rootSessionId, 'root');
+  assert.equal(started.parentAgent, 'main');
+  assert.equal(started.agent, 'peer');
+  assert.equal(started.project, root);
+  assert.equal(started.task, 'Read proof.txt');
+  assert.equal(finished.event, 'assignment.finished');
+  assert.equal(finished.assignmentId, started.assignmentId);
+  assert.equal(finished.status, 'completed');
+  assert.deepEqual(finished.handoff, value.handoff);
+  assert.equal(finished.output, 'PROOF_1');
+});
+
+test('missing handoff is null and root sessions cannot file one', async t => {
+  const { runtimes } = await setup(t, { workflow: 'smart' });
+  const root = await runtimes[0].handoff({ outcome: 'complete', summary: 'Not an assignment' }, 'root-handoff');
+  assert.equal(root.success, false);
+  assert.match(decode(root).error, /Only assignment sessions/);
+  const result = runtimes[0].tool('peer', 'Answer', {}, 'no-handoff');
+  await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
+  runtimes[1].finish('plain answer');
+  const value = decode(await result);
+  assert.equal(value.handoff, null);
+  assert.equal(value.output, 'plain answer');
 });

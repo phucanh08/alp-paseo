@@ -89,7 +89,7 @@ After first-session initialization, ALP configuration files are read-only to the
 - Live timeline mapping covers assistant text, shell commands, and dynamic delegation calls; other native tool item types are not yet rendered. This is not a complete Codex UI replacement.
 - Replay uses the history returned by `thread/resume`; exhaustive pagination of very large native histories is not implemented.
 - Runtime may load the user's normal Codex or Claude Code authentication. ALP does not replace global authentication or write credentials into project files.
-- Claude Code runs through the Claude Agent SDK. ALP disables Claude's native multi-agent tools and exposes `alp_delegate` as an in-process MCP tool so the same configured delegation graph and Paseo child-session lifecycle apply to both runtimes.
+- Claude Code runs through the Claude Agent SDK. ALP disables Claude's native multi-agent tools and exposes `alp_delegate` and `alp_handoff` as in-process MCP tools so the same configured delegation graph and Paseo child-session lifecycle apply to both runtimes.
 - SDK 0.11.1 does not provide the newer documented `connect.launch` environment field or process helper exports; the compatibility wrapper targets the actual installed contracts. Runtime process code uses native executables with argument arrays and no shell.
 - There is no custom client UI. Provider selection/catalog/session behavior was verified through the real daemon and public client/CLI, not by a Desktop screenshot.
 

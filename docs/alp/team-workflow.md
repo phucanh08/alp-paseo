@@ -76,6 +76,29 @@ call. Duplicate tool calls are deduplicated; cancellation, steering, timeout, an
 parent shutdown close descendants. The existing maximum of 16 child assignments
 per root turn and ancestry depth of 4 remain in effect.
 
+## Structured handoff
+
+Every child session gets an `alp_handoff` tool. Before ending its turn the child
+files `outcome` (`complete`, `partial`, `blocked`, or `reconsider`) and `summary`,
+plus the evidence lists that apply: `candidate`, `scope`, `verification`, `risks`,
+and `ownership`. Calling it again replaces the earlier handoff. Root sessions
+cannot file one. Handoffs over 32,000 characters are rejected so the child points
+to files instead.
+
+`alp_delegate` returns `handoff` (or `null` when the child filed none) and `output`,
+the child's final message. Interim messages stay in the child timeline and are no
+longer concatenated into the result.
+
+## Assignment log
+
+The Paseo plugin appends one JSONL file per root session to `~/.alp/runs/`
+(override with `ALP_RUN_LOG_DIR`). Each assignment writes an `assignment.started`
+record (parent, agent, project, mode, model, thinking, task) and an
+`assignment.finished` record (status, runtime, duration, handoff, output, error).
+Logs live outside the project so they never dirty the checkout. Logging is best
+effort: an unwritable directory never blocks or fails delegation. The files contain
+full task briefs and results; delete them as you would other local agent history.
+
 ## Catalog and usage context
 
 Before each native turn, the provider adds a timestamped snapshot for that session's

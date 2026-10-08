@@ -1,5 +1,7 @@
 import { workflowGraphs } from '../../../src/core/workflow.js';
 import { randomUUID } from 'node:crypto';
+import { appendFile, mkdir } from 'node:fs/promises';
+import path from 'node:path';
 import { resolveDelegation } from '../../../src/core/delegation.js';
 import {
   PROVIDER_PROTOCOL_VERSION,
@@ -69,7 +71,63 @@ type Session = {
   acknowledged: Promise<void>;
 
   settle?: (state: string, error?: unknown) => void;
+
+  /** Requesting agent for a child assignment; enables alp_handoff. */
+  parentAgent?: string;
+  handoff?: Handoff;
 };
+
+const HANDOFF_OUTCOMES = ['complete', 'partial', 'blocked', 'reconsider'] as const;
+const HANDOFF_LISTS = ['candidate', 'scope', 'verification', 'risks'] as const;
+
+type Handoff = {
+  outcome: typeof HANDOFF_OUTCOMES[number];
+  summary: string;
+  ownership?: string;
+} & Partial<Record<typeof HANDOFF_LISTS[number], string[]>>;
+
+const handoffList = (description: string) => ({ type: 'array', items: { type: 'string' }, description });
+
+const HANDOFF_TOOL = {
+  type: 'function',
+  name: 'alp_handoff',
+  description: 'File the structured handoff for your current assignment. The requesting agent receives it when your turn ends.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      outcome: { type: 'string', enum: HANDOFF_OUTCOMES, description: 'complete, partial, blocked, or reconsider (the premise needs reconsideration).' },
+      summary: { type: 'string', description: 'Result, answer, or findings the requester needs.' },
+      candidate: handoffList('Artifacts or files produced; base and candidate SHA when applicable.'),
+      scope: handoffList('Paths changed or read.'),
+      verification: handoffList('Commands run with actual results, and checks not run.'),
+      risks: handoffList('Unresolved findings, assumptions, and decisions needed.'),
+      ownership: { type: 'string', description: 'Resources released or retained.' },
+    },
+    required: ['outcome', 'summary'],
+    additionalProperties: false,
+  },
+};
+
+/** Returns the normalized handoff, or an error message for the child. */
+function parseHandoff(args: any): Handoff | string {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return 'Handoff must be an object';
+  const allowed = ['outcome', 'summary', 'ownership', ...HANDOFF_LISTS];
+  if (Object.keys(args).some(key => !allowed.includes(key))) return 'Unknown handoff field';
+  if (!HANDOFF_OUTCOMES.includes(args.outcome)) return `outcome must be one of ${HANDOFF_OUTCOMES.join(', ')}`;
+  if (typeof args.summary !== 'string' || !args.summary.trim()) return 'summary is required';
+  if (args.ownership !== undefined && typeof args.ownership !== 'string') return 'ownership must be a string';
+  const handoff: Handoff = { outcome: args.outcome, summary: args.summary };
+  for (const key of HANDOFF_LISTS) {
+    if (args[key] === undefined) continue;
+    if (!Array.isArray(args[key]) || args[key].length > 100 || !args[key].every((item: unknown) => typeof item === 'string' && item.trim())) {
+      return `${key} must be a list of at most 100 nonempty strings`;
+    }
+    handoff[key] = args[key];
+  }
+  if (args.ownership?.trim()) handoff.ownership = args.ownership;
+  if (JSON.stringify(handoff).length > 32_000) return 'Handoff exceeds 32000 characters; summarize and point to files instead';
+  return handoff;
+}
 
 type Options = {
   codexCommand?: string;
@@ -87,6 +145,9 @@ type Options = {
   ) => RuntimeTransport;
 
   delegationTimeoutMs?: number;
+
+  /** Directory for per-root-session assignment logs (JSONL). Omitted disables logging. */
+  runLogDir?: string;
 };
 
 const errorData = (error: unknown) => ({
@@ -134,10 +195,12 @@ function nativeSessionConfig(
   runtimeKind: RuntimeKind,
   mapping: Mapping,
   targets: string[],
+  parentAgent?: string,
 ) {
   const delegationInstruction = targets.length
     ? `Use alp_delegate to assign bounded work to: ${targets.join(', ')}. ` +
       'It starts a real child session and waits for the handoff. ' +
+      'The result carries the child\'s structured handoff (null if it filed none) and output, its final message. ' +
       `At most ${mapping.workflow.maxPeers} peers may run concurrently. Concurrent assignments must be read-only; serialize writers in this shared checkout. ` +
       'Do not run shell/file mutations in parallel with delegation. ' +
       'Include scope, constraints, verification, and required handoff in task. ' +
@@ -161,6 +224,10 @@ function nativeSessionConfig(
       'Oracle must use the highest-capability available model, chosen from runtime catalog evidence, never a fixed model name or inherited default. Supply model, thinking, and modelReason explaining the premium choice; do not silently downgrade. If availability or ranking is unknown, say so. Usage context is advisory, may be unavailable or stale; never infer quota from token counts. Respect known exhausted limits and report them.',
 
       `ALP runtime identity: ${mapping.agent.name}. ${delegationInstruction}`,
+
+      ...(parentAgent
+        ? [`This session is an assignment from ${parentAgent}. Before ending your turn, call alp_handoff with outcome, summary, and the evidence fields that apply (candidate, scope, verification, risks, ownership). Calling it again replaces the earlier handoff. Then end with a one-line final message.`]
+        : []),
     ].join('\n\n'),
 
     mcpServers: mapping.mcp,
@@ -174,7 +241,8 @@ function nativeSessionConfig(
      */
     nativeMultiAgent: false,
 
-    dynamicTools: targets.length
+    dynamicTools: [
+      ...(targets.length
       ? [
           {
             type: 'function',
@@ -206,7 +274,9 @@ function nativeSessionConfig(
             },
           },
         ]
-      : [],
+      : []),
+      ...(parentAgent ? [HANDOFF_TOOL] : []),
+    ],
   };
 }
 
@@ -338,7 +408,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
               callId: item.callId ?? item.id,
               name: item.tool,
               ...(status === 'failed'
-                ? { status, error: 'Delegation failed' }
+                ? { status, error: item.tool === 'alp_delegate' ? 'Delegation failed' : 'Tool call failed' }
                 : { status, error: null }),
               detail: {
                 type: 'unknown',
@@ -483,7 +553,21 @@ export function createProvider(options: Options = {}): ProviderRegistration {
         ],
       });
 
-      async function delegate(
+      let runLogWrites = Promise.resolve();
+
+      /** Best effort: an unwritable log never blocks or fails delegation. */
+      function runLog(rootId: string, entry: Record<string, unknown>) {
+        const directory = options.runLogDir;
+        if (!directory) return;
+        const file = path.join(directory, `${rootId.replace(/[^\w.-]/g, '_')}.jsonl`);
+        const line = JSON.stringify({ ts: new Date().toISOString(), rootSessionId: rootId, ...entry }) + '\n';
+        runLogWrites = runLogWrites
+          .then(() => mkdir(directory, { recursive: true }))
+          .then(() => appendFile(file, line))
+          .catch(() => {});
+      }
+
+      async function toolCall(
         sessionId: string,
         session: Session,
         params: any,
@@ -497,31 +581,43 @@ export function createProvider(options: Options = {}): ProviderRegistration {
           params.turnId !== session.active
         ) {
           return toolResult(false, {
-            error: 'Delegation requires the current active turn',
+            error: 'ALP tools require the current active turn',
           });
         }
 
         if (
-          params.tool !== 'alp_delegate' ||
+          !['alp_delegate', 'alp_handoff'].includes(params.tool) ||
           params.namespace != null ||
           typeof params.callId !== 'string'
         ) {
           return toolResult(false, {
-            error: 'Unknown delegation tool',
+            error: 'Unknown ALP tool',
           });
         }
 
         const cached = session.toolCalls.get(params.callId);
         if (cached) return cached;
 
-        const work = runDelegation(
-          sessionId,
-          session,
-          params,
-        );
+        const work = params.tool === 'alp_handoff'
+          ? Promise.resolve(recordHandoff(session, params.arguments))
+          : runDelegation(
+              sessionId,
+              session,
+              params,
+            );
 
         session.toolCalls.set(params.callId, work);
         return work;
+      }
+
+      function recordHandoff(session: Session, args: unknown) {
+        if (!session.parentAgent) {
+          return toolResult(false, { error: 'Only assignment sessions can file a handoff' });
+        }
+        const handoff = parseHandoff(args);
+        if (typeof handoff === 'string') return toolResult(false, { error: handoff });
+        session.handoff = handoff;
+        return toolResult(true, { recorded: true, to: session.parentAgent, next: 'End your turn with a one-line final message.' });
       }
 
       async function runDelegation(
@@ -587,11 +683,13 @@ export function createProvider(options: Options = {}): ProviderRegistration {
           });
         }
 
+        let rootId = sessionId;
         let root = session;
         while (
           root.parent &&
           sessions.has(root.parent)
         ) {
+          rootId = root.parent;
           root = sessions.get(root.parent)!;
         }
 
@@ -623,6 +721,22 @@ export function createProvider(options: Options = {}): ProviderRegistration {
         });
 
         let timer: NodeJS.Timeout | undefined;
+        const startedAt = Date.now();
+        let finished: Record<string, unknown> = { status: 'failed' };
+
+        runLog(rootId, {
+          event: 'assignment.started',
+          assignmentId: childId,
+          parentSessionId: sessionId,
+          parentAgent: session.mapping.agent.name,
+          agent: args.agent,
+          project: session.mapping.agent.projectRoot,
+          mode: childMode,
+          model: args.model ?? `${session.runtimeKind}:${session.mapping.model}`,
+          thinking: args.thinking ?? (args.model ? null : session.mapping.thinking),
+          ...(args.modelReason ? { modelReason: args.modelReason } : {}),
+          task: args.task,
+        });
 
         try {
           await handle({
@@ -685,7 +799,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
                     type: 'text',
                     text:
                       `Assignment from ${session.mapping.agent.name}. ` +
-                      'Return your evidence and handoff to that agent.\n\n' +
+                      'Finish by filing your handoff for that agent with alp_handoff.\n\n' +
                       args.task,
                   },
                 ],
@@ -699,6 +813,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
             session.closed ||
             session.active !== params.turnId
           ) {
+            finished = { status: 'canceled', error: 'Parent assignment stopped' };
             return toolResult(false, {
               agent: args.agent,
               status: 'canceled',
@@ -718,9 +833,21 @@ export function createProvider(options: Options = {}): ProviderRegistration {
             );
           }
 
-          const text = [
+          // Interim commentary stays in the child timeline; the final message is the answer.
+          const output = [
             ...child.text.values(),
-          ].join('\n');
+          ].at(-1) ?? '';
+
+          const handoff = child.handoff ?? null;
+
+          finished = {
+            status: result.state,
+            runtime: child.runtimeKind,
+            threadId: child.threadId,
+            handoff,
+            output,
+            ...(result.error ? { error: errorData(result.error).message } : {}),
+          };
 
           return toolResult(
             result.state === 'completed',
@@ -730,7 +857,8 @@ export function createProvider(options: Options = {}): ProviderRegistration {
               sessionId: childId,
               threadId: child.threadId,
               status: result.state,
-              output: text,
+              handoff,
+              output,
               ...(result.error
                 ? {
                     error:
@@ -740,6 +868,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
             },
           );
         } catch (error) {
+          finished = { status: 'failed', error: errorData(error).message };
           return toolResult(false, {
             agent: args.agent,
             error: errorData(error).message,
@@ -748,6 +877,14 @@ export function createProvider(options: Options = {}): ProviderRegistration {
           clearTimeout(timer);
 
           await closeSession(childId);
+
+          runLog(rootId, {
+            event: 'assignment.finished',
+            assignmentId: childId,
+            agent: args.agent,
+            durationMs: Date.now() - startedAt,
+            ...finished,
+          });
 
           childContexts.delete(childId);
           session.children.delete(childId);
@@ -874,6 +1011,9 @@ export function createProvider(options: Options = {}): ProviderRegistration {
               context?.ancestry ??
               [mapping.agent.name],
             parent: context?.parent,
+            parentAgent: context
+              ? sessions.get(context.parent)?.mapping.agent.name
+              : undefined,
 
             children: new Set(),
             delegating: 0,
@@ -887,7 +1027,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
 
           runtime.onRequest?.(
             (_method, params) =>
-              delegate(
+              toolCall(
                 input.sessionId,
                 session,
                 params,
@@ -945,7 +1085,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
             }
 
             if (
-              targets.length &&
+              (targets.length || session.parentAgent) &&
               !runtime.onRequest
             ) {
               throw new Error(
@@ -969,6 +1109,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
                 runtimeKind,
                 mapping,
                 targets,
+                session.parentAgent,
               );
 
             const result = mapping.threadId
@@ -1261,6 +1402,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
         ) {
           session.text.clear();
           session.toolCalls.clear();
+          session.handoff = undefined;
 
           if (!session.parent) {
             session.calls = 0;
@@ -1474,6 +1616,8 @@ export function createProvider(options: Options = {}): ProviderRegistration {
               closeSession,
             ),
           );
+
+          await runLogWrites;
 
           listeners.clear();
         },
