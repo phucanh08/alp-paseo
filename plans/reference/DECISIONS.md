@@ -76,4 +76,6 @@ The user authorized real Paseo delegation on 2026-10-07. `.alp/settings.json` ma
 
 The Paseo adapter owns runtime tool calls and child session lifecycle. It binds sender identity to the active session, validates targets, inherits or narrows permissions, and returns real child results. The first implementation is synchronous and bounded: one child per parent, no delegation cycles, at most four agents in a chain and sixteen child assignments per root turn. Child sessions close on handoff, timeout, parent cancellation, or parent steering.
 
+Updated by explicit user decision on 2026-10-08: delegation may be asynchronous, with two-way mail along the delegation tree (`alp_wait`, `alp_send`, `alp_ask`). Siblings never address each other directly; the requester relays. Direct sibling mail is deferred until parallel writers are isolated. User steering no longer closes children; interrupt, inactivity, and parent shutdown still close the subtree. Idle requesters are woken by mail.
+
 Main's expanded authority does not elevate sandbox permissions or override user constraints. Authorship and independent review remain distinct. Role instructions are behavioral contracts; the runtime enforces delegation routes and modes, not arbitrary prose ownership rules or per-file access controls.

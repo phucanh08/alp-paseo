@@ -18,7 +18,7 @@ async function setup(t, options = {}) {
   await initProject(root);
   await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify(options.workflow ? { workflow: { mode: options.workflow, maxPeers: options.maxPeers ?? 2 } } : { delegation: { main: ['lead'], lead: ['peer'] } }));
   const runtimes = [];
-  const provider = createProvider({ delegationTimeoutMs: options.timeout ?? 2000, runLogDir: options.runLogDir, transport: () => {
+  const provider = createProvider({ silentForMs: options.timeout ?? 2000, askTimeoutMs: options.askTimeout, runLogDir: options.runLogDir, transport: () => {
     const index = runtimes.length;
     const runtime = {
       calls: [], closed: false, threadId: `thread-${index}`, turnId: `turn-${index}`, notifications: [],
@@ -31,6 +31,9 @@ async function setup(t, options = {}) {
         if (method.startsWith('thread/')) return { thread: { id: this.threadId } };
         if (method === 'turn/start') return { turn: { id: this.turnId } };
         return {};
+      },
+      call(tool, args, callId) {
+        return this.serverRequest('item/tool/call', { threadId: this.threadId, turnId: this.turnId, callId, namespace: null, tool, arguments: args });
       },
       tool(agent, task = 'Return evidence for assigned read-only scope.', extra = {}, callId = `call-${index}`) {
         return this.serverRequest('item/tool/call', { threadId: this.threadId, turnId: this.turnId, callId, namespace: null, tool: 'alp_delegate', arguments: { agent, task, ...extra } });
@@ -67,8 +70,8 @@ test('real provider boundary routes main -> lead -> peer, isolates instructions 
   const peerResult = runtimes[1].tool('peer');
   await until(() => runtimes[2]?.calls.some(c => c.method === 'turn/start'));
   const peerConfig = runtimes[2].calls.find(c => c.method === 'thread/start').params;
-  assert.deepEqual(peerConfig.dynamicTools.map(tool => tool.name), ['alp_handoff']);
-  assert.match(peerConfig.developerInstructions, /assignment from lead\. Before ending your turn, call alp_handoff/);
+  assert.deepEqual(peerConfig.dynamicTools.map(tool => tool.name), ['alp_send', 'alp_handoff', 'alp_ask']);
+  assert.match(peerConfig.developerInstructions, /assignment from lead\. If a decision is genuinely theirs, ask with alp_ask[\s\S]*Before ending your turn, call alp_handoff/);
   assert.match(peerConfig.developerInstructions, /Peer — independent bounded contributor/);
   assert.doesNotMatch(peerConfig.developerInstructions, /# Main —/);
   assert.equal(peerConfig.sandbox, 'read-only');
@@ -157,14 +160,17 @@ test('workspace-write parent can delegate read-only work without elevating desce
   runtimes[1].finish(); await lead;
 });
 
-test('steering cancels descendants before the changed brief reaches the parent', async t => {
+test('user steering reaches the parent and keeps live assignments running', async t => {
   const { runtimes, connection } = await setup(t);
   const lead = runtimes[0].tool('lead');
   await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
   await connection.send({ type: 'session.prompt', sessionId: 'root', prompt: { clientMessageId: 'steer', delivery: 'steer', input: { type: 'message', content: [{ type: 'text', text: 'Change the assignment' }] } } });
-  assert.equal((await lead).success, false);
-  assert.equal(runtimes[1].closed, true);
   assert.ok(runtimes[0].calls.some(c => c.method === 'turn/steer'));
+  assert.equal(runtimes[1].closed, false);
+  runtimes[1].finish('lead still delivered');
+  const result = await lead;
+  assert.equal(result.success, true);
+  assert.equal(decode(result).output, 'lead still delivered');
 });
 
 test('closing parent while child initializes prevents an orphan runtime', async t => {
@@ -232,7 +238,7 @@ test('oracle requires explicit premium selection and advisors are forced read-on
   const advice = runtimes[0].tool('oracle', 'Advice', { model: 'codex:premium-test', thinking: 'high', modelReason: 'Runtime catalog describes highest capability', mode: 'workspace-write' }, 'oracle');
   await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
   const cfg = runtimes[1].calls.find(c => c.method === 'thread/start').params;
-  assert.equal(cfg.model, 'premium-test'); assert.equal(cfg.sandbox, 'read-only'); assert.deepEqual(cfg.dynamicTools.map(tool => tool.name), ['alp_handoff']);
+  assert.equal(cfg.model, 'premium-test'); assert.equal(cfg.sandbox, 'read-only'); assert.deepEqual(cfg.dynamicTools.map(tool => tool.name), ['alp_send', 'alp_handoff', 'alp_ask']);
   runtimes[1].finish(); await advice;
   const review = runtimes[0].tool('reviewer', 'Review diff', {}, 'review');
   await until(() => runtimes[2]?.calls.some(c => c.method === 'turn/start'));
@@ -325,4 +331,173 @@ test('missing handoff is null and root sessions cannot file one', async t => {
   const value = decode(await result);
   assert.equal(value.handoff, null);
   assert.equal(value.output, 'plain answer');
+});
+
+const turns = runtime => runtime.calls.filter(c => c.method === 'turn/start');
+const started = (runtimes, index) => until(() => runtimes[index]?.calls.some(c => c.method === 'turn/start'));
+
+test('async assignment: alp_wait returns the result and the snapshot of running work', async t => {
+  const { runtimes } = await setup(t, { workflow: 'smart' });
+  const start = decode(await runtimes[0].tool('peer', 'Read proof', { wait: false }, 'async'));
+  assert.equal(start.status, 'running');
+  await started(runtimes, 1);
+  const quick = decode(await runtimes[0].call('alp_wait', { timeoutMs: 5 }, 'quick'));
+  assert.deepEqual(quick.events, []);
+  assert.equal(quick.running[0].assignmentId, start.assignmentId);
+  assert.equal((await runtimes[0].call('alp_wait', { assignments: ['alp-child-unknown'] }, 'unknown')).success, false);
+  const waiting = runtimes[0].call('alp_wait', { assignments: [start.assignmentId] }, 'wait');
+  runtimes[1].finish('PROOF');
+  const { events, running } = decode(await waiting);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, 'result');
+  assert.equal(events[0].result.output, 'PROOF');
+  assert.equal(events[0].result.status, 'completed');
+  assert.deepEqual(running, []);
+  assert.equal(runtimes[1].closed, true);
+});
+
+test('a question returns a waiting delegate early; the answer resumes the child', async t => {
+  const { runtimes } = await setup(t, { workflow: 'smart' });
+  const delegated = runtimes[0].tool('peer', 'Pick an API', {}, 'sync');
+  await started(runtimes, 1);
+  const asked = runtimes[1].call('alp_ask', { question: 'v1 or v2?' }, 'ask');
+  const early = decode(await delegated);
+  assert.equal(early.status, 'running');
+  assert.equal(early.events[0].kind, 'question');
+  assert.equal(early.events[0].body, 'v1 or v2?');
+  const { assignmentId } = early;
+  const replyTo = early.events[0].id;
+  assert.equal((await runtimes[1].call('alp_ask', { question: 'again?' }, 'ask-twice')).success, false);
+  assert.equal((await runtimes[0].call('alp_send', { to: assignmentId, kind: 'answer', replyTo: '#999', body: 'v2' }, 'wrong-reply')).success, false);
+  assert.equal((await runtimes[0].call('alp_send', { to: 'alp-child-sibling', kind: 'note', body: 'hi' }, 'sibling')).success, false);
+  assert.equal((await runtimes[0].call('alp_send', { to: assignmentId, kind: 'answer', replyTo, body: 'v2' }, 'answer')).success, true);
+  const answer = decode(await asked);
+  assert.deepEqual(answer, { status: 'answered', from: 'main', answer: 'v2' });
+  const waiting = runtimes[0].call('alp_wait', {}, 'wait');
+  runtimes[1].finish('used v2');
+  assert.equal(decode(await waiting).events[0].result.output, 'used v2');
+});
+
+test('unanswered questions time out and children only mail notes to their requester', async t => {
+  const { runtimes } = await setup(t, { workflow: 'smart', askTimeout: 20 });
+  const start = decode(await runtimes[0].tool('peer', 'Work', { wait: false }, 'async'));
+  await started(runtimes, 1);
+  assert.equal((await runtimes[1].call('alp_send', { to: 'parent', kind: 'steer', body: 'do it' }, 'child-steer')).success, false);
+  assert.equal((await runtimes[1].call('alp_send', { to: start.assignmentId, kind: 'note', body: 'self' }, 'child-self')).success, false);
+  assert.equal((await runtimes[0].call('alp_ask', { question: 'root has no requester' }, 'root-ask')).success, false);
+  const unanswered = decode(await runtimes[1].call('alp_ask', { question: 'anyone?' }, 'ask'));
+  assert.equal(unanswered.status, 'unanswered');
+  const waited = decode(await runtimes[0].call('alp_wait', { timeoutMs: 5 }, 'stale'));
+  assert.deepEqual(waited.events, [], 'an expired question is not delivered');
+  runtimes[1].finish();
+});
+
+test('mail reaches a busy parent by steering its running turn', async t => {
+  const { runtimes } = await setup(t, { workflow: 'smart' });
+  const start = decode(await runtimes[0].tool('peer', 'Work', { wait: false }, 'async'));
+  await started(runtimes, 1);
+  assert.equal((await runtimes[1].call('alp_send', { to: 'parent', kind: 'note', body: 'found the config in src/x' }, 'note')).success, true);
+  await until(() => runtimes[0].calls.some(c => c.method === 'turn/steer'));
+  const text = runtimes[0].calls.find(c => c.method === 'turn/steer').params.input[0].text;
+  assert.match(text, /note from peer/);
+  assert.match(text, new RegExp(start.assignmentId));
+  assert.match(text, /found the config in src\/x/);
+  assert.equal((await runtimes[0].call('alp_send', { to: start.assignmentId, kind: 'steer', body: 'Only read src/x' }, 'down')).success, true);
+  await until(() => runtimes[1].calls.some(c => c.method === 'turn/steer'));
+  assert.match(runtimes[1].calls.find(c => c.method === 'turn/steer').params.input[0].text, /Follow steer messages from main[\s\S]*steer from main[\s\S]*Only read src\/x/);
+  runtimes[1].finish();
+});
+
+test('an idle parent is woken by mail, without resetting its per-turn limits', async t => {
+  const runLogDir = await mkdtemp(path.join(tmpdir(), 'alp-runs-'));
+  t.after(() => rm(runLogDir, { recursive: true, force: true }));
+  const { runtimes, events } = await setup(t, { workflow: 'smart', runLogDir });
+  decode(await runtimes[0].tool('peer', 'Work', { wait: false }, 'async'));
+  await started(runtimes, 1);
+  runtimes[0].finish('main idle');
+  assert.equal(turns(runtimes[0]).length, 1);
+  runtimes[1].finish('peer result');
+  await until(() => turns(runtimes[0]).length === 2);
+  const wake = turns(runtimes[0])[1].params;
+  assert.match(wake.input[1].text, /result from peer/);
+  assert.match(wake.input[1].text, /peer result/);
+  assert.equal(events.filter(e => e.type === 'session.turn' && e.sessionId === 'root' && e.state === 'started').length, 2);
+  runtimes[0].finish('main final');
+  let lines = [];
+  for (let i = 0; i < 200 && !lines.some(l => l.event === 'mail'); i++) {
+    lines = (await readFile(path.join(runLogDir, 'root.jsonl'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  const mail = lines.find(l => l.event === 'mail');
+  assert.equal(mail.kind, 'result');
+  assert.equal(mail.result, undefined, 'results are logged once, by assignment.finished');
+});
+
+test('interrupt blocks wakes; held mail rides on the next user prompt', async t => {
+  const { runtimes, connection } = await setup(t, { workflow: 'smart' });
+  decode(await runtimes[0].tool('peer', 'Work', { wait: false }, 'async'));
+  await started(runtimes, 1);
+  await connection.send({ type: 'session.interrupt', sessionId: 'root', requestId: 'stop' });
+  assert.equal(runtimes[1].closed, true);
+  await tick();
+  assert.equal(turns(runtimes[0]).length, 1, 'no wake after interrupt');
+  await connection.send({ type: 'session.prompt', sessionId: 'root', prompt: { clientMessageId: 'next', delivery: 'auto', input: { type: 'message', content: [{ type: 'text', text: 'Continue' }] } } });
+  const input = turns(runtimes[0])[1].params.input;
+  assert.equal(input[1].text, 'Continue');
+  assert.match(input[2].text, /result from peer/);
+  assert.match(input[2].text, /canceled/);
+});
+
+test('mail received by a failed turn is redelivered', async t => {
+  const { runtimes, connection } = await setup(t, { workflow: 'smart' });
+  const start = decode(await runtimes[0].tool('peer', 'Work', { wait: false }, 'async'));
+  await started(runtimes, 1);
+  const waiting = runtimes[0].call('alp_wait', {}, 'wait');
+  runtimes[1].finish('first copy');
+  assert.equal(decode(await waiting).events[0].assignment, start.assignmentId);
+  runtimes[0].finish('', 'failed');
+  await connection.send({ type: 'session.prompt', sessionId: 'root', prompt: { clientMessageId: 'retry', delivery: 'auto', input: { type: 'message', content: [{ type: 'text', text: 'Retry' }] } } });
+  const text = turns(runtimes[0])[1].params.input[2].text;
+  assert.match(text, /redelivered/);
+  assert.match(text, /first copy/);
+});
+
+test('a requester whose turn ends with live assignments finishes only after handling their mail', async t => {
+  const { runtimes } = await setup(t);
+  const lead = runtimes[0].tool('lead', 'Coordinate', {}, 'lead');
+  await started(runtimes, 1);
+  decode(await runtimes[1].tool('peer', 'Read', { wait: false }, 'peer'));
+  await started(runtimes, 2);
+  runtimes[1].finish('lead interim');
+  await tick();
+  assert.equal(runtimes[1].closed, false);
+  runtimes[2].finish('peer evidence');
+  await until(() => turns(runtimes[1]).length === 2);
+  assert.match(turns(runtimes[1])[1].params.input[1].text, /peer evidence/);
+  runtimes[1].finish('ACCEPT peer evidence');
+  assert.equal(decode(await lead).output, 'ACCEPT peer evidence');
+});
+
+test('silent assignments are reported once, then fail at twice the limit', async t => {
+  const { runtimes } = await setup(t, { workflow: 'smart', timeout: 40 });
+  const start = decode(await runtimes[0].tool('peer', 'Work', { wait: false }, 'async'));
+  await started(runtimes, 1);
+  const first = decode(await runtimes[0].call('alp_wait', { timeoutMs: 1000 }, 'stall'));
+  assert.equal(first.events[0].kind, 'stalled');
+  assert.equal(first.events[0].assignment, start.assignmentId);
+  const second = decode(await runtimes[0].call('alp_wait', { timeoutMs: 1000 }, 'fail'));
+  assert.equal(second.events[0].kind, 'result');
+  assert.equal(second.events[0].result.status, 'failed');
+  assert.match(second.events[0].result.error, /no activity for 80 ms/);
+  assert.equal(runtimes[1].closed, true);
+});
+
+test('a concurrent catch-all alp_wait does not take a waiting delegate\'s result', async t => {
+  const { runtimes } = await setup(t, { workflow: 'smart' });
+  const delegated = runtimes[0].tool('peer', 'A', {}, 'sync');
+  await started(runtimes, 1);
+  const waiting = runtimes[0].call('alp_wait', { timeoutMs: 50 }, 'all');
+  runtimes[1].finish('sync result');
+  assert.equal(decode(await delegated).output, 'sync result');
+  assert.deepEqual(decode(await waiting).events, []);
 });
