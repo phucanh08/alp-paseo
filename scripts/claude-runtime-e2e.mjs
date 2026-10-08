@@ -10,7 +10,7 @@ const root = path.resolve(process.env.ALP_TEST_ROOT ?? path.join('.alp-test', `c
 await mkdir(root, { recursive: true });
 const prompt = process.env.ALP_TEST_PROMPT ?? 'Reply with exactly: CLAUDE_ALP_OK';
 const expected = process.env.ALP_TEST_EXPECT ?? 'CLAUDE_ALP_OK';
-const provider = createProvider();
+const provider = createProvider({ embedded: true });
 const connection = await provider.connect({
   versions: [1],
   capabilities: PROVIDER_CAPABILITIES,

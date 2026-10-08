@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createProvider, mapSession, default as contribute } from '../plugins/paseo/server/dist/index.js';
 import { ProviderEventSchema, PROVIDER_CAPABILITIES } from '@getpaseo/plugin/server/provider';
+import { connect, readLock } from '../src/client/index.js';
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'alp-paseo-'));
@@ -45,7 +46,18 @@ async function connection(t, root) {
 }
 const prompt = (id, delivery = 'auto') => ({ type: 'session.prompt', sessionId: 's', prompt: { clientMessageId: id, delivery, input: { type: 'message', content: [{ type: 'text', text: 'Hello' }] } } });
 
-test('plugin registers ALP with public SDK contract', async () => {
+test('plugin registers ALP with public SDK contract', async t => {
+  // The registered provider starts the user's alpd; keep it in a throwaway home.
+  const home = await mkdtemp(path.join(tmpdir(), 'alp-home-'));
+  const previous = process.env.ALP_HOME;
+  process.env.ALP_HOME = home;
+  t.after(async () => {
+    const lock = await readLock(home);
+    if (lock?.ready) await connect(lock.socket).then(client => client.request('daemon.shutdown').finally(() => client.close())).catch(() => {});
+    for (let i = 0; i < 100 && await readLock(home); i++) await new Promise(resolve => setTimeout(resolve, 20));
+    if (previous === undefined) delete process.env.ALP_HOME; else process.env.ALP_HOME = previous;
+    await rm(home, { recursive: true, force: true });
+  });
   let registration; contribute({ registerProvider(p) { registration = p; } });
   assert.equal(registration.id, 'alp');
   await assert.rejects(registration.connect({ versions: [99], capabilities: [] }), /protocol/);

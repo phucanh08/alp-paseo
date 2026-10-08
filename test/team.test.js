@@ -173,18 +173,33 @@ test('user steering reaches the parent and keeps live assignments running', asyn
   assert.equal(decode(result).output, 'lead still delivered');
 });
 
-test('closing parent while child initializes prevents an orphan runtime', async t => {
+test('interrupting parent while child initializes prevents an orphan runtime', async t => {
   let release;
   const childGate = new Promise(resolve => { release = resolve; });
   const { runtimes, connection, events } = await setup(t, { childGate });
   const lead = runtimes[0].tool('lead');
   await until(() => runtimes.length === 2);
-  await connection.send({ type: 'session.close', sessionId: 'root', requestId: 'close' });
+  await connection.send({ type: 'session.interrupt', sessionId: 'root', requestId: 'stop' });
   release();
   assert.equal((await lead).success, false);
-  assert.ok(runtimes.every(r => r.closed));
+  assert.equal(runtimes[1].closed, true);
+  assert.equal(runtimes[0].closed, false);
   assert.equal(events.filter(e => e.type === 'session.opened').length, 1);
-  assert.equal(events.filter(e => e.type === 'session.closed' && e.sessionId === 'root').length, 1);
+});
+
+test('closing a working root in Paseo lets its tree finish; alpd closes it once idle', async t => {
+  const { runtimes, connection, events } = await setup(t);
+  const lead = runtimes[0].tool('lead');
+  await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
+  await connection.send({ type: 'session.close', sessionId: 'root', requestId: 'close' });
+  assert.ok(events.some(e => e.type === 'request.completed' && e.requestId === 'close'));
+  assert.equal(runtimes[0].closed, false);
+  assert.equal(runtimes[1].closed, false);
+  runtimes[1].finish('lead finished without a viewer');
+  assert.equal(decode(await lead).output, 'lead finished without a viewer');
+  assert.equal(runtimes[0].closed, false);
+  runtimes[0].finish('root done');
+  await until(() => runtimes[0].closed);
 });
 
 test('a root turn has a bounded total number of child assignments', async t => {

@@ -10,13 +10,17 @@ import {
   type ProviderPersistence,
   type ProviderTimelineItem,
 } from './compat.js';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { createAlpRuntime, type RuntimeOptions, type SessionSnapshot, type TimelineItem, type Envelope } from '../../../src/runtime/index.js';
+import { createDaemonServer, type DaemonConnection } from '../../../src/daemon/server.js';
+import { alpHome, connect, ensureDaemon } from '../../../src/client/index.js';
 import { DEFAULT_MODEL, models, modes, templates, thinkingOptions, thinkingOptionsFor, toSessionSpec } from './mapping.js';
 
 /**
- * Paseo is a viewer of the ALP runtime: this provider translates Paseo inputs
- * into runtime calls and runtime events into Paseo events. Orchestration lives
- * in src/runtime.
+ * Paseo is a viewer of alpd: this provider translates Paseo inputs into daemon
+ * calls and daemon events into Paseo events. Orchestration lives in src/runtime,
+ * hosted by the daemon (plans/reference/ALPD.md §8).
  */
 
 const supported = [
@@ -27,7 +31,47 @@ const supported = [
   'session.configure',
 ] as const;
 
-type Options = Omit<RuntimeOptions, 'templates' | 'subsessions'>;
+/**
+ * Runtime options run an embedded daemon in this process (tests, custom runtimes);
+ * without them the provider connects to the user's alpd, starting it when needed.
+ */
+type Options = Omit<RuntimeOptions, 'templates'> & {
+  /** Run the runtime in this process instead of alpd; implied by a custom transport. */
+  embedded?: boolean;
+  /** Directory holding alpd's lock and socket; defaults to ALP_HOME or ~/.alp. */
+  home?: string;
+  /** The daemon script to start; defaults to alpd.js next to this bundle. */
+  daemonEntry?: string;
+};
+
+type Backend = { client: DaemonConnection; shutdown(): Promise<void> };
+
+declare const __ALP_DAEMON_ENTRY__: string | undefined;
+
+/**
+ * Paseo recompiles and evaluates plugin code, so import.meta.url may not name this
+ * bundle; the build also records alpd's absolute path.
+ */
+function daemonEntry(explicit?: string) {
+  const beside = () => { try { return fileURLToPath(new URL('./alpd.js', import.meta.url)); } catch { return undefined; } };
+  const candidates = [explicit, process.env.ALP_DAEMON_ENTRY, typeof __ALP_DAEMON_ENTRY__ === 'string' ? __ALP_DAEMON_ENTRY__ : undefined, beside()];
+  const entry = candidates.find(candidate => candidate && existsSync(candidate));
+  if (!entry) throw new Error('alpd is not installed next to the ALP plugin; set ALP_DAEMON_ENTRY to its alpd.js');
+  return entry;
+}
+
+async function openBackend(options: Options): Promise<Backend> {
+  const { home, daemonEntry: entry, embedded: inProcess, ...runtimeOptions } = options;
+  if (inProcess || runtimeOptions.transport) {
+    const runtime = createAlpRuntime({ ...runtimeOptions, templates });
+    const server = createDaemonServer({ runtime, socketPath: '', version: 'embedded' });
+    const client = server.local();
+    return { client, async shutdown() { client.close(); await runtime.shutdown(); } };
+  }
+  const socket = await ensureDaemon({ home: home ?? alpHome(), entry: daemonEntry(entry) });
+  const client = await connect(socket, { name: 'alp-paseo', version: '1' });
+  return { client, async shutdown() { client.close(); } };
+}
 
 const errorData = (error: unknown) => ({
   message: error instanceof Error ? error.message : String(error),
@@ -76,7 +120,10 @@ export function createProvider(options: Options = {}): ProviderRegistration {
         supported,
       );
 
-      const runtime = createAlpRuntime({ ...options, templates, subsessions: capabilities.includes('session.subsession') });
+      const { client, shutdown } = await openBackend(options);
+      const delegation = capabilities.includes('session.subsession');
+      /** Roots this connection opened; children belong to their root. */
+      const roots = new Set<string>();
       const listeners = new Set<(event: ProviderEvent) => void>();
       /** Request ids of client-initiated opens; children are opened by the runtime. */
       const opening = new Map<string, string>();
@@ -158,7 +205,12 @@ export function createProvider(options: Options = {}): ProviderRegistration {
         }
       }
 
-      runtime.onEvent(project);
+      client.onEvent(project);
+      client.onClose(error => {
+        if (closed) return;
+        for (const sessionId of roots) emit({ type: 'session.runtime_failed', sessionId, error: errorData(error) });
+        roots.clear();
+      });
 
       async function handle(input: ProviderInput) {
         requireProviderCapabilities(
@@ -185,7 +237,8 @@ export function createProvider(options: Options = {}): ProviderRegistration {
         if (input.type === 'session.open') {
           opening.set(input.sessionId, input.requestId);
           try {
-            await runtime.open(input.sessionId, toSessionSpec(input.config, input.persistence), { history: input.history });
+            await client.request('session.create', { sessionId: input.sessionId, spec: toSessionSpec(input.config, input.persistence), history: input.history, delegation });
+            roots.add(input.sessionId);
           } finally {
             opening.delete(input.sessionId);
           }
@@ -200,7 +253,8 @@ export function createProvider(options: Options = {}): ProviderRegistration {
 
         if (input.type === 'session.prompt') {
           const { prompt } = input;
-          await runtime.prompt(input.sessionId, {
+          await client.request('session.prompt', {
+            sessionId: input.sessionId,
             clientMessageId: prompt.clientMessageId,
             delivery: prompt.delivery === 'steer' ? 'steer' : 'auto',
             content: prompt.input.type === 'message' ? prompt.input.content : [{ type: prompt.input.type }],
@@ -208,15 +262,17 @@ export function createProvider(options: Options = {}): ProviderRegistration {
           return;
         }
 
-        // The runtime checks that the session is open, in order with earlier inputs.
+        // The daemon checks that the session is open, in order with earlier inputs.
         if (input.type === 'session.configure') {
           if (input.changes.settings?.workflow !== undefined) throw new Error('Workflow is fixed for this session; select Smart or Supervised when creating a new session');
           if (Object.keys(input.changes).some(key => key !== 'mode')) throw new Error('Only permission mode can be changed in an existing ALP session');
-          await runtime.configure(input.sessionId, { mode: input.changes.mode === undefined ? undefined : input.changes.mode ?? 'read-only' });
+          await client.request('session.configure', { sessionId: input.sessionId, mode: input.changes.mode === undefined ? undefined : input.changes.mode ?? 'read-only' });
         } else if (input.type === 'session.close') {
-          await runtime.close(input.sessionId);
+          // Closing a view: alpd closes the session once idle, or lets running work finish.
+          await client.request('session.release', { sessionId: input.sessionId });
+          roots.delete(input.sessionId);
         } else if (input.type === 'session.interrupt') {
-          await runtime.interrupt(input.sessionId);
+          await client.request('session.interrupt', { sessionId: input.sessionId });
         } else {
           throw new Error(
             `Unsupported operation '${input.type}'`,
@@ -274,7 +330,9 @@ export function createProvider(options: Options = {}): ProviderRegistration {
 
         async close() {
           closed = true;
-          await runtime.shutdown();
+          await Promise.all([...roots].map(sessionId => client.request('session.release', { sessionId }).catch(() => {})));
+          roots.clear();
+          await shutdown();
           listeners.clear();
         },
       };
