@@ -36,7 +36,7 @@ try {
   console.log(JSON.stringify({ workflow, project: root, agent: agent.id }));
   const assignment = 'Use alp_delegate to assign peer to read proof.txt and return its exact content. Choose an explicit available model and effort for peer. After peer returns, use alp_delegate to reviewer with an explicit brief: review the existing proof.txt as the only supplied artifact (there is intentionally no git diff), verify it is a single PROOF_ token, and return its exact content and any finding. No files may be changed. Do not run unrelated tests or git commands. Return the token and actual handoffs.';
   const prompt = workflow === 'supervised'
-    ? `Bounded integration test: delegate exactly one lead with this brief: ${assignment} Main must not call peer directly. Return the proof token and handoffs.`
+    ? `Bounded integration test: delegate exactly one lead and pass it this complete brief verbatim, including the reviewer step: ${assignment} Lead calls both peer and reviewer. Main must not call peer or reviewer directly. Return the proof token and handoffs.`
     : `Bounded integration test in Smart. ${assignment} Also ask oracle once to confirm the simplest approach to verifying a single token file. Choose the highest-capability available model from your runtime catalog with an explicit modelReason and effort; do not inherit a default or silently downgrade. Include the oracle handoff. Do not create lead. Finish once these calls complete.`;
   const result = await agent.run(prompt, { timeoutMs: 360_000 });
   const children = await driver.listProviderSubagents(agent.id);
