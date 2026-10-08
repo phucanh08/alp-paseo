@@ -45,9 +45,12 @@ export type RuntimeOptions = {
 
   /** Starter files for projects without ALP; omitted reads the repository templates. */
   templates?: Record<string, string>;
+};
 
-  /** False when no viewer can show child sessions; delegation is then refused. */
-  subsessions?: boolean;
+export type OpenOptions = {
+  history?: 'replay' | 'skip';
+  /** False when the client cannot show child sessions; delegation is then refused in this tree. */
+  delegation?: boolean;
 };
 
 export type PromptContent = Array<{ type: string; text?: string }>;
@@ -62,7 +65,7 @@ export type PromptInput = {
 export type AlpRuntime = {
   onEvent(listener: (envelope: Envelope) => void): () => void;
   /** Opens a root session under a client-chosen id. */
-  open(sessionId: string, spec: SessionSpec, options?: { history?: 'replay' | 'skip' }): Promise<SessionSnapshot>;
+  open(sessionId: string, spec: SessionSpec, options?: OpenOptions): Promise<SessionSnapshot>;
   /** Failures are reported as prompt.failed, once per clientMessageId. */
   prompt(sessionId: string, input: PromptInput): Promise<void>;
   /** Cancels the running turn and closes the whole subtree. */
@@ -71,6 +74,8 @@ export type AlpRuntime = {
   configure(sessionId: string, changes: { mode?: string }): Promise<SessionSnapshot>;
   close(sessionId: string): Promise<void>;
   snapshot(sessionId: string): SessionSnapshot | undefined;
+  /** Live sessions, roots before their children. */
+  list(): SessionSnapshot[];
   shutdown(): Promise<void>;
 };
 
@@ -89,6 +94,7 @@ type Session = {
   text: Map<string, string>;
 
   spec: SessionSpec;
+  delegation: boolean;
   graph: Record<string, string[]>;
   ancestry: string[];
 
@@ -420,6 +426,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       persistent: session.mapping.persist,
       ...(session.parent ? { parentId: session.parent } : {}),
       ...(session.toolCallId ? { toolCallId: session.toolCallId } : {}),
+      ...(session.active ? { activeTurnId: session.active } : {}),
+      busy: !!(session.active || session.pending || session.children.size || session.assignments.size || hasActiveMail(session)),
     };
   }
 
@@ -1126,7 +1134,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         model,
         thinking,
         mode: childMode,
-      }, 'skip');
+      }, 'skip', session.delegation);
 
       const child = sessions.get(childId);
 
@@ -1195,7 +1203,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     });
   }
 
-  async function openSession(sessionId: string, spec: SessionSpec, history: 'replay' | 'skip'): Promise<SessionSnapshot> {
+  async function openSession(sessionId: string, spec: SessionSpec, history: 'replay' | 'skip', delegation = true): Promise<SessionSnapshot> {
     if (sessions.has(sessionId)) {
       throw new Error(
         'Session is already open',
@@ -1272,6 +1280,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       text: new Map(),
 
       spec,
+      delegation,
       graph,
       ancestry:
         context?.ancestry ??
@@ -1362,7 +1371,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
       if (
         targets.length &&
-        options.subsessions === false
+        !delegation
       ) {
         throw new Error(
           'Host does not support delegated sessions',
@@ -1701,7 +1710,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       };
     },
 
-    open: (sessionId, spec, { history = 'skip' } = {}) => enqueue(() => openSession(sessionId, spec, history)),
+    open: (sessionId, spec, { history = 'skip', delegation = true } = {}) => enqueue(() => openSession(sessionId, spec, history, delegation)),
 
     prompt: (sessionId, input) => enqueue(async () => {
       try {
@@ -1726,6 +1735,12 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     snapshot(sessionId) {
       const session = sessions.get(sessionId);
       return session && !session.closed ? snapshot(sessionId, session) : undefined;
+    },
+
+    list() {
+      const live = [...sessions].filter(([, session]) => !session.closed && session.threadId);
+      const depth = (session: Session) => session.ancestry.length;
+      return live.sort(([, a], [, b]) => depth(a) - depth(b)).map(([id, session]) => snapshot(id, session));
     },
 
     async shutdown() {

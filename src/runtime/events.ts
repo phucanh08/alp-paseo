@@ -35,6 +35,9 @@ export type SessionSnapshot = {
   parentId?: string;
   /** The requester's tool call that started this assignment. */
   toolCallId?: string;
+  activeTurnId?: string;
+  /** A turn, an assignment, a child, or undelivered mail keeps the session working. */
+  busy: boolean;
 };
 
 export type AssignmentSnapshot = {
