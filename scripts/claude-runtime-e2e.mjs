@@ -1,10 +1,13 @@
 // Opt-in real Claude Code check without depending on daemon provider-session generations.
 import assert from 'node:assert/strict';
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { createProvider } from '../plugins/paseo/server/dist/index.js';
 import { PROVIDER_CAPABILITIES } from '@getpaseo/plugin/server/provider';
 
-const root = path.resolve(process.env.ALP_TEST_ROOT ?? '.');
+// Default to an ignored fixture: the provider installs ALP starter files into the project.
+const root = path.resolve(process.env.ALP_TEST_ROOT ?? path.join('.alp-test', `claude-runtime-${Date.now()}`));
+await mkdir(root, { recursive: true });
 const prompt = process.env.ALP_TEST_PROMPT ?? 'Reply with exactly: CLAUDE_ALP_OK';
 const expected = process.env.ALP_TEST_EXPECT ?? 'CLAUDE_ALP_OK';
 const provider = createProvider();
