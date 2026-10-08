@@ -4,5 +4,5 @@
     "strict": true, "noEmit": true, "allowJs": true, "checkJs": false,
     "skipLibCheck": true, "types": ["node"]
   },
-  "include": ["plugins/paseo/server/**/*.ts", "src/**/*.js", "src/**/*.d.ts"]
+  "include": ["plugins/paseo/server/**/*.ts", "src/**/*.ts", "src/**/*.js"]
 }

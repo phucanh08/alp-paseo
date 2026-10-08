@@ -82,7 +82,7 @@ export class CodexTransport {
         label: model.displayName, thinking: model.supportedReasoningEfforts })), usage: codexUsage(usage) };
   }
   async initialize() {
-    await this.request('initialize', { clientInfo: { name: 'alp_paseo', title: 'ALP Paseo', version: '0.0.0' }, capabilities: { experimentalApi: true } });
+    await this.request('initialize', { clientInfo: { name: 'alp', title: 'ALP', version: '0.0.0' }, capabilities: { experimentalApi: true } });
     this.write({ method: 'initialized' });
   }
   onNotification(listener: (method: string, params: any) => void) { this.listeners.add(listener); return () => this.listeners.delete(listener); }

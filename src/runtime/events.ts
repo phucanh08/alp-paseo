@@ -1,0 +1,72 @@
+import type { RuntimeKind } from './resolve.js';
+import type { MailEvent } from './mailbox.js';
+
+/** Provider-neutral session events (plans/reference/ALPD.md §4). Viewers project them; the runtime never imports a viewer. */
+
+export type AlpError = { message: string };
+
+export type TimelineItem =
+  | { kind: 'user_message'; id: string; text: string; clientMessageId?: string }
+  | { kind: 'assistant_message'; id: string; text: string }
+  | {
+      kind: 'tool_call';
+      id: string;
+      callId: string;
+      name: string;
+      status: 'running' | 'completed' | 'failed';
+      error?: string;
+      detail:
+        | { type: 'shell'; command: string; cwd?: string; output: string; exitCode?: number | null }
+        | { type: 'unknown'; input: unknown; output: unknown };
+    };
+
+export type SessionSnapshot = {
+  id: string;
+  projectRoot: string;
+  agent: string;
+  runtime: RuntimeKind;
+  model: string;
+  mode: string;
+  thinking: string;
+  workflow: { mode: string; maxPeers: number };
+  threadId: string;
+  /** The native thread is kept and the session can be resumed. */
+  persistent: boolean;
+  parentId?: string;
+  /** The requester's tool call that started this assignment. */
+  toolCallId?: string;
+};
+
+export type AssignmentSnapshot = {
+  id: string;
+  agent: string;
+  mode: string;
+  status: string;
+  startedAt: string;
+};
+
+export type TurnOrigin = 'user' | 'wake' | 'assignment';
+
+export type AlpEvent =
+  | { type: 'session.opened'; session: SessionSnapshot; cwd: string; effective: { model: string; thinking: string } }
+  | { type: 'session.ready' }
+  | { type: 'session.updated'; session: SessionSnapshot }
+  | { type: 'session.closed' }
+  | { type: 'session.failed'; error: AlpError }
+  | { type: 'prompt.accepted'; clientMessageId: string; result: 'turn' | 'steer'; turnId: string }
+  | { type: 'prompt.failed'; clientMessageId: string; error: AlpError }
+  | { type: 'turn.started'; turnId: string; origin: TurnOrigin }
+  | { type: 'turn.ended'; turnId: string; state: 'completed' | 'failed' | 'canceled'; error?: AlpError }
+  | { type: 'item'; item: TimelineItem }
+  | { type: 'mail'; mail: Omit<MailEvent, 'passive' | 'deliveredTurn'> }
+  | { type: 'assignment'; assignment: AssignmentSnapshot };
+
+export type Envelope = {
+  sessionId: string;
+  /** Random per runtime instance; a cursor from another epoch is stale. */
+  epoch: string;
+  /** Strictly increasing per session. */
+  seq: number;
+  ts: string;
+  event: AlpEvent;
+};

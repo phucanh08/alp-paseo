@@ -1,6 +1,6 @@
 /**
  * Mail between a requester and its live assignments. Routing, delivery and
- * acknowledgement live in the provider; these helpers stay pure.
+ * acknowledgement live in the runtime; these helpers stay pure.
  */
 export type MailKind = 'question' | 'answer' | 'note' | 'steer' | 'result' | 'stalled';
 

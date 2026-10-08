@@ -17,3 +17,5 @@ const embeddedTemplates = {
 };
 
 await build({ entryPoints: ['plugins/paseo/server/index.ts'], outfile: 'plugins/paseo/server/dist/index.js', bundle: true, format: 'esm', platform: 'node', target: 'node20', external: ['@getpaseo/plugin/*', '@anthropic-ai/claude-agent-sdk'], plugins: [embeddedTemplates] });
+// The viewer-neutral runtime on its own, for runtime tests and the coming daemon.
+await build({ entryPoints: ['src/runtime/index.ts'], outfile: 'dist/runtime/index.js', bundle: true, format: 'esm', platform: 'node', target: 'node20', external: ['@anthropic-ai/claude-agent-sdk'] });
