@@ -91,6 +91,7 @@ test('Claude read-only sessions can delegate without plan approval and cannot wr
   }
   assert.equal((await policy.canUseTool('Read', {})).behavior, 'allow');
   assert.equal((await policy.canUseTool('mcp__alp__alp_delegate', {})).behavior, 'allow');
+  assert.equal((await policy.canUseTool('mcp__alp__alp_handoff', {})).behavior, 'allow');
 });
 
 test('Claude live permission gate follows upgrades and downgrades', async () => {

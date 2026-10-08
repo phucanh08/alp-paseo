@@ -19,6 +19,28 @@ type ClaudeQuery = AsyncGenerator<SDKMessage, void> & {
   close(): void;
 };
 
+// Zod mirrors of the provider's dynamic tool schemas; the provider validates again.
+const handoffList = z.array(z.string().min(1)).max(100).optional();
+const toolShapes: Record<string, Record<string, z.ZodType>> = {
+  alp_delegate: {
+    agent: z.string().min(1),
+    task: z.string().min(1).max(32_000),
+    model: z.string().min(1).optional(),
+    thinking: z.string().min(1).optional(),
+    modelReason: z.string().min(1).optional(),
+    mode: z.enum(['read-only', 'workspace-write']).optional(),
+  },
+  alp_handoff: {
+    outcome: z.enum(['complete', 'partial', 'blocked', 'reconsider']),
+    summary: z.string().min(1),
+    candidate: handoffList,
+    scope: handoffList,
+    verification: handoffList,
+    risks: handoffList,
+    ownership: z.string().optional(),
+  },
+};
+
 type Listener = (method: string, params: any) => void;
 type RequestHandler = (method: string, params: any) => Promise<unknown>;
 
@@ -81,7 +103,7 @@ export function claudePermissions(sandbox: string, currentSandbox?: () => string
     ...(readOnly && !currentSandbox ? { tools: readers } : {}),
     disallowedTools: ['Agent', 'Task', 'TeamCreate', 'EnterPlanMode', 'ExitPlanMode'],
     canUseTool: async (name: string, input: Record<string, unknown>) => {
-      if ((currentSandbox ? currentSandbox() === 'read-only' : readOnly) && !readers.includes(name) && name !== 'mcp__alp__alp_delegate') {
+      if ((currentSandbox ? currentSandbox() === 'read-only' : readOnly) && !readers.includes(name) && !name.startsWith('mcp__alp__')) {
         return { behavior: 'deny', message: 'ALP session is read-only' };
       }
       return { behavior: 'allow', updatedInput: input };
@@ -207,22 +229,13 @@ export class ClaudeTransport {
     const mcpServers = this.convertMcp(config.mcpServers);
 
     if (config.dynamicTools.length) {
-      const definition = config.dynamicTools[0];
-      const delegate = tool(
-        definition.name,
-        definition.description,
-        {
-          agent: z.string().min(1),
-          task: z.string().min(1).max(32_000),
-          model: z.string().min(1).optional(),
-          thinking: z.string().min(1).optional(),
-          modelReason: z.string().min(1).optional(),
-          mode: z.enum(['read-only', 'workspace-write']).optional(),
-        },
-        async (args: { agent: string; task: string; mode?: 'read-only' | 'workspace-write' }) => {
+      const tools = config.dynamicTools.map(definition => {
+        const shape = toolShapes[definition.name];
+        if (!shape) throw new Error(`Unsupported ALP tool '${definition.name}'`);
+        return tool(definition.name, definition.description, shape, async (args: Record<string, unknown>) => {
           if (!this.requestHandler || !this.activeTurn) {
             return {
-              content: [{ type: 'text', text: 'Delegation is unavailable' }],
+              content: [{ type: 'text', text: 'ALP tools are unavailable' }],
               isError: true,
             };
           }
@@ -266,12 +279,12 @@ export class ClaudeTransport {
             })),
             isError: result?.success === false,
           };
-        },
-      );
+        });
+      });
       mcpServers.alp = createSdkMcpServer({
         name: 'alp',
         version: '0.0.0',
-        tools: [delegate],
+        tools,
       });
     }
 
