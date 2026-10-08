@@ -160,7 +160,7 @@ const SEND_TOOL = {
   inputSchema: {
     type: 'object',
     properties: {
-      to: { type: 'string', description: 'An assignment id you started, or "parent".' },
+      to: { type: 'string', description: 'An assignment id you started (or its agent name when only one is live), or "parent".' },
       kind: { type: 'string', enum: ['answer', 'note', 'steer'], description: 'answer replies to a question (needs replyTo); steer changes an instruction (requester only); note is information.' },
       body: { type: 'string' },
       replyTo: { type: 'string', description: 'Question id, for example #4.' },
@@ -979,15 +979,18 @@ export function createProvider(options: Options = {}): ProviderRegistration {
           if (args.kind !== 'note') return toolResult(false, { error: 'Mail to your requester is a note; ask with alp_ask and report with alp_handoff' });
           return toolResult(true, { sent: post(session.parent, { kind: 'note', from, assignment: sessionId, body: args.body }).id });
         }
-        const assignment = session.assignments.get(args.to);
+        // Models often address an assignment by its agent name; accept that when it is unambiguous.
+        const named = [...session.assignments.values()].filter(candidate => candidate.agent === args.to);
+        const assignment = session.assignments.get(args.to) ?? (named.length === 1 ? named[0] : undefined);
+        if (named.length > 1) return toolResult(false, { error: `Several live ${args.to} assignments; use the assignment id` });
         if (!assignment) return toolResult(false, { error: 'Not one of your live assignments; other agents are reached through your requester' });
         if (args.kind === 'answer') {
           if (!assignment.ask || args.replyTo !== assignment.ask.id) return toolResult(false, { error: 'No pending question with that replyTo on this assignment' });
-          runLog(rootOf(sessionId), { event: 'mail', to: args.to, kind: 'answer', from, assignment: args.to, replyTo: args.replyTo, body: args.body });
+          runLog(rootOf(sessionId), { event: 'mail', to: assignment.id, kind: 'answer', from, assignment: assignment.id, replyTo: args.replyTo, body: args.body });
           assignment.ask.resolve(toolResult(true, { status: 'answered', from, answer: args.body }));
           return toolResult(true, { sent: true, replyTo: args.replyTo });
         }
-        return toolResult(true, { sent: post(args.to, { kind: args.kind, from, assignment: args.to, body: args.body, ...(args.replyTo ? { replyTo: args.replyTo } : {}) }).id });
+        return toolResult(true, { sent: post(assignment.id, { kind: args.kind, from, assignment: assignment.id, body: args.body, ...(args.replyTo ? { replyTo: args.replyTo } : {}) }).id });
       }
 
       function askTool(sessionId: string, session: Session, args: unknown) {
