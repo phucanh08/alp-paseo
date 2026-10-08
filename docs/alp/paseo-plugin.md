@@ -74,7 +74,7 @@ Installation commands above target the selected user's daemon. Implementation ve
 | Thinking | Explicit session choice → ALP reasoning → `medium`; `none`, `low`, `medium`, `high`, `xhigh`, `max` |
 | Mode | `read-only` by default; `workspace-write` also supported; unsupported modes fail |
 | Approval | `never`; interactive approval and per-tool policy are not advertised and are rejected |
-| Persistence | Paseo stores only versioned thread ID, agent identity and project root; Codex owns conversation storage |
+| Persistence | Paseo stores versioned thread ID, agent identity, project root, runtime/model and workflow snapshot; the native runtime owns conversation storage |
 | Refresh | Close then resume; reread ALP files and current launch config. Cross-project or cross-agent resume fails |
 | Prompt | Text only; one result per message ID; duplicate IDs in the live session do not re-execute |
 | Steering/cancel | Codex `turn/steer` and `turn/interrupt`; terminal events are deduplicated |

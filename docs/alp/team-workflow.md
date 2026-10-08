@@ -1,131 +1,132 @@
-# Main, lead, and peer on Paseo
+# Smart and Supervised workflows
 
-The normal conversation is user -> main -> lead -> peer. Results return through
-lead to main. Main owns delivery, decisions within the user's scope, and the final
-answer. It can implement, integrate, and unblock as well as supervise. Lead owns
-technical execution and reviews peer candidates. Peer executes a bounded brief.
-Main reviews lead-authored work; main-authored work should receive independent
-review, and missing review must be disclosed. User constraints still govern all roles.
+ALP has five filesystem-defined agents: main, lead, peer, oracle, and reviewer.
+The workflow is separate from Paseo's read-only/workspace-write permission mode.
 
-The reference is [alp-claude at f5f38dd](https://github.com/phucanh08/alp-claude/tree/f5f38dd5428866cd846b761fa15062c43a4d71cf), particularly
-[lead](https://github.com/phucanh08/alp-claude/blob/f5f38dd5428866cd846b761fa15062c43a4d71cf/agents/lead.md),
-[peer](https://github.com/phucanh08/alp-claude/blob/f5f38dd5428866cd846b761fa15062c43a4d71cf/agents/peer.md), and
-[supervisor](https://github.com/phucanh08/alp-claude/blob/f5f38dd5428866cd846b761fa15062c43a4d71cf/agents/supervisor.md).
-This adaptation keeps bounded ownership and evidence-based handoffs. The requested
-main role adds delivery and implementation authority beyond the reference's observer
-supervisor. Claude-specific tools, skills, memory layout, and mailbox scripts are
-not copied into the provider-neutral templates.
+| Workflow | Technical coordinator | Execution | Separate supervisor |
+| --- | --- | --- | --- |
+| Smart (new project default) | main | main or peer | none |
+| Supervised | lead | lead or peer | main |
 
-The workflow methods are now available as provider-neutral [role skills](role-skills.md),
-loaded only when needed: six for main, five for lead, and three for peer.
+Smart does not spawn lead. Supervised main delegates execution to lead, never
+straight to peer. Main and lead can ask oracle or reviewer; these advisors return
+once to their requester and cannot delegate. Lead can implement small tasks itself.
 
-## Initialize or migrate
+Oracle advises on significant uncertainty, architecture, or difficult bugs.
+Reviewer reviews one diff for logic changes and risky changes; trivial formatting
+or typo changes can skip review. These call decisions are agent instructions, not
+an automatic mandatory review gate.
 
-From this repository:
+## Select a workflow
 
-```powershell
-node src/cli.js init D:\Projects\my-project
-# For older main-only or team scaffolds:
-node src/cli.js upgrade D:\Projects\my-project
-```
-
-`init` never overwrites existing files. `upgrade` recognizes the original ALP.md and
-main/AGENT.md as well as the shipped team-v1 role definitions, backs them up under
-`.alp/backups/upgrade-*`, and replaces them with the new templates. Both commands add
-missing role skills and references. Upgrade adds delegation settings only if the field is absent, preserving
-runtime/default-agent settings. Custom instructions and delegation graphs are left
-unchanged; reconcile customized role instructions with `templates/` when reported.
-Existing custom lead/peer definitions are also preserved. Repeating upgrade is safe.
-
-New settings:
+New project `.alp/settings.json`:
 
 ```json
 {
   "defaultAgent": "main",
-  "delegation": { "main": ["lead"], "lead": ["peer"] }
+  "workflow": { "mode": "smart", "maxPeers": 2 }
 }
 ```
 
-The graph authorizes edges; folders remain the agent registry. Names are not fixed
-in the resolver or runtime. Missing delegation configuration means no authorized
-targets. A project can add custom names and an acyclic routing graph.
+Set `workflow.mode` to `supervised` before creating a new session, or override it
+for a single session through the public Paseo client:
 
-## Run on the existing isolated test daemon
-
-Prerequisite: the daemon at 127.0.0.1:16767 is running with ALP enabled and Codex
-authentication available. On this workspace's Windows machine, Node 24 is installed
-at the path below; the PATH Node/npm combination may be incompatible.
-
-```powershell
-cd D:\Projects\alp-workspace
-$node = 'C:\Users\anhlp\tools\node24\node.exe'
-$paseo = '.tools/paseo/node_modules/@getpaseo/cli/bin/paseo'
-& $node scripts/build-paseo.mjs
-& $node $paseo plugin reload alp-provider --host 127.0.0.1:16767
-& $node src/cli.js init .alp-test/manual-team
-& $node $paseo run --host 127.0.0.1:16767 --provider alp/gpt-5.6-sol --mode workspace-write --thinking low --cwd D:\Projects\alp-workspace\.alp-test\manual-team "Main: giao Lead tổ chức Peer tạo hello.txt chứa Hello ALP, kiểm tra kết quả rồi báo lại cho tôi."
+```js
+const agent = await client.agents.create({
+  cwd: '/absolute/project',
+  config: {
+    provider: 'alp/codex:gpt-6.1-sol',
+    modeId: 'workspace-write',
+    options: { agent: 'main', workflow: 'supervised' },
+  },
+});
 ```
 
-Use read-only mode for research/review tasks. A role's expanded authority does not
-grant write access in read-only mode. Normal requests go to main; explicitly selecting
-`providerOptions.agent` remains available for exceptional direct lead/peer sessions.
+The provider also accepts `settings.workflow` in its native `session.open` contract.
+Workflow and peer limit are persisted; resume cannot change the workflow, and child
+sessions inherit the parent's snapshot. Start a new session for changes. The
+session configuration reports the selected workflow; this release does not support
+changing it through an in-session settings control. No custom Desktop UI is added.
 
-## Runtime behavior
+Default maximum simultaneous peers is **2**. Increase `workflow.maxPeers` only at
+the user's request, then start a new session. Peer limits count across the root
+session's live tree. Advisors and lead do not consume peer slots. Concurrent peer
+assignments must be read-only: writing assignments in the shared checkout are
+serialized. There is no automatic worktree isolation or parallel writer support.
 
-Paseo's provider registers a dynamic `alp_delegate` tool for agents with configured
-targets. The adapter uses the experimental Codex app-server
-[dynamic tool protocol](https://learn.chatgpt.com/docs/app-server#dynamic-tool-calls-experimental),
-verified against the installed binary's generated protocol. Arguments are `agent`,
-`task` (self-contained brief), and optional `mode` (`read-only` or `workspace-write`).
-Identity, root, and permissions come from the caller session, never from model-supplied
-sender metadata. Native multi-agent spawning is disabled for these threads.
+## Assignment and model selection
 
-Each call creates a separate Codex process/thread with the selected agent's own
-instructions, skills index, and MCP configuration, plus inherited host context,
-model, reasoning, environment, and permission mode. A caller may narrow the child
-to read-only. A read-only caller cannot create a workspace-write child.
+`alp_delegate` accepts `agent`, `task`, and optional `mode`, `model`, `thinking`,
+and `modelReason`. Model IDs are runtime-prefixed (`codex:…` or `claude:…`). Main
+chooses peer model/effort in Smart; lead chooses them in Supervised. Omitted peer
+choices inherit the parent model/effort; specifying a different model without an
+effort uses that model's configured/default effort. Invalid choices fail explicitly.
 
-Paseo receives actual child `session.opened` events with `parentSessionId` and
-`toolCallId`; it can display their timelines. The caller waits for the child handoff
-and receives its session/thread IDs, status, and actual assistant output. This
-transport result is not an acceptance verdict: lead/main still review the evidence.
+Oracle requires an explicit model, effort, and nonempty selection rationale. Its
+instructions require the highest-capability available model, assessed from runtime
+catalog descriptions; there is no fixed premium model name. The host enforces
+explicit selection, not a universal model-quality ranking. Catalog data may not
+establish a ranking or guarantee quota access; the coordinator must state uncertainty
+and must not silently downgrade. There is no automatic fallback model on failure.
+Both oracle and reviewer are forced to read-only regardless of parent permissions.
 
-Each parent has one active child. Repeated tool-call IDs reuse the result. The graph
-must be acyclic, the maximum chain is four agents, and each root turn permits at most
-sixteen child assignments. Each child task times out after ten minutes. A child closes
-on handoff or failure. Interrupting/closing a parent closes its descendants; steering
-cancels descendants before applying the changed brief to the parent.
+Every assignment has its own native runtime session and ALP instructions. The
+caller waits for the real handoff. Child timelines identify parent session and tool
+call. Duplicate tool calls are deduplicated; cancellation, steering, timeout, and
+parent shutdown close descendants. The existing maximum of 16 child assignments
+per root turn and ancestry depth of 4 remain in effect.
 
-## Limits
+## Catalog and usage context
 
-- This is synchronous delegation, not an asynchronous mailbox or a persistent worker
-  pool. A follow-up assignment creates a new child; include prior findings in its brief.
-- Main and child transcripts are separate. Completed results enter the parent's
-  persisted tool history; active child execution is not restored after daemon restart.
-- Reload rereads routing authorization. Dynamic tool registration is stored in the
-  native thread; start a fresh main session when first enabling delegation or changing
-  the available target list.
-- The first version uses one project root and shared checkout. Agents must respect
-  writer ownership; arbitrary shell commands and per-file scopes are not enforced
-  as a security boundary by role prose. Independent top-level sessions can still
-  conflict if the user starts concurrent writers in the same checkout.
-- The experimental runtime protocol may require adaptation with a different Codex
-  version. No standalone ACP surface or Claude Agent Teams dependency was added.
+Before each native turn, the provider adds a timestamped snapshot for that session's
+runtime, separately from the user's brief:
 
-## Repeat verification
+- Codex: `model/list` and `account/rateLimits/read`; plan, utilization, remaining
+  percentage, reset timestamps, and ordinary-usage permission when supplied.
+- Claude: SDK `supportedModels()` and the optional experimental usage API; plan,
+  utilization, remaining percentage, and reset timestamps when supplied.
 
-```powershell
-& $node scripts/build-paseo.mjs
-& $node --test
-& $node node_modules/typescript/bin/tsc -p tsconfig.paseo.json
-# Real model calls, already-running isolated daemon required:
-& $node scripts/team-e2e.mjs
-& $node scripts/team-e2e.mjs --write
+Account identifiers, email, credentials, and billing details are not included.
+Reads are bounded and failures produce `available: false`; no quota is invented.
+Codex catalog snapshots report whether pagination is complete. These are advisory
+snapshots, not reservations or a guarantee that a future call will avoid rate limits.
+A parent does not query another provider's account to select a cross-runtime child.
+Claude's experimental usage API may be unavailable for some versions/accounts.
+
+## Initialize and migrate
+
+```sh
+node src/cli.js init /absolute/project
+node src/cli.js upgrade /absolute/existing-project
+npm run build
+paseo plugin reload alp-provider
 ```
 
-Read-only E2E checks a fresh peer-only token returned through two real child sessions,
-Paseo's child-session listing, and byte-for-byte preservation of project files.
-Write E2E uses the shipped role templates, asks peer to create one exact-content file,
-and checks that all other project files remain unchanged. Evidence is written to
-`.alp-test/team-e2e.json` and `.alp-test/team-write-e2e.json`. Test agents are archived
-afterward; fixture projects and evidence are retained locally.
+`init` fills missing files without replacing user content. `upgrade` backs up and
+updates recognized shipped instructions, adds oracle/reviewer, and preserves custom
+instructions and skills. Projects with the old shipped main → lead → peer graph
+migrate to Supervised; older projects without routing migrate to Smart. Explicit
+custom graphs remain unchanged and continue using legacy custom routing unless a
+workflow is explicitly selected. Existing projects are not silently rewritten on
+plugin reload. Reconcile any customized instructions reported by upgrade yourself.
+
+## Live verification
+
+Run the opt-in real-model smoke tests against a running daemon (default loopback
+port 6767):
+
+```sh
+npm run test:e2e:workflow
+ALP_TEST_PROVIDER=alp/claude:sonnet node scripts/workflow-e2e.mjs smart
+```
+
+They create isolated fixture directories under ignored `.alp-test/`, inspect actual
+child sessions and parent relationships, compare project files before/after, save
+local evidence, and archive the test agents. They make real model calls.
+
+Claude read-only uses an explicit read-tool allowlist rather than Plan mode, so
+advisors can read and delegate without asking to exit a plan or writing plan files.
+Shell tools are unavailable in these sessions: supply a diff in the review brief
+or as a readable artifact when reviewing a Git change. Claude executables are
+resolved from PATH (or `ALP_CLAUDE_BIN`) and passed explicitly to the SDK to avoid
+trying to execute bundled binaries inside Paseo Desktop's Electron archive.

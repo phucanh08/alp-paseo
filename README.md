@@ -8,15 +8,15 @@ Run `node /path/to/alp/src/cli.js init [directory]` (or `alp init [directory]` w
 
 When the Paseo plugin opens an ALP session in a repository that lacks `ALP.md` or the starter `main` agent, it performs this initialization automatically. Initialization fills missing scaffold files and never replaces existing files, so partial and customized ALP setups are preserved.
 
-Initialization creates `ALP.md`, `.alp/settings.json`, and three editable agent packages: `main`, `lead`, and `peer`, each containing `AGENT.md`, assigned workflow skills, an empty `hooks/` directory, and `.mcp.json` with `{ "mcpServers": {} }`. Main is the active supervisor and normal user-facing owner; lead runs technical execution; peer handles bounded assignments.
+Initialization creates `ALP.md`, `.alp/settings.json`, and five editable agent packages: `main`, `lead`, `peer`, `oracle`, and `reviewer`, each containing `AGENT.md`, assigned workflow skills, an empty `hooks/` directory, and `.mcp.json` with `{ "mcpServers": {} }`. Main owns delivery; Smart lets main implement or call peer, while Supervised assigns technical execution to lead. Oracle and reviewer provide read-only advice and review.
 
-The default settings select main and authorize `main -> lead -> peer`. Paseo exposes an `alp_delegate` tool that executes real child sessions and returns their evidence. See [team workflow and migration](docs/alp/team-workflow.md).
+The default settings select main with the Smart workflow. Paseo exposes an `alp_delegate` tool that executes real child sessions and returns their evidence. See [team workflow and migration](docs/alp/team-workflow.md).
 
 Six [role skills](docs/alp/role-skills.md) cover intake, research, planning, delegation briefs, bug diagnosis, and commit packaging. Main receives six, lead five, and peer three; each agent selects directly from its scoped skills and loads contents only when needed.
 
 Repeated runs fill in missing files and preserve existing file contents, including custom settings. Conflicting filesystem entry types cause an error; files already created before an error remain available for a later retry. Run `npm run test:init` to verify initialization independently.
 
-For projects created with the original main-only or team scaffold, run `node /path/to/alp/src/cli.js upgrade [directory]`. This installs missing skills, backs up and updates recognized original instructions, and adds delegation to settings when absent. Customized instructions/skills and existing delegation graphs remain unchanged.
+For projects created with the original main-only or team scaffold, run `node /path/to/alp/src/cli.js upgrade [directory]`. This installs missing skills, backs up and updates recognized original instructions, and adds workflow settings. The old shipped graph migrates to Supervised; custom graphs and customized instructions/skills remain unchanged.
 
 ## Development
 
@@ -53,7 +53,7 @@ Example `.alp/settings.json`:
 ```json
 {
   "defaultAgent": "main",
-  "delegation": { "main": ["lead"], "lead": ["peer"] },
+  "workflow": { "mode": "smart", "maxPeers": 2 },
   "runtime": { "provider": "codex", "model": "gpt-5.6-sol", "reasoning": "low" }
 }
 ```
@@ -65,7 +65,7 @@ For example, select Claude Code and one of its model aliases in `.alp/settings.j
 ```json
 {
   "defaultAgent": "main",
-  "delegation": { "main": ["lead"], "lead": ["peer"] },
+  "workflow": { "mode": "smart", "maxPeers": 2 },
   "runtime": { "provider": "claude", "model": "sonnet", "reasoning": "high" }
 }
 ```
@@ -128,3 +128,14 @@ paseo plugin reload alp-provider
 ```
 
 If loading fails, inspect the plugin process output with `paseo plugin logs alp-provider`. A full daemon restart is not required for source changes.
+
+### Smart and Supervised
+
+New projects default to Smart: main works directly or delegates to peer. Supervised
+keeps main as supervisor while lead implements or delegates. Both use read-only
+oracle/reviewer. Select at session creation with `options.workflow`, or set
+`.alp/settings.json` → `workflow.mode`. The default concurrent peer limit is 2;
+raise `workflow.maxPeers` only at the user's request. Shared-checkout writers remain
+serialized. Oracle requires an explicit premium model choice and effort, without
+hardcoded model names. Runtime catalog and available plan/usage snapshots inform
+coordination. See [workflow configuration and migration](docs/alp/team-workflow.md).
