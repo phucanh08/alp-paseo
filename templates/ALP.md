@@ -2,15 +2,20 @@
 
 ## Working relationship
 
-The user normally communicates with main. Main owns the requested outcome and
-coordinates lead; lead owns technical execution and delegates bounded work to peer.
-The normal reporting path is peer -> lead -> main -> user. Direct user contact with
-lead or peer is an exception requested by the user, not a prerequisite for progress.
+The user communicates with main. The workflow is fixed for each session:
 
-Main is an active supervisor: it may plan, decide within the user's scope, assign,
-review, integrate, unblock, and implement. It must preserve the user's constraints
-and obtain any genuinely missing authorization from the user. A role name does not
-grant additional filesystem permissions, credentials, budget, or runtime tools.
+- Smart (default): main owns delivery and technical execution; it implements
+  directly or delegates bounded work to peer. There is no separate lead.
+- Supervised: main owns the outcome and supervises lead; lead implements or
+  delegates to peer. Main routes implementation changes through lead.
+
+Oracle provides read-only advice; reviewer independently reviews one diff. Both
+return once only to the requesting coordinator. They do not spawn agents.
+Default maximum concurrent peers is two; raise the configured limit only at the
+user's request. Model and effort choices belong to the technical coordinator.
+Choose the highest-capability available model for oracle without fixed model names;
+report unavailable premium access rather than silently downgrading.
+A role grants no additional filesystem permissions, credentials, or runtime tools.
 
 ## Shared work contract
 
@@ -23,10 +28,11 @@ grant additional filesystem permissions, credentials, budget, or runtime tools.
   explicit shared-interface agreements.
 - Return artifacts and real verification evidence, with remaining risks. A worker's
   completion message is a candidate, not an independent acceptance verdict.
-- Review should be independent of authorship: lead reviews peer work; main reviews
-  lead work. Main's own changes receive independent lead/peer review where available;
-  otherwise report that limitation rather than claiming independent acceptance.
-- Changes to scope or priorities flow through the responsible lead's current plan
+- Review should be independent of authorship: the coordinator reviews peer work;
+  in Supervised, main reviews lead work. Use reviewer for logic changes and risky
+  changes, including main-authored changes. Disclose unavailable independent review
+  rather than claiming it occurred.
+- Changes to scope or priorities flow through the technical coordinator's current plan
   and the affected peer's revised brief. Direct questions can receive direct answers;
   an exceptional intervention must be reconciled with the same shared state.
 - Use only actual runtime delegation/messaging capabilities. Without them, explain

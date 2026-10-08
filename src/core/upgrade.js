@@ -12,9 +12,10 @@ const legacy = {
 // SHA-256 of shipped role definitions after CRLF normalization. Custom
 // definitions do not match and remain untouched. Keep historical IDs immutable.
 const teamV1 = {
-  '.alp/agents/main/AGENT.md': ['e7201a1ed7800d7500b5c8091bd8a435aa9d5138f247c2b02b8bf76299387c90', '5001b807bbb686aa1a3b7ecadf9501428909e052e8231281454fd41cbe0ebf27', '90f9903fcc97ddf6336e1a28b81103dddc60a6038dcf74d326be8998862cb022'],
-  '.alp/agents/lead/AGENT.md': ['2eef2a4474f757cd89b35b50638a1b23fe49a54c26bf0dedb24a96d7117ddd92', '6c71393c9b3aa655c4731bda96396ea3ec0d4da62cddb3ad50d1a24113416b77'],
-  '.alp/agents/peer/AGENT.md': ['39ccf3317eba3003faad77ebad4489fae3eb3c4d89258a03f619d1d3d65af0b7', 'c59e45e8f22eb0daca9b8b5e1b19e90666156807f160e75a21eca48b5fee1102'],
+  'ALP.md': ['c2785aac6538d10e79bd6fb59b11066ccdec77287edf950fad59aa57bf3417f1'],
+  '.alp/agents/main/AGENT.md': ['15d217cbc5ede782790d1086124598d9a2b5ff13bcf971a37231962fcef1b47c', 'e7201a1ed7800d7500b5c8091bd8a435aa9d5138f247c2b02b8bf76299387c90', '5001b807bbb686aa1a3b7ecadf9501428909e052e8231281454fd41cbe0ebf27', '90f9903fcc97ddf6336e1a28b81103dddc60a6038dcf74d326be8998862cb022'],
+  '.alp/agents/lead/AGENT.md': ['c259b085a3c102445f97e5c7d402ca68347bcc1a9b02d6ab96e02be6d8b6f9af', '2eef2a4474f757cd89b35b50638a1b23fe49a54c26bf0dedb24a96d7117ddd92', '6c71393c9b3aa655c4731bda96396ea3ec0d4da62cddb3ad50d1a24113416b77'],
+  '.alp/agents/peer/AGENT.md': ['f3dcf16c8c899a5378a468e922ca3956fd72cbb3e3798ed1109f11e01aa8f476', '39ccf3317eba3003faad77ebad4489fae3eb3c4d89258a03f619d1d3d65af0b7', 'c59e45e8f22eb0daca9b8b5e1b19e90666156807f160e75a21eca48b5fee1102'],
 };
 
 /** Explicit migration of the original scaffold; custom instructions remain owned by the user. */
@@ -55,8 +56,10 @@ export async function upgradeProject(projectRoot) {
     if (current !== desired && known) await replace(name, current, desired);
     else if (current !== desired) result.customInstructions.push(name);
   }
-  if (settings !== undefined && settings.delegation === undefined) {
-    await replace('.alp/settings.json', settingsText, JSON.stringify({ ...settings, delegation: { main: ['lead'], lead: ['peer'] } }, null, 2) + '\n');
+  const oldGraph = settings?.delegation;
+  const shippedGraph = oldGraph && Object.keys(oldGraph).length === 2 && JSON.stringify(oldGraph.main) === '["lead"]' && JSON.stringify(oldGraph.lead) === '["peer"]';
+  if (settings !== undefined && settings.workflow === undefined && (oldGraph === undefined || shippedGraph)) {
+    await replace('.alp/settings.json', settingsText, JSON.stringify({ ...settings, ...(shippedGraph ? { delegation: undefined } : {}), workflow: { mode: shippedGraph ? 'supervised' : 'smart', maxPeers: 2 } }, null, 2) + '\n');
   }
   // Retire only the exact previously shipped router; archive it outside discovery.
   for (const role of ['main', 'lead', 'peer']) {

@@ -45,3 +45,14 @@ test('transport answers dynamic tool requests while rejecting approval requests'
   assert.deepEqual(await transport.request('probe', {}, 2000), { approvalRejected: true });
   assert.equal(calls, 1);
 });
+
+test('optional catalog/usage timeout does not close a healthy runtime', async t => {
+  const script = `require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+    const m = JSON.parse(line);
+    if (m.method === 'probe') console.log(JSON.stringify({ id: m.id, result: { alive: true } }));
+  });`;
+  const transport = new CodexTransport(process.execPath, process.cwd(), {}, ['-e', script]);
+  t.after(() => transport.close());
+  await assert.rejects(transport.request('account/rateLimits/read', {}, 50, false), /timed out/);
+  assert.deepEqual(await transport.request('probe', {}, 2000), { alive: true });
+});

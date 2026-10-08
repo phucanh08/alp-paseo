@@ -120,7 +120,7 @@ test('lifecycle: open, prompt, steering, cancellation, persistence/reload preser
   await conn.send({ type: 'session.interrupt', sessionId: 's', requestId: 'stop' });
   assert.equal(events.filter(e => e.type === 'session.turn' && e.state === 'canceled').length, 1);
   const persistence = events.find(e => e.type === 'session.opened').persistence;
-  assert.deepEqual(Object.keys(persistence.data).sort(), ['agent', 'cwd', 'model', 'runtime', 'threadId']);
+  assert.deepEqual(Object.keys(persistence.data).sort(), ['agent', 'cwd', 'model', 'runtime', 'threadId', 'workflow']);
   await conn.send({ type: 'session.close', sessionId: 's', requestId: 'close' });
   assert.equal(runtimes[0].closed, true);
   await writeFile(path.join(root, 'ALP.md'), 'Updated project');

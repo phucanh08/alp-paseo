@@ -1,6 +1,8 @@
 /** Disk configuration; no provider SDK types. */
 export interface RawSettings {
   defaultAgent?: string;
+  workflow?: { mode?: 'smart' | 'supervised'; maxPeers?: number };
+  delegation?: Record<string, string[]>;
   runtime?: { provider?: string; model?: string; reasoning?: string };
 }
 export interface RawMcpServer {

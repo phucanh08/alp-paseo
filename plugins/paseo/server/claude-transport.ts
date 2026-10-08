@@ -1,3 +1,6 @@
+import { accessSync, constants, realpathSync, statSync } from 'node:fs';
+import path from 'node:path';
+import { optionalRead, claudeUsage } from './runtime-context.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
@@ -9,6 +12,8 @@ const CLAUDE_SDK = ['@anthropic-ai', 'claude-agent-sdk'].join('/');
 type SDKUserMessage = any;
 type SDKMessage = any;
 type ClaudeQuery = AsyncGenerator<SDKMessage, void> & {
+  supportedModels(): Promise<Array<{ value: string; displayName: string; description: string; supportedEffortLevels?: string[] }>>;
+  usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(options: { skipBehaviors: boolean }): Promise<any>;
   interrupt(): Promise<unknown>;
   close(): void;
 };
@@ -64,6 +69,24 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
   }
 }
 
+export function claudePermissions(sandbox: string) {
+  const readOnly = sandbox === 'read-only';
+  const readers = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'];
+  return {
+    // Plan mode permits writes to plan files and requires ExitPlanMode approval.
+    // Restrict the built-in tool surface instead; MCP calls still pass the gate.
+    permissionMode: readOnly ? 'default' : 'acceptEdits',
+    ...(readOnly ? { tools: readers } : {}),
+    disallowedTools: ['Agent', 'Task', 'TeamCreate', 'EnterPlanMode', 'ExitPlanMode'],
+    canUseTool: async (name: string, input: Record<string, unknown>) => {
+      if (readOnly && !readers.includes(name) && name !== 'mcp__alp__alp_delegate') {
+        return { behavior: 'deny', message: 'ALP session is read-only' };
+      }
+      return { behavior: 'allow', updatedInput: input };
+    },
+  };
+}
+
 /** Maps Claude Agent SDK streaming sessions to the normalized runtime protocol. */
 export class ClaudeTransport {
   private listeners = new Set<Listener>();
@@ -84,11 +107,29 @@ export class ClaudeTransport {
     private readonly cwd: string,
     private readonly env: NodeJS.ProcessEnv,
   ) {
-    if (/\.(cmd|bat|ps1)$/i.test(command)) {
+    if (!path.isAbsolute(command)) {
+      const names = process.platform === 'win32' && !path.extname(command) ? [command, `${command}.exe`] : [command];
+      const candidates = (env.PATH ?? '').split(path.delimiter).filter(Boolean).flatMap(directory => names.map(name => path.resolve(directory, name)));
+      const executable = candidates.find(candidate => {
+        try { accessSync(candidate, constants.X_OK); return statSync(candidate).isFile(); } catch { return false; }
+      });
+      if (!executable) throw new Error('Claude executable not found on PATH; set ALP_CLAUDE_BIN to an absolute native executable');
+      this.command = realpathSync(executable);
+    }
+    if (/\.(cmd|bat|ps1)$/i.test(this.command)) {
       throw new Error('Claude executable must be a native binary, not a shell launcher');
     }
   }
 
+  async orchestrationContext() {
+    const [catalog, usage] = await Promise.all([
+      optionalRead(async () => this.query ? this.query.supportedModels() : undefined),
+      optionalRead(async () => this.query ? this.query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true }) : undefined),
+    ]);
+    return { runtime: 'claude', observedAt: new Date().toISOString(), catalogAvailable: Array.isArray(catalog),
+      models: (catalog ?? []).map(model => ({ id: `claude:${model.value}`, label: model.displayName,
+        description: model.description, thinking: model.supportedEffortLevels })), usage: claudeUsage(usage) };
+  }
   async initialize() {}
 
   onNotification(listener: Listener) {
@@ -164,6 +205,9 @@ export class ClaudeTransport {
         {
           agent: z.string().min(1),
           task: z.string().min(1).max(32_000),
+          model: z.string().min(1).optional(),
+          thinking: z.string().min(1).optional(),
+          modelReason: z.string().min(1).optional(),
           mode: z.enum(['read-only', 'workspace-write']).optional(),
         },
         async (args: { agent: string; task: string; mode?: 'read-only' | 'workspace-write' }) => {
@@ -230,27 +274,16 @@ export class ClaudeTransport {
       thinking: ['none', 'off'].includes(config.thinking) ? { type: 'disabled' } : { type: 'adaptive' },
       ...(config.thinking === 'ultracode' ? { settings: { ultracode: true } } : {}),
       systemPrompt: config.developerInstructions,
-      permissionMode: config.sandbox === 'read-only' ? 'plan' : 'acceptEdits',
-      canUseTool: async (name: string, input: Record<string, unknown>) => {
-        if (config.sandbox === 'read-only') {
-          const allowed = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'];
-          if (!allowed.includes(name) && name !== 'mcp__alp__alp_delegate') {
-            return { behavior: 'deny', message: 'ALP session is read-only' };
-          }
-        }
-        return { behavior: 'allow', updatedInput: input };
-      },
+      ...claudePermissions(config.sandbox),
       mcpServers,
       strictMcpConfig: true,
       settingSources: [],
-      disallowedTools: ['Agent', 'Task', 'TeamCreate'],
       persistSession: !config.ephemeral,
       promptSuggestions: false,
       includePartialMessages: false,
       ...(resume ? { resume: this.threadId } : { sessionId: this.threadId }),
-      ...(this.command !== 'claude'
-        ? { pathToClaudeCodeExecutable: this.command }
-        : {}),
+      // Explicit native path avoids SDK optional binaries inside Electron app.asar.
+      pathToClaudeCodeExecutable: this.command,
     };
 
     this.query = query({ prompt: this.input, options }) as ClaudeQuery;

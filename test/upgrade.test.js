@@ -22,7 +22,7 @@ test('upgrade backs up original scaffold, enables routing, and preserves runtime
   assert.equal(await readFile(path.join(result.backup, '.alp/settings.json'), 'utf8'), '{"defaultAgent":"main","runtime":{"model":"my-model"}}');
   const settings = JSON.parse(await readFile(path.join(root, '.alp/settings.json'), 'utf8'));
   assert.equal(settings.runtime.model, 'my-model');
-  assert.deepEqual(settings.delegation, { main: ['lead'], lead: ['peer'] });
+  assert.deepEqual(settings.workflow, { mode: 'smart', maxPeers: 2 });
   assert.deepEqual((await upgradeProject(root)).updated, []);
 });
 test('upgrade preserves customized instructions and routing', async t => {

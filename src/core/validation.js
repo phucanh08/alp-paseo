@@ -12,6 +12,12 @@ export function validateSettings(settings, source) {
   const check = (ok, message) => requireValue(ok, 'INVALID_SETTINGS', source, message);
   check(object(settings), 'expected an object');
   if (settings.defaultAgent !== undefined) check(nonempty(settings.defaultAgent), 'defaultAgent must be a nonempty string');
+  if (settings.workflow !== undefined) {
+    check(object(settings.workflow), 'workflow must be an object');
+    check(Object.keys(settings.workflow).every(key => ['mode', 'maxPeers'].includes(key)), 'unsupported workflow field');
+    if (settings.workflow.mode !== undefined) check(['smart', 'supervised'].includes(settings.workflow.mode), 'workflow.mode must be smart or supervised');
+    if (settings.workflow.maxPeers !== undefined) check(Number.isSafeInteger(settings.workflow.maxPeers) && settings.workflow.maxPeers > 0, 'workflow.maxPeers must be a positive integer');
+  }
   const runtime = settings.runtime ?? {};
   if (settings.runtime !== undefined) check(object(settings.runtime), 'runtime must be an object');
   for (const key of Object.keys(runtime)) {

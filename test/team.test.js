@@ -16,12 +16,14 @@ async function setup(t, options = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'alp-team-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await initProject(root);
+  await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify(options.workflow ? { workflow: { mode: options.workflow, maxPeers: options.maxPeers ?? 2 } } : { delegation: { main: ['lead'], lead: ['peer'] } }));
   const runtimes = [];
   const provider = createProvider({ delegationTimeoutMs: options.timeout ?? 2000, transport: () => {
     const index = runtimes.length;
     const runtime = {
       calls: [], closed: false, threadId: `thread-${index}`, turnId: `turn-${index}`, notifications: [],
       async initialize() { if (index > 0 && options.childGate) await options.childGate; },
+      async orchestrationContext() { return { runtime: 'codex', usage: { available: false }, models: [{ id: 'codex:premium-test', description: 'Highest capability' }] }; },
       onNotification(fn) { this.notification = fn; }, onFailure(fn) { this.failure = fn; }, onRequest(fn) { this.serverRequest = fn; },
       async close() { this.closed = true; },
       async request(method, params) {
@@ -181,4 +183,85 @@ test('a root turn has a bounded total number of child assignments', async t => {
   }
   assert.match(decode(await runtimes[0].tool('lead', 'task', {}, 'excess')).error, /limit reached/);
   assert.equal(runtimes.length, 17);
+});
+
+test('Smart delegates directly, caps concurrent peers at two, releases slots, and forwards selected model/effort', async t => {
+  const { runtimes } = await setup(t, { workflow: 'smart' });
+  assert.equal((await runtimes[0].tool('lead')).success, false);
+  const first = runtimes[0].tool('peer', 'Inspect A', { model: 'claude:claude-sonnet-5-5', thinking: 'high' }, 'p1');
+  const second = runtimes[0].tool('peer', 'Inspect B', {}, 'p2');
+  await until(() => runtimes[2]?.calls.some(c => c.method === 'turn/start'));
+  assert.match(decode(await runtimes[0].tool('peer', 'Inspect C', {}, 'p3')).error, /peer limit/);
+  await until(() => runtimes.slice(1).every(r => r.calls.some(c => c.method === 'turn/start')));
+  const selected = runtimes.find(r => r.calls.some(c => c.method === 'thread/start' && c.params.model === 'claude-sonnet-5-5'));
+  assert.ok(selected);
+  const child = selected.calls.find(c => c.method === 'thread/start').params;
+  assert.equal(child.model, 'claude-sonnet-5-5');
+  assert.equal(child.thinking, 'high');
+  assert.equal(child.runtime, 'claude');
+  selected.finish(); await first;
+  const third = runtimes[0].tool('peer', 'Inspect C', {}, 'p4');
+  await until(() => runtimes[3]?.calls.some(c => c.method === 'turn/start'));
+  runtimes.filter(r => r !== runtimes[0] && r !== selected).forEach(r => r.finish());
+  assert.equal((await second).success, true); assert.equal((await third).success, true);
+});
+
+test('configured peer increase and single writer constraint are enforced', async t => {
+  const { runtimes } = await setup(t, { workflow: 'smart', maxPeers: 3, mode: 'workspace-write' });
+  const jobs = [0, 1, 2].map(i => runtimes[0].tool('peer', 'Inspect', { mode: 'read-only' }, `read-${i}`));
+  await until(() => runtimes[3]?.calls.some(c => c.method === 'turn/start'));
+  assert.equal((await runtimes[0].tool('peer', 'Write', {}, 'write')).success, false);
+  runtimes.slice(1).forEach(r => r.finish()); await Promise.all(jobs);
+  const writer = runtimes[0].tool('peer', 'Write A', {}, 'writer');
+  await until(() => runtimes[4]?.calls.some(c => c.method === 'turn/start'));
+  assert.equal((await runtimes[0].tool('peer', 'Read B', { mode: 'read-only' }, 'reader')).success, false);
+  runtimes[4].finish(); await writer;
+});
+
+test('oracle requires explicit premium selection and advisors are forced read-only', async t => {
+  const { runtimes } = await setup(t, { workflow: 'smart', mode: 'workspace-write' });
+  assert.equal((await runtimes[0].tool('oracle')).success, false);
+  assert.equal((await runtimes[0].tool('oracle', 'Advice', { model: 'codex:premium-test', thinking: 'high' }, 'missing-reason')).success, false);
+  const advice = runtimes[0].tool('oracle', 'Advice', { model: 'codex:premium-test', thinking: 'high', modelReason: 'Runtime catalog describes highest capability', mode: 'workspace-write' }, 'oracle');
+  await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
+  const cfg = runtimes[1].calls.find(c => c.method === 'thread/start').params;
+  assert.equal(cfg.model, 'premium-test'); assert.equal(cfg.sandbox, 'read-only'); assert.deepEqual(cfg.dynamicTools, []);
+  runtimes[1].finish(); await advice;
+  const review = runtimes[0].tool('reviewer', 'Review diff', {}, 'review');
+  await until(() => runtimes[2]?.calls.some(c => c.method === 'turn/start'));
+  assert.equal(runtimes[2].calls.find(c => c.method === 'thread/start').params.sandbox, 'read-only');
+  runtimes[2].finish(); await review;
+});
+
+test('Supervised keeps peer ownership with lead and snapshots limits for descendants', async t => {
+  const { runtimes, root } = await setup(t, { workflow: 'supervised' });
+  assert.equal((await runtimes[0].tool('peer')).success, false);
+  await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify({ workflow: { mode: 'smart', maxPeers: 8 } }));
+  const lead = runtimes[0].tool('lead', 'Execute', {}, 'lead-after-peer-denied');
+  await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
+  const cfg = runtimes[1].calls.find(c => c.method === 'thread/start').params;
+  assert.match(cfg.developerInstructions, /Workflow: supervised/);
+  assert.match(cfg.developerInstructions, /At most 2 peers/);
+  assert.deepEqual(cfg.dynamicTools[0].inputSchema.properties.agent.enum, ['peer', 'oracle', 'reviewer']);
+  runtimes[1].finish(); await lead;
+});
+
+test('usage and catalog evidence reaches orchestration prompt without substituting for the brief', async t => {
+  const { runtimes } = await setup(t, { workflow: 'smart' });
+  const input = runtimes[0].calls.find(c => c.method === 'turn/start').params.input;
+  assert.match(input[0].text, /"available":false/);
+  assert.match(input[0].text, /premium-test/);
+  assert.equal(input[1].text, 'Delegate');
+});
+
+test('interrupt closes both concurrent peers and releases their handoffs', async t => {
+  const { runtimes, connection } = await setup(t, { workflow: 'smart' });
+  const first = runtimes[0].tool('peer', 'A', {}, 'a');
+  const second = runtimes[0].tool('peer', 'B', {}, 'b');
+  await until(() => runtimes[2]?.calls.some(c => c.method === 'turn/start'));
+  await connection.send({ type: 'session.interrupt', requestId: 'stop', sessionId: 'root' });
+  assert.equal((await first).success, false);
+  assert.equal((await second).success, false);
+  assert.equal(runtimes[1].closed, true);
+  assert.equal(runtimes[2].closed, true);
 });

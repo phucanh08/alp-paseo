@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { resolveWorkflow } from '../../../src/core/workflow.js';
 import { access, stat } from 'node:fs/promises';
 import { initProject } from '../../../src/core/init.js';
 import bundledTemplates from 'alp:templates';
@@ -86,14 +87,19 @@ export async function mapSession(config: ProviderSessionConfig, persistence?: Pr
   const hasMainAgent = await exists(path.join(config.cwd, '.alp', 'agents', 'main', 'AGENT.md'));
   if (!hasProjectFile || !hasMainAgent) await initProject(config.cwd, { templates: bundledTemplates });
   const options = config.providerOptions ?? {};
-  for (const key of Object.keys(options)) if (key !== 'agent') throw new Error(`Unknown ALP provider option '${key}'`);
+  for (const key of Object.keys(options)) if (!['agent', 'workflow'].includes(key)) throw new Error(`Unknown ALP provider option '${key}'`);
   if (options.agent !== undefined && (typeof options.agent !== 'string' || !options.agent.trim())) throw new Error('providerOptions.agent must be a nonempty string');
-  if (Object.keys(config.settings).length) throw new Error('ALP does not expose session settings yet');
+  if (Object.keys(config.settings).some(key => key !== 'workflow')) throw new Error('Unknown ALP session setting');
+  if (config.settings.workflow !== undefined && typeof config.settings.workflow !== 'string') throw new Error('workflow must be a string');
   if (config.toolPolicy) throw new Error('Per-tool approval policy is unsupported by this prototype');
-  const restored = persistence?.data as { agent?: string; cwd?: string; threadId?: string; runtime?: string; model?: string } | undefined;
+  const restored = persistence?.data as { agent?: string; cwd?: string; threadId?: string; runtime?: string; model?: string; workflow?: { mode: string; maxPeers: number } } | undefined;
   if (persistence && (persistence.version !== 1 || !restored || typeof restored.agent !== 'string' || typeof restored.threadId !== 'string' || restored.cwd !== path.resolve(config.cwd))) throw new Error('Invalid ALP persistence or project mismatch');
   if (restored && options.agent !== undefined && options.agent !== restored.agent) throw new Error('Cannot resume a thread as a different ALP agent');
+  if (options.workflow !== undefined && typeof options.workflow !== 'string') throw new Error('providerOptions.workflow must be a string');
+  if (options.workflow !== undefined && config.settings.workflow !== undefined && options.workflow !== config.settings.workflow) throw new Error('Conflicting workflow selections');
+  const workflow = await resolveWorkflow(config.cwd, options.workflow ?? config.settings.workflow, restored?.workflow);
   const agent = await resolveAgent(config.cwd, { agent: options.agent ?? restored?.agent });
+  if (agent.name === 'oracle' && !restored && (!config.model || !config.thinkingOption)) throw new Error('Oracle requires an explicit premium model and effort');
   const compiled = await compileAgent(new PaseoAdapter(), agent);
   let runtimeKind = restored?.runtime ?? agent.runtime.provider ?? 'codex';
   let model = restored?.model ?? config.model ?? agent.runtime.model ?? (runtimeKind === 'claude' ? DEFAULT_CLAUDE_MODEL : DEFAULT_MODEL);
@@ -103,7 +109,7 @@ export async function mapSession(config: ProviderSessionConfig, persistence?: Pr
   if (model.startsWith('claude/')) { runtimeKind = 'claude'; model = model.slice('claude/'.length); }
   if (!['codex', 'claude'].includes(runtimeKind)) throw new Error(`Unsupported ALP runtime provider '${runtimeKind}'`);
   if (restored?.runtime && runtimeKind !== restored.runtime) throw new Error('Cannot resume a thread with a different runtime provider');
-  const mode = config.mode ?? 'read-only';
+  const mode = ['oracle', 'reviewer'].includes(agent.name) ? 'read-only' : config.mode ?? 'read-only';
   const availableThinking = thinkingOptionsFor(runtimeKind as 'codex' | 'claude', model);
   const thinking = config.thinkingOption ?? agent.runtime.reasoning ?? (availableThinking.length ? 'medium' : 'none');
   if (!model.trim()) throw new Error('Model must be nonempty');
@@ -124,7 +130,7 @@ export async function mapSession(config: ProviderSessionConfig, persistence?: Pr
     Object.defineProperty(mcp, name, { value: server, enumerable: true, writable: true });
   }
   return {
-    agent, runtimeKind: runtimeKind as 'codex' | 'claude', model, mode, thinking, threadId: restored?.threadId,
+    agent, workflow, runtimeKind: runtimeKind as 'codex' | 'claude', model, mode, thinking, threadId: restored?.threadId,
     instructions: [compiled.material.instructions, config.systemPrompt].filter(Boolean).join('\n\n'),
     mcp, env: { ...config.env }, persist: config.persist,
   };

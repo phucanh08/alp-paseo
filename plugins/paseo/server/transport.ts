@@ -1,3 +1,4 @@
+import { optionalRead, codexUsage } from './runtime-context.js';
 import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
@@ -60,15 +61,25 @@ export class CodexTransport {
     for (const listener of this.failures) listener(error);
     void this.close();
   }
-  request(method: string, params: unknown, timeout = 30_000): Promise<any> {
+  request(method: string, params: unknown, timeout = 30_000, fatalTimeout = true): Promise<any> {
     if (this.closed) return Promise.reject(new Error('Runtime is closed'));
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.fail(new Error(`Runtime request timed out: ${method}`)); }, timeout);
+      const timer = setTimeout(() => { const error = new Error(`Runtime request timed out: ${method}`); if (fatalTimeout) this.fail(error); else { this.pending.delete(id); reject(error); } }, timeout);
       this.pending.set(id, { resolve, reject, timer });
       try { this.write({ id, method, params }); }
       catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
     });
+  }
+  async orchestrationContext() {
+    const [catalog, usage] = await Promise.all([
+      optionalRead(() => this.request('model/list', { limit: 100, includeHidden: false }, 1200, false)),
+      optionalRead(() => this.request('account/rateLimits/read', {}, 1200, false)),
+    ]);
+    return { runtime: 'codex', observedAt: new Date().toISOString(),
+      catalogAvailable: Array.isArray(catalog?.data), catalogComplete: catalog ? !catalog.nextCursor : false,
+      models: (catalog?.data ?? []).map((model: any) => ({ id: `codex:${model.model}`, description: model.description,
+        label: model.displayName, thinking: model.supportedReasoningEfforts })), usage: codexUsage(usage) };
   }
   async initialize() {
     await this.request('initialize', { clientInfo: { name: 'alp_paseo', title: 'ALP Paseo', version: '0.0.0' }, capabilities: { experimentalApi: true } });

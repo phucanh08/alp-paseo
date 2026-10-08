@@ -1,7 +1,7 @@
 import { mkdir, writeFile, lstat, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
-const starterAgents = ['main', 'lead', 'peer'];
+const starterAgents = ['main', 'lead', 'peer', 'oracle', 'reviewer'];
 
 /**
  * Fill missing scaffold files without replacing existing user content.
@@ -15,7 +15,7 @@ export async function initProject(projectRoot, { templateRoot, templates } = {})
   // Load the complete starter before modifying the destination.
   const files = {
     'ALP.md': await template('ALP.md'),
-    '.alp/settings.json': JSON.stringify({ defaultAgent: 'main', delegation: { main: ['lead'], lead: ['peer'] } }, null, 2) + '\n',
+    '.alp/settings.json': JSON.stringify({ defaultAgent: 'main', workflow: { mode: 'smart', maxPeers: 2 } }, null, 2) + '\n',
   };
   const directories = ['.alp', '.alp/agents'];
   const roleSkills = JSON.parse(await template('role-skills.json'));
