@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,7 +19,34 @@ export function daemonPaths(home) {
   const socket = Buffer.byteLength(preferred) < 100
     ? preferred
     : path.join(os.tmpdir(), `alpd-${createHash('sha256').update(home).digest('hex').slice(0, 12)}.sock`);
-  return { home, lock: path.join(home, 'alpd.lock'), socket, log: path.join(home, 'logs', 'alpd.log') };
+  return { home, lock: path.join(home, 'alpd.lock'), socket, log: path.join(home, 'logs', 'alpd.log'), install: path.join(home, 'alpd.json') };
+}
+
+const isFile = file => stat(file).then(info => info.isFile(), () => false);
+
+/** Global bin directories that a GUI app's PATH may lack. */
+const BIN_DIRECTORIES = [path.join(os.homedir(), '.npm-global', 'bin'), path.join(os.homedir(), '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
+
+/**
+ * Finds alpd.js for a client that cannot locate it beside itself, such as the Paseo
+ * plugin, which Paseo re-bundles: the first existing candidate, then where alpd last
+ * recorded itself ($ALP_HOME/alpd.json), then the ALP CLI (`alp`) on PATH.
+ */
+export async function findDaemonEntry({ home = alpHome(), env = process.env, candidates = /** @type {Array<string | undefined>} */ ([]) } = {}) {
+  for (const candidate of candidates) if (candidate && await isFile(candidate)) return candidate;
+  try {
+    const { entry } = JSON.parse(await readFile(daemonPaths(home).install, 'utf8'));
+    if (typeof entry === 'string' && await isFile(entry)) return entry;
+  } catch {}
+  for (const directory of [...(env.PATH ?? '').split(path.delimiter).filter(Boolean), ...BIN_DIRECTORIES]) {
+    const cli = await realpath(path.join(directory, 'alp')).catch(() => undefined);
+    if (!cli || path.basename(cli) !== 'cli.js') continue;
+    const root = path.resolve(path.dirname(cli), '..');
+    const name = await readFile(path.join(root, 'package.json'), 'utf8').then(text => JSON.parse(text).name, () => undefined);
+    const entry = path.join(root, 'dist', 'alpd.js');
+    if (name === 'alp' && await isFile(entry)) return entry;
+  }
+  return undefined;
 }
 
 /** Wall-clock boot time; a lock from an earlier boot is stale even if its pid is reused. */
@@ -163,7 +190,8 @@ export async function ensureDaemon({ home = alpHome(), entry = /** @type {string
   const live = await ready();
   if (live) return live;
   if (!lockAlive(await readLock(home))) {
-    if (!entry) throw new Error('ALP daemon is not running');
+    entry ??= await findDaemonEntry({ home, env });
+    if (!entry) throw new Error('ALP daemon is not running and alpd.js was not found. Install the ALP CLI and run `alp daemon start`, or set ALP_DAEMON_ENTRY to alpd.js');
     await new Promise((resolve, reject) => {
       const launcher = spawn(execPath, [entry, '--detach'], {
         env: { ...env, ALP_HOME: home, ELECTRON_RUN_AS_NODE: '1' },

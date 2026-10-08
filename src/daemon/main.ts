@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir, open, rename, stat } from 'node:fs/promises';
+import { mkdir, open, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import templates from 'alp:templates';
@@ -75,6 +75,11 @@ async function run(home: string) {
     throw error;
   }
   await updateLock(home, { ...lock, ready: true });
+  // Clients that cannot locate alpd themselves (the Paseo plugin) start it from here next time.
+  const { install } = daemonPaths(home);
+  await writeFile(`${install}.tmp`, JSON.stringify({ entry: fileURLToPath(import.meta.url), version: VERSION }), { mode: 0o600 })
+    .then(() => rename(`${install}.tmp`, install))
+    .catch(error => console.error(`${new Date().toISOString()} could not record alpd's location`, error));
   console.log(`${new Date().toISOString()} alpd ${VERSION} ready on ${socket} (pid ${process.pid})`);
 }
 

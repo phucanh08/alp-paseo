@@ -52,14 +52,13 @@ declare const __ALP_DAEMON_ENTRY__: string | undefined;
 
 /**
  * Paseo recompiles and evaluates plugin code, so import.meta.url may not name this
- * bundle; the build also records alpd's absolute path.
+ * bundle. Beyond these candidates (the build machine's path among them), ensureDaemon
+ * looks where alpd last recorded itself and for the ALP CLI on PATH.
  */
 function daemonEntry(explicit?: string) {
   const beside = () => { try { return fileURLToPath(new URL('./alpd.js', import.meta.url)); } catch { return undefined; } };
   const candidates = [explicit, process.env.ALP_DAEMON_ENTRY, typeof __ALP_DAEMON_ENTRY__ === 'string' ? __ALP_DAEMON_ENTRY__ : undefined, beside()];
-  const entry = candidates.find(candidate => candidate && existsSync(candidate));
-  if (!entry) throw new Error('alpd is not installed next to the ALP plugin; set ALP_DAEMON_ENTRY to its alpd.js');
-  return entry;
+  return candidates.find(candidate => candidate && existsSync(candidate));
 }
 
 async function openBackend(options: Options): Promise<Backend> {
