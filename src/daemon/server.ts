@@ -1,10 +1,10 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { appendFile, chmod, mkdir, unlink } from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
 import { AlpRpcError, MAX_FRAME, PROTOCOL_VERSION } from '../client/index.js';
 import { DEFAULT_MODEL, models, modes, thinkingOptions, type AlpEvent, type AlpRuntime, type Envelope, type SessionSnapshot } from '../runtime/index.js';
-import type { SessionRecord, SessionStatus, Store } from './store.js';
+import type { Receipt, SessionRecord, SessionStatus, Store } from './store.js';
 
 /**
  * alpd's JSON-RPC surface over one shared runtime (plans/reference/ALPD.md §3, §6, §14).
@@ -14,10 +14,18 @@ import type { SessionRecord, SessionStatus, Store } from './store.js';
  * recorded and every tree's events are kept, so a closed root can be resumed later.
  */
 
-export const ERROR = { failed: 1000, notFound: 1001, protocol: 1006 } as const;
+export const ERROR = { failed: 1000, notFound: 1001, conflict: 1004, protocol: 1006 } as const;
 
 class RpcError extends Error {
-  constructor(public code: number, message: string) { super(message); }
+  constructor(public code: number, message: string, public data?: unknown) { super(message); }
+}
+
+/** A stable hash of JSON data, independent of key order (as Paseo's receipts). */
+function digest(value: unknown) {
+  return createHash('sha256').update(JSON.stringify(value, (_key, candidate) =>
+    candidate !== null && typeof candidate === 'object' && !Array.isArray(candidate)
+      ? Object.fromEntries(Object.entries(candidate).sort(([a], [b]) => a.localeCompare(b)))
+      : candidate)).digest('hex');
 }
 
 type Connection = {
@@ -31,6 +39,7 @@ type Connection = {
 const TREE_LOG_LIMIT = 20_000;
 const SESSION_ID = /^[\w.:-]{1,128}$/;
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const LIVE: SessionStatus[] = ['initializing', 'idle', 'running'];
 
 /** What clients need from a daemon connection; AlpClient implements it over the socket. */
@@ -72,6 +81,8 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
   const attached = new Map<string, Set<Connection>>();
   const logs = new Map<string, Envelope[]>();
   const records = new Map<string, SessionRecord & { activeTurnId?: string }>();
+  /** Prompt deliveries in flight, so a repeated clientMessageId waits for the first. */
+  const delivering = new Map<string, Promise<object>>();
   let closing = false;
   const startedAt = new Date().toISOString();
   const restored = store ? restore() : Promise.resolve();
@@ -129,6 +140,7 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
 
   /** Loads records, settles sessions a crash left working, and prunes expired trees. */
   async function restore() {
+    await store!.pruneReceipts(RECEIPT_RETENTION_MS);
     const loaded = await store!.list();
     const now = Date.now();
     const ended = { code: 'daemon_restarted', message: 'alpd stopped while this session was working' };
@@ -159,6 +171,34 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
         }
       }
     }
+  }
+
+  /**
+   * Sends a prompt at most once per (session, clientMessageId), as Paseo's MessageReceipts:
+   * a repeat with the same content is a no-op, with other content a conflict, and a
+   * receipt left pending by a crash means the outcome is unknown.
+   */
+  function deliverOnce(sessionId: string, clientMessageId: string, fingerprint: string, send: () => Promise<void>) {
+    const key = digest(['prompt', sessionId, clientMessageId]);
+    const attempt = async () => {
+      const existing = await store!.receipt(key);
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) throw new RpcError(ERROR.conflict, `Message ${clientMessageId} was already sent with different content`, { reason: 'key_conflict' });
+        if (existing.state === 'completed') return { duplicate: true };
+        throw new RpcError(ERROR.conflict, `alpd stopped while delivering message ${clientMessageId}; check the session, then send it again with a new id`, { reason: 'outcome_unknown' });
+      }
+      const receipt = (state: Receipt['state']): Receipt => ({ version: 1, sessionId, clientMessageId, fingerprint, state, updatedAt: new Date().toISOString() });
+      live(sessionId);
+      await store!.putReceipt(key, receipt('pending'));
+      await send();
+      await store!.putReceipt(key, receipt('completed'));
+      return {};
+    };
+    const previous = delivering.get(key) ?? Promise.resolve();
+    const result = previous.catch(() => {}).then(attempt);
+    delivering.set(key, result);
+    void result.finally(() => { if (delivering.get(key) === result) delivering.delete(key); }).catch(() => {});
+    return result;
   }
 
   function forget(root: string) {
@@ -330,10 +370,16 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
     async 'session.prompt'(_connection, { sessionId, clientMessageId, delivery = 'auto', content }) {
       if (typeof clientMessageId !== 'string' || !Array.isArray(content)) throw new RpcError(-32602, 'clientMessageId and content are required');
       if (delivery !== 'auto' && delivery !== 'steer') throw new RpcError(-32602, 'delivery must be auto or steer');
-      // Failures of an open session arrive as prompt.failed events; an unknown session has no watcher.
-      live(sessionId);
-      await runtime.prompt(sessionId, { clientMessageId, delivery, content });
-      return {};
+      const send = async () => {
+        // Failures of an open session arrive as prompt.failed events; an unknown session has no watcher.
+        live(sessionId);
+        await runtime.prompt(sessionId, { clientMessageId, delivery, content });
+      };
+      if (!store) {
+        await send();
+        return {};
+      }
+      return deliverOnce(sessionId, clientMessageId, digest({ delivery, content }), send);
     },
 
     async 'session.interrupt'(_connection, { sessionId }) {
@@ -383,7 +429,8 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
       respond({ result: await handler(connection, params ?? {}) });
     } catch (error) {
       const code = error instanceof RpcError ? error.code : /is not open/.test(String((error as Error)?.message)) ? ERROR.notFound : ERROR.failed;
-      respond({ error: { code, message: error instanceof Error ? error.message : String(error) } });
+      const data = error instanceof RpcError && error.data !== undefined ? { data: error.data } : {};
+      respond({ error: { code, message: error instanceof Error ? error.message : String(error), ...data } });
     }
   }
 

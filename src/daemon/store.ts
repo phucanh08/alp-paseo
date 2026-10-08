@@ -1,10 +1,12 @@
-import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import type { Envelope, SessionSnapshot, SessionSpec } from '../runtime/index.js';
 
 /**
  * alpd's durable state (plans/reference/ALPD.md §5): one JSON record per session,
- * written atomically, and one append-only JSONL timeline per tree.
+ * written atomically, one append-only JSONL timeline per tree, and one receipt per
+ * delivered prompt.
  */
 
 export type SessionStatus = 'initializing' | 'idle' | 'running' | 'error' | 'closed';
@@ -24,6 +26,16 @@ export type SessionRecord = {
   updatedAt: string;
 };
 
+/** Delivery of one clientMessageId; `pending` means alpd may have stopped while sending it. */
+export type Receipt = {
+  version: 1;
+  sessionId: string;
+  clientMessageId: string;
+  fingerprint: string;
+  state: 'pending' | 'completed';
+  updatedAt: string;
+};
+
 const SAFE = /[^\w.:-]/g;
 const fileName = (id: string) => id.replace(SAFE, '_');
 
@@ -32,13 +44,21 @@ export type Store = ReturnType<typeof createStore>;
 export function createStore(root: string) {
   const sessionsDir = path.join(root, 'sessions');
   const timelineDir = path.join(root, 'timeline');
+  const receiptsDir = path.join(root, 'receipts');
   const writes = new Map<string, Promise<void>>();
   const appends = new Map<string, Promise<void>>();
   let ready: Promise<void> | undefined;
   const prepare = () => ready ??= Promise.all([
     mkdir(sessionsDir, { recursive: true, mode: 0o700 }),
     mkdir(timelineDir, { recursive: true, mode: 0o700 }),
+    mkdir(receiptsDir, { recursive: true, mode: 0o700 }),
   ]).then(() => {});
+
+  async function writeAtomic(file: string, body: string) {
+    const temporary = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    await writeFile(temporary, body, { mode: 0o600 });
+    await rename(temporary, file);
+  }
 
   /** Serializes work per key so a later write never lands before an earlier one. */
   function queue(map: Map<string, Promise<void>>, key: string, work: () => Promise<void>) {
@@ -53,11 +73,34 @@ export function createStore(root: string) {
     put(record: SessionRecord) {
       const file = path.join(sessionsDir, `${fileName(record.id)}.json`);
       const body = JSON.stringify(record);
-      return queue(writes, record.id, async () => {
-        const temporary = `${file}.${process.pid}.tmp`;
-        await writeFile(temporary, body, { mode: 0o600 });
-        await rename(temporary, file);
-      });
+      return queue(writes, record.id, () => writeAtomic(file, body));
+    },
+
+    async receipt(key: string): Promise<Receipt | undefined> {
+      await writes.get(`receipt:${key}`);
+      try {
+        const receipt = JSON.parse(await readFile(path.join(receiptsDir, `${fileName(key)}.json`), 'utf8'));
+        return receipt?.version === 1 ? receipt : undefined;
+      } catch (error: any) {
+        if (error?.code === 'ENOENT') return undefined;
+        throw error;
+      }
+    },
+
+    putReceipt(key: string, receipt: Receipt) {
+      const body = JSON.stringify(receipt);
+      return queue(writes, `receipt:${key}`, () => writeAtomic(path.join(receiptsDir, `${fileName(key)}.json`), body));
+    },
+
+    /** Deletes receipts not written for `maxAgeMs`. */
+    async pruneReceipts(maxAgeMs: number) {
+      await prepare();
+      const now = Date.now();
+      for (const name of await readdir(receiptsDir)) {
+        const file = path.join(receiptsDir, name);
+        const info = await stat(file).catch(() => undefined);
+        if (info && now - info.mtimeMs > maxAgeMs) await rm(file, { force: true });
+      }
     },
 
     async list(): Promise<SessionRecord[]> {

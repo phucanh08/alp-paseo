@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { realpath as realpathOf } from 'node:fs/promises';
 import { initProject } from '../src/core/init.js';
-import { connect, daemonPaths, ensureDaemon, readLock, PROTOCOL_VERSION } from '../src/client/index.js';
+import { connect, daemonPaths, ensureDaemon, findDaemonEntry, readLock, PROTOCOL_VERSION } from '../src/client/index.js';
 import { createAlpRuntime } from '../dist/runtime/index.js';
 import { createDaemonServer, createStore } from '../dist/daemon/index.js';
 
@@ -25,7 +26,7 @@ function fakeTransport(runtimes) {
       async request(method, params) {
         this.calls.push({ method, params });
         if (method.startsWith('thread/')) return { thread: { id: this.threadId } };
-        if (method === 'turn/start') return { turn: { id: this.turnId } };
+        if (method === 'turn/start') { await this.hold; return { turn: { id: this.turnId } }; }
         return {};
       },
       call(tool, args) {
@@ -150,10 +151,34 @@ test('alpd starts detached, publishes its socket in the lock, and shuts down cle
   const status = await client.request('daemon.status');
   assert.equal(status.pid, lock.pid);
   assert.equal(status.sessions, 0);
+  assert.equal(JSON.parse(await readFile(daemonPaths(home).install, 'utf8')).entry, entry, 'alpd records where it is installed');
   await client.request('daemon.shutdown');
   client.close();
   await until(async () => !(await readLock(home)));
   await assert.rejects(access(socket));
+
+  // A client that cannot locate alpd (the Paseo plugin) starts it from the recorded location.
+  const restarted = await ensureDaemon({ home, env: { ...process.env, PATH: '' } });
+  const again = await connect(restarted);
+  await again.request('daemon.shutdown');
+  again.close();
+  await until(async () => !(await readLock(home)));
+});
+
+test('finds alpd through the ALP CLI on PATH', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'alp-path-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const root = path.join(directory, 'lib', 'alp');
+  await mkdir(path.join(root, 'src'), { recursive: true });
+  await mkdir(path.join(root, 'dist'));
+  await mkdir(path.join(directory, 'bin'));
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'alp' }));
+  await writeFile(path.join(root, 'src', 'cli.js'), '');
+  await writeFile(path.join(root, 'dist', 'alpd.js'), '');
+  await symlink(path.join(root, 'src', 'cli.js'), path.join(directory, 'bin', 'alp'));
+  const home = path.join(directory, 'home');
+  assert.equal(await findDaemonEntry({ home, env: { PATH: path.join(directory, 'bin') } }), await realpathOf(path.join(root, 'dist', 'alpd.js')));
+  assert.equal(await findDaemonEntry({ home, env: { PATH: path.join(directory, 'bin') }, candidates: [undefined, path.join(root, 'src', 'cli.js')] }), path.join(root, 'src', 'cli.js'));
 });
 
 /** A daemon over a durable store; `stop(false)` abandons it without a clean shutdown, like a crash. */
@@ -173,13 +198,23 @@ async function durable(t, directory, project, runtimes) {
     client.close();
     if (clean) { await server.close(); await runtime.shutdown(); } else { await store.flush(); await server.close(); }
   };
-  t.after(async () => { await stop(); await runtime.shutdown(); });
+  cleanupsOf(t).push(async () => { await stop(); await runtime.shutdown(); await store.flush(); });
   return { client, events, store, stop };
 }
 
+/** Teardown in reverse order, so daemons stop before their directory is removed. */
+const cleanups = new WeakMap();
+const cleanupsOf = t => {
+  if (!cleanups.has(t)) {
+    cleanups.set(t, []);
+    t.after(async () => { for (const cleanup of cleanups.get(t).reverse()) await cleanup(); });
+  }
+  return cleanups.get(t);
+};
+
 async function durableProject(t) {
   const directory = await mkdtemp(path.join(tmpdir(), 'alpd-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  cleanupsOf(t).push(() => rm(directory, { recursive: true, force: true }));
   const project = path.join(directory, 'project');
   await initProject(project);
   await writeFile(path.join(project, '.alp/settings.json'), JSON.stringify({ delegation: { main: ['lead'] } }));
@@ -278,3 +313,41 @@ test('resumed history replays a grandchild while its parent is open', async t =>
   }
   assert.deepEqual(second.events.filter(e => e.event.type === 'session.opened').map(e => e.event.session.agent), ['main', 'lead', 'peer']);
 });
+
+test('a clientMessageId is delivered once; reuse with other content conflicts', async t => {
+  const { directory, project } = await durableProject(t);
+  const runtimes = [];
+  const daemon = await durable(t, directory, project, runtimes);
+  const { session } = await daemon.client.request('session.create', { spec: { cwd: project, persist: true } });
+  const prompt = content => daemon.client.request('session.prompt', { sessionId: session.id, clientMessageId: 'm1', content });
+  const [first, again] = await Promise.all([prompt(text('Hello')), prompt(text('Hello'))]);
+  assert.deepEqual([first, again], [{}, { duplicate: true }]);
+  assert.equal(runtimes[0].calls.filter(c => c.method === 'turn/start').length, 1);
+  await assert.rejects(prompt(text('Other')), error => error.code === 1004 && error.data?.reason === 'key_conflict');
+});
+
+test('a prompt cut off by a crash answers outcome unknown instead of sending twice', async t => {
+  const { directory, project } = await durableProject(t);
+  const runtimes = [];
+  const first = await durable(t, directory, project, runtimes);
+  const { session } = await first.client.request('session.create', { spec: { cwd: project, persist: true } });
+  let release;
+  runtimes[0].hold = new Promise(resolve => { release = resolve; });
+  try {
+    const cut = first.client.request('session.prompt', { sessionId: session.id, clientMessageId: 'm1', content: text('Hello') }).catch(error => error);
+    await until(() => runtimes[0].calls.some(c => c.method === 'turn/start'));
+    await first.stop(false);
+    await cut;
+
+    const second = await durable(t, directory, project, runtimes);
+    await second.client.request('session.create', { sessionId: session.id, spec: { cwd: project } });
+    const resent = second.client.request('session.prompt', { sessionId: session.id, clientMessageId: 'm1', content: text('Hello') });
+    await assert.rejects(resent, error => error.code === 1004 && error.data?.reason === 'outcome_unknown');
+    assert.equal(runtimes.at(-1).calls.filter(c => c.method === 'turn/start').length, 0);
+    await second.client.request('session.prompt', { sessionId: session.id, clientMessageId: 'm2', content: text('Hello') });
+    assert.equal(runtimes.at(-1).calls.filter(c => c.method === 'turn/start').length, 1);
+  } finally {
+    release();
+  }
+});
+
