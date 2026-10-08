@@ -163,3 +163,42 @@ test('early completion is buffered until turn acknowledgement; failed opens rele
   assert.ok(events.some(e => e.type === 'request.failed' && e.requestId === 'bad'));
   assert.equal(runtime.closed, true);
 });
+
+test('session permissions can change while idle and apply to the next Codex turn', async t => {
+  const root = await fixture(t);
+  const { conn, events, runtimes } = await connection(t, root);
+  await conn.send({ type: 'session.configure', requestId: 'mode', sessionId: 's', changes: { mode: 'workspace-write' } });
+  assert.ok(events.some(e => e.type === 'request.completed' && e.requestId === 'mode'), JSON.stringify(events));
+  assert.ok(events.some(e => e.type === 'session.config' && e.config?.mode === 'workspace-write'));
+  await conn.send(prompt('write'));
+  const params = runtimes[0].calls.find(c => c.method === 'turn/start').params;
+  assert.equal(params.sandboxPolicy.type, 'workspaceWrite');
+  await conn.send({ type: 'session.configure', requestId: 'busy', sessionId: 's', changes: { mode: 'read-only' } });
+  assert.ok(events.some(e => e.type === 'request.failed' && e.requestId === 'busy'));
+});
+
+test('invalid permission changes leave the session mode unchanged', async t => {
+  const root = await fixture(t);
+  const { conn, events, runtimes } = await connection(t, root);
+  for (const [requestId, changes] of [['invalid', { mode: 'danger-full-access' }], ['model', { model: 'claude:sonnet' }], ['workflow', { settings: { workflow: 'smart' } }]]) {
+    await conn.send({ type: 'session.configure', sessionId: 's', requestId, changes });
+    assert.ok(events.some(e => e.type === 'request.failed' && e.requestId === requestId));
+  }
+  await conn.send(prompt('still-read-only'));
+  assert.equal(runtimes[0].calls.find(c => c.method === 'turn/start').params.sandboxPolicy.type, 'readOnly');
+});
+
+test('Claude permission changes reach the runtime and failed changes are not published', async t => {
+  const root = await fixture(t);
+  const runtime = fakeRuntime();
+  const conn = await createProvider({ transport: () => runtime }).connect({ versions: [1], capabilities: PROVIDER_CAPABILITIES });
+  t.after(() => conn.close());
+  const events = []; conn.onEvent(e => { ProviderEventSchema.parse(e); events.push(e); });
+  await conn.send({ type: 'session.open', requestId: 'open', sessionId: 's', config: { ...config(root), model: 'claude:sonnet' }, history: 'skip' });
+  await conn.send({ type: 'session.configure', requestId: 'write', sessionId: 's', changes: { mode: 'workspace-write' } });
+  assert.deepEqual(runtime.calls.at(-1), { method: 'session/configure', params: { sandbox: 'workspace-write' } });
+  runtime.request = async () => { throw new Error('Mode update failed'); };
+  await conn.send({ type: 'session.configure', requestId: 'failed', sessionId: 's', changes: { mode: 'read-only' } });
+  assert.ok(events.some(e => e.type === 'request.failed' && e.requestId === 'failed'));
+  assert.equal(events.filter(e => e.type === 'session.config').at(-1).config.mode, 'workspace-write');
+});

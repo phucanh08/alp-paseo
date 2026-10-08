@@ -4,7 +4,7 @@ The server-only plugin in `plugins/paseo` registers `alp` through the public `Pr
 
 ## Install
 
-Prerequisites: Paseo 0.9.2 or 0.10.3, Node compatible with Paseo, and at least one authenticated runtime: Codex or Claude Code. Development dependencies are pinned to Paseo SDK 0.9.2 and Claude Agent SDK 0.3.292. `ALP_CODEX_BIN` and `ALP_CLAUDE_BIN` may select absolute native executables; shell launchers (`.cmd`, `.bat`, `.ps1`) are rejected.
+Prerequisites: Paseo 0.11.1, Node compatible with Paseo, and at least one authenticated runtime: Codex or Claude Code. Development dependencies are pinned to Paseo SDK 0.11.1 and Claude Agent SDK 0.3.292. `ALP_CODEX_BIN` and `ALP_CLAUDE_BIN` may select absolute native executables; shell launchers (`.cmd`, `.bat`, `.ps1`) are rejected.
 
 From this repository:
 
@@ -72,7 +72,7 @@ Installation commands above target the selected user's daemon. Implementation ve
 | MCP | Agent-local and host servers are combined; collisions fail. stdio and HTTP supported; SSE rejected. Headers map to Codex `http_headers` |
 | Model | Picker/session model → ALP runtime model → runtime default (`gpt-5.6-sol` or `sonnet`); arbitrary native model names pass through |
 | Thinking | Explicit session choice → ALP reasoning → `medium`; `none`, `low`, `medium`, `high`, `xhigh`, `max` |
-| Mode | `read-only` by default; `workspace-write` also supported; unsupported modes fail |
+| Mode | `read-only` by default; `workspace-write` also supported. Permissions can change while idle; advisors remain read-only and children cannot exceed parent permissions |
 | Approval | `never`; interactive approval and per-tool policy are not advertised and are rejected |
 | Persistence | Paseo stores versioned thread ID, agent identity, project root, runtime/model and workflow snapshot; the native runtime owns conversation storage |
 | Refresh | Close then resume; reread ALP files and current launch config. Cross-project or cross-agent resume fails |
@@ -84,13 +84,13 @@ After first-session initialization, ALP configuration files are read-only to the
 
 ## Prototype limits
 
-- Hooks, interactive permissions, images, structured commands, output schemas, dynamic configuration, session listing, and revert are not supported or advertised.
+- Hooks, interactive permissions, images, structured commands, output schemas, live model/thinking changes, session listing, and revert are not supported or advertised.
 - Delegated child sessions are supported through `alp_delegate` and the public `session.subsession` contract. See [team workflow](team-workflow.md) for routing, migration, lifecycle, and limits. Start a new main session after enabling delegation in an older project: old native threads may have no registered delegation tool.
 - Live timeline mapping covers assistant text, shell commands, and dynamic delegation calls; other native tool item types are not yet rendered. This is not a complete Codex UI replacement.
 - Replay uses the history returned by `thread/resume`; exhaustive pagination of very large native histories is not implemented.
 - Runtime may load the user's normal Codex or Claude Code authentication. ALP does not replace global authentication or write credentials into project files.
 - Claude Code runs through the Claude Agent SDK. ALP disables Claude's native multi-agent tools and exposes `alp_delegate` as an in-process MCP tool so the same configured delegation graph and Paseo child-session lifecycle apply to both runtimes.
-- SDK 0.9.2/0.10.3 do not provide the newer documented `connect.launch` environment field or process helper exports; the compatibility wrapper targets the actual installed contracts. Runtime process code uses native executables with argument arrays and no shell.
+- SDK 0.11.1 does not provide the newer documented `connect.launch` environment field or process helper exports; the compatibility wrapper targets the actual installed contracts. Runtime process code uses native executables with argument arrays and no shell.
 - There is no custom client UI. Provider selection/catalog/session behavior was verified through the real daemon and public client/CLI, not by a Desktop screenshot.
 
 ## Repeat verification

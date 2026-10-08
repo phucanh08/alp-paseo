@@ -76,11 +76,11 @@ Use `resolveAgent(projectRoot, { agent: 'your-agent' })` from `src/core/resolver
 
 ## Paseo
 
-See [installation and runtime behavior](docs/alp/paseo-plugin.md) and [phase acceptance evidence](docs/alp/phase-2-5-results.md). The plugin is verified with Paseo 0.9.2 and 0.10.3 and Codex CLI 0.160.1 using `gpt-5.6-sol`.
+See [installation and runtime behavior](docs/alp/paseo-plugin.md) and [phase acceptance evidence](docs/alp/phase-2-5-results.md). The plugin is verified with Paseo 0.11.1 and live Codex and Claude Code permission changes.
 
 ### Build and add the plugin to Paseo
 
-Prerequisites: Node.js 20+, Paseo 0.9.2 or 0.10.x, and a logged-in Codex CLI and/or Claude Code installation. Set `ALP_CODEX_BIN` or `ALP_CLAUDE_BIN` to an absolute native executable path when it is not available on `PATH`.
+Prerequisites: Node.js 20+, Paseo 0.11.1, and a logged-in Codex CLI and/or Claude Code installation. Set `ALP_CODEX_BIN` or `ALP_CLAUDE_BIN` to an absolute native executable path when it is not available on `PATH`.
 
 Install dependencies, type-check the plugin, and build its server bundle:
 

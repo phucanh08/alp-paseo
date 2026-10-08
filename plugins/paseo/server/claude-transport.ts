@@ -15,6 +15,7 @@ type ClaudeQuery = AsyncGenerator<SDKMessage, void> & {
   supportedModels(): Promise<Array<{ value: string; displayName: string; description: string; supportedEffortLevels?: string[] }>>;
   usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(options: { skipBehaviors: boolean }): Promise<any>;
   interrupt(): Promise<unknown>;
+  setPermissionMode(mode: 'default' | 'acceptEdits'): Promise<void>;
   close(): void;
 };
 
@@ -69,17 +70,18 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
   }
 }
 
-export function claudePermissions(sandbox: string) {
+export function claudePermissions(sandbox: string, currentSandbox?: () => string) {
   const readOnly = sandbox === 'read-only';
   const readers = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'];
   return {
     // Plan mode permits writes to plan files and requires ExitPlanMode approval.
-    // Restrict the built-in tool surface instead; MCP calls still pass the gate.
+    // Fixed read-only callers restrict the tool surface; live sessions keep
+    // tools available and consult the current sandbox at the permission gate.
     permissionMode: readOnly ? 'default' : 'acceptEdits',
-    ...(readOnly ? { tools: readers } : {}),
+    ...(readOnly && !currentSandbox ? { tools: readers } : {}),
     disallowedTools: ['Agent', 'Task', 'TeamCreate', 'EnterPlanMode', 'ExitPlanMode'],
     canUseTool: async (name: string, input: Record<string, unknown>) => {
-      if (readOnly && !readers.includes(name) && name !== 'mcp__alp__alp_delegate') {
+      if ((currentSandbox ? currentSandbox() === 'read-only' : readOnly) && !readers.includes(name) && name !== 'mcp__alp__alp_delegate') {
         return { behavior: 'deny', message: 'ALP session is read-only' };
       }
       return { behavior: 'allow', updatedInput: input };
@@ -148,6 +150,13 @@ export class ClaudeTransport {
 
   async request(method: string, params: any): Promise<any> {
     if (this.closed) throw new Error('Runtime is closed');
+
+    if (method === 'session/configure') {
+      if (!this.query || !this.config) throw new Error('Claude thread is not initialized');
+      await this.query.setPermissionMode(params.sandbox === 'read-only' ? 'default' : 'acceptEdits');
+      this.config.sandbox = params.sandbox;
+      return {};
+    }
 
     if (method === 'thread/start' || method === 'thread/resume') {
       this.config = params as NativeConfig;
@@ -274,7 +283,7 @@ export class ClaudeTransport {
       thinking: ['none', 'off'].includes(config.thinking) ? { type: 'disabled' } : { type: 'adaptive' },
       ...(config.thinking === 'ultracode' ? { settings: { ultracode: true } } : {}),
       systemPrompt: config.developerInstructions,
-      ...claudePermissions(config.sandbox),
+      ...claudePermissions(config.sandbox, () => config.sandbox),
       mcpServers,
       strictMcpConfig: true,
       settingSources: [],

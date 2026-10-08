@@ -92,3 +92,14 @@ test('Claude read-only sessions can delegate without plan approval and cannot wr
   assert.equal((await policy.canUseTool('Read', {})).behavior, 'allow');
   assert.equal((await policy.canUseTool('mcp__alp__alp_delegate', {})).behavior, 'allow');
 });
+
+test('Claude live permission gate follows upgrades and downgrades', async () => {
+  const { claudePermissions } = await import('../plugins/paseo/server/dist/index.js');
+  let sandbox = 'read-only';
+  const policy = claudePermissions(sandbox, () => sandbox);
+  assert.equal((await policy.canUseTool('Write', {})).behavior, 'deny');
+  sandbox = 'workspace-write';
+  assert.equal((await policy.canUseTool('Write', {})).behavior, 'allow');
+  sandbox = 'read-only';
+  for (const tool of ['Write', 'Edit', 'Bash', 'mcp__other__mutate']) assert.equal((await policy.canUseTool(tool, {})).behavior, 'deny');
+});
