@@ -305,7 +305,7 @@ plugins/paseo/   # becomes a proxy over src/client
 Each step ends with all existing unit tests and live e2e green.
 
 1. **Extract runtime in-process.** *(Done 2026-10-08 on `feat/alpd-runtime-extraction`: `src/runtime` with `createAlpRuntime`, events with per-session `seq`; the plugin projects them. Existing team tests stay on the plugin as the regression net; `test/runtime.test.js` covers the runtime API and its import boundary.)* Move transports, `nativeSessionConfig`, mail, delegation, and tool dispatch into `src/runtime` behind `SessionManager` + the §4 event model. The plugin calls it directly and projects events to Paseo (§8 mapping, without a socket). Port `test/team.test.js` to the runtime API; keep a projection subset in the plugin. *Acceptance:* no `@getpaseo` import under `src/runtime`; Paseo e2e (`team`, `mailbox`, `workflow`) unchanged and green.
-2. **Daemon + socket + CLI.** Host `SessionManager` in `alpd`; plugin switches to `src/client`; add `alp run/ps/attach`. *Acceptance:* a CLI-only e2e runs main → lead → peer with no Paseo daemon; the same Paseo e2e passes through alpd; closing Paseo mid-delegation does not stop the tree.
+2. **Daemon + socket + CLI.** *(Built 2026-10-08 on the same branch; the API as built is in §14.)* Host `SessionManager` in `alpd`; plugin switches to `src/client`; add `alp run/ps/attach`. *Acceptance:* a CLI-only e2e runs main → lead → peer with no Paseo daemon; the same Paseo e2e passes through alpd; closing Paseo mid-delegation does not stop the tree.
 3. **Persistence + reconciliation + import.** Session records, timelines, receipts, crash reconciliation, `session.list`, v1 → v2 handle migration. *Acceptance:* kill -9 alpd mid-turn → restart → records reconciled, root resumable; a CLI-created root imports into Paseo and replays its children.
 4. **Phase C on top** (leases/worktrees), then D.
 
@@ -339,7 +339,33 @@ Each step ends with all existing unit tests and live e2e green.
 
 - **Q1 — Process model:** single process in v1. A crash ends running turns until a client auto-starts the daemon again. Revisit the supervisor/worker split only if crashes occur in practice.
 - **Q2 — Lifetime:** runs until `alp daemon stop`; no idle exit.
-- **Q3 — Environment:** the daemon uses the environment of whoever started it, scrubbed as today. Per-session env from clients is not accepted in v1.
+- **Q3 — Environment:** the daemon uses the environment of whoever started it, scrubbed as today. Clients never forward their own process environment. A session's explicit `spec.env` variables (Paseo's per-agent env) are still applied to that session, as before.
 - **Q4 — Global concurrency:** `maxRunningSessions = 8` across all projects, configurable in `~/.alp/config.json`.
 - **Q5 — Packaging:** the `alp` package ships the CLI and daemon; `alp-paseo-plugin` depends on it and auto-starts the daemon.
 - **Q6 — Retention:** timelines of archived sessions are deleted after 30 days; live sessions are kept indefinitely; receipts after 7 days.
+
+## 14. As built in step 2 (2026-10-08)
+
+Step 2 implements a subset of §6 and changes a few shapes. §6 stays the target; this section is the contract the code follows today.
+
+**Methods.** `daemon.hello`, `daemon.status`, `daemon.shutdown`, `catalog.get`, and:
+
+| method | params → result |
+|---|---|
+| `session.create` | `{ sessionId?, spec: SessionSpec, history? = 'skip', delegation? = true }` → `{ session, attached }`. The caller may choose the id (Paseo uses its own); otherwise `ses_` + 16 hex. If that root is still live, the caller attaches to it instead: alpd re-announces the root (and its timeline when `history: 'replay'`), live children, and running turns. |
+| `session.attach` | `{ sessionId, replay? = true }` → `{ session }`. Attaches to the root of `sessionId` and replays the retained tree log (CLI `attach`). |
+| `session.release` | `{ sessionId }` → `{ closed }`. Detaches; closes the root at once if it is idle. |
+| `session.prompt` | `{ sessionId, clientMessageId, delivery: 'auto' \| 'steer', content }` → `{}`. Results arrive as `prompt.accepted` / `prompt.failed` events. |
+| `session.interrupt`, `session.configure { mode }`, `session.close`, `session.get`, `session.list` | As in §6, without paging. `session.list` returns live sessions, roots first. |
+
+**Attachment instead of subscriptions.** A connection that creates or attaches to a root receives every event of its tree as `event` notifications (the envelope). A root with no attached connection is closed as soon as it is idle (`busy` false: no turn, child, assignment, or undelivered mail). Paseo's `session.close` therefore means "stop watching": work in progress finishes, then alpd closes it. `session.interrupt` remains the way to stop work.
+
+**Not yet built:** persistence, receipts, cursors with `after`, `session.timeline` paging, `refresh`, `archive`, and permissions (step 3 and later). Events are retained in memory per tree (20,000 per tree) until the root closes.
+
+**Errors.** `1000` operation failed, `1001` session not open, `1006` protocol or missing handshake, plus the JSON-RPC standard codes.
+
+**Sockets.** `$ALP_HOME/alpd.sock` when its path is under 100 bytes; otherwise `alpd-<hash of home>.sock` in the temp directory. The lock publishes the path in use.
+
+**Starting the daemon.** Clients run `alpd.js --detach`, which starts the daemon in a new session and exits, so the daemon is not part of the client's process tree. Paseo re-bundles and evaluates plugin code, so the plugin cannot locate files beside itself. It resolves alpd from `ALP_DAEMON_ENTRY`, then from the absolute path recorded at build time. **Before publishing the plugin to npm**, alpd needs a location that does not depend on the build machine, for example the `alp` package (Q5).
+
+**Embedded mode.** With `embedded: true` or a custom `transport`, the plugin hosts the daemon server in-process and connects through an in-memory connection (tests, `scripts/*runtime-e2e.mjs`).

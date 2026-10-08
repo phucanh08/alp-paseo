@@ -74,6 +74,21 @@ The Paseo model picker mirrors all models advertised by the installed native pro
 
 Use `resolveAgent(projectRoot, { agent: 'your-agent' })` from `src/core/resolver.js` to resolve an agent without starting a runtime. Explicit selection overrides settings; missing settings default to `main`. There is no central agent registry.
 
+## Daemon and CLI
+
+`alpd` hosts ALP sessions for all projects of a user. After `npm run build`:
+
+```sh
+node src/cli.js daemon start          # or: status | stop | restart
+node src/cli.js run --workflow supervised "Your task"   # streams the agent tree; Ctrl-C interrupts
+node src/cli.js ps                    # live sessions as a tree
+node src/cli.js attach <session>      # follow a running tree
+node src/cli.js send <session> "More context"
+node src/cli.js interrupt <session>
+```
+
+`ALP_HOME` selects the daemon's directory (default `~/.alp`); `ALP_RUN_LOG_DIR` overrides where assignment logs go (default `$ALP_HOME/runs`). The Paseo plugin starts the same daemon automatically.
+
 ## Paseo
 
 See [installation and runtime behavior](docs/alp/paseo-plugin.md) and [phase acceptance evidence](docs/alp/phase-2-5-results.md). The plugin is verified with Paseo 0.11.1 and live Codex and Claude Code permission changes.
