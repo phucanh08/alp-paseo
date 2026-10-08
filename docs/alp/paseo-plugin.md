@@ -1,6 +1,6 @@
 # ALP Paseo provider
 
-The server-only plugin in `plugins/paseo` registers `alp` through the public `ProviderRegistration` API. All Paseo SDK imports are isolated in `server/compat.ts`; core, the runtime, and the daemon never import the SDK. No Paseo fork or ACP shim is used. Sessions run in `alpd`, the per-user ALP daemon (see [alpd](../../plans/reference/ALPD.md)): the plugin starts it when needed (`ALP_HOME`, default `~/.alp`), forwards Paseo inputs to it, and projects its events back to Paseo. Closing an agent in Paseo only stops watching it; running work finishes in alpd, which then closes the session. Use interrupt to stop work.
+The server-only plugin in `plugins/paseo` registers `alp` through the public `ProviderRegistration` API. All Paseo SDK imports are isolated in `server/compat.ts`; core, the runtime, and the daemon never import the SDK. No Paseo fork or ACP shim is used. Sessions run in `alpd`, the per-user ALP daemon (see [alpd](../../plans/reference/ALPD.md)): the plugin starts it when needed (`ALP_HOME`, default `~/.alp`), forwards Paseo inputs to it, and projects its events back to Paseo. Closing an agent in Paseo only stops watching it; running work finishes in alpd, which then closes the session. Use interrupt to stop work. To start alpd, the plugin uses `ALP_DAEMON_ENTRY`, the path recorded when it was built, the path alpd records in `$ALP_HOME/alpd.json` each time it starts, or the ALP CLI (`alp`) on `PATH`; if none is found, the provider reports that the CLI must be installed and started once with `alp daemon start`.
 
 ## Install
 

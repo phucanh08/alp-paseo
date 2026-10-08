@@ -87,7 +87,7 @@ node src/cli.js send <session> "More context"   # resumes a closed root first
 node src/cli.js interrupt <session>
 ```
 
-`ALP_HOME` selects the daemon's directory (default `~/.alp`); `ALP_RUN_LOG_DIR` overrides where assignment logs go (default `$ALP_HOME/runs`). alpd records sessions and their timelines under `$ALP_HOME/state`. After a restart, or a crash, a root can be resumed with `send` or imported into Paseo; work that was running is marked `daemon_restarted`. The Paseo plugin starts the same daemon automatically.
+`ALP_HOME` selects the daemon's directory (default `~/.alp`); `ALP_RUN_LOG_DIR` overrides where assignment logs go (default `$ALP_HOME/runs`). alpd records sessions, their timelines, and prompt receipts under `$ALP_HOME/state`, and its own location in `$ALP_HOME/alpd.json`. After a restart, or a crash, a root can be resumed with `send` or imported into Paseo; work that was running is marked `daemon_restarted`. The Paseo plugin starts the same daemon automatically.
 
 ## Paseo
 
