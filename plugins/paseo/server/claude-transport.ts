@@ -29,6 +29,20 @@ const toolShapes: Record<string, Record<string, z.ZodType>> = {
     thinking: z.string().min(1).optional(),
     modelReason: z.string().min(1).optional(),
     mode: z.enum(['read-only', 'workspace-write']).optional(),
+    wait: z.boolean().optional(),
+  },
+  alp_wait: {
+    assignments: z.array(z.string().min(1)).max(32).optional(),
+    timeoutMs: z.number().int().positive().optional(),
+  },
+  alp_send: {
+    to: z.string().min(1),
+    kind: z.enum(['answer', 'note', 'steer']),
+    body: z.string().min(1).max(8000),
+    replyTo: z.string().min(1).optional(),
+  },
+  alp_ask: {
+    question: z.string().min(1).max(8000),
   },
   alp_handoff: {
     outcome: z.enum(['complete', 'partial', 'blocked', 'reconsider']),

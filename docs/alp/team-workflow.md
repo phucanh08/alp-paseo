@@ -70,11 +70,41 @@ establish a ranking or guarantee quota access; the coordinator must state uncert
 and must not silently downgrade. There is no automatic fallback model on failure.
 Both oracle and reviewer are forced to read-only regardless of parent permissions.
 
-Every assignment has its own native runtime session and ALP instructions. The
-caller waits for the real handoff. Child timelines identify parent session and tool
-call. Duplicate tool calls are deduplicated; cancellation, steering, timeout, and
-parent shutdown close descendants. The existing maximum of 16 child assignments
-per root turn and ancestry depth of 4 remain in effect.
+Every assignment has its own native runtime session and ALP instructions. By
+default the caller waits for the real handoff, or for the child's first question.
+Child timelines identify parent session and tool call. Duplicate tool calls are
+deduplicated. Interrupt, inactivity, and parent shutdown close descendants; user
+steering reaches the parent and leaves its assignments running. The existing maximum
+of 16 child assignments per user turn and ancestry depth of 4 remain in effect.
+
+## Mail between agents
+
+Agents talk only along the delegation tree: a child writes to its requester, and a
+requester writes to the assignments it started. Siblings cannot address each other;
+the requester relays. The host binds the sender to the calling session.
+
+| Tool | Who | Purpose |
+| --- | --- | --- |
+| `alp_delegate {…, wait: false}` | requester | Start an assignment and return its `assignmentId` immediately |
+| `alp_wait {assignments?, timeoutMs?}` | requester | Return as soon as mail arrives (result, question, note, stall report); on timeout, an empty list and a snapshot of running work. Default 5 minutes, maximum 15 |
+| `alp_send {to, kind, body, replyTo?}` | both | `to` is an assignment id or `"parent"`. Requesters send `answer` (with `replyTo`), `steer`, or `note`; children send `note` only |
+| `alp_ask {question}` | child | Ask the requester and wait for the answer; after 15 minutes it returns `unanswered` |
+
+Delivery, in order: a waiting `alp_wait` or `alp_delegate` call receives the mail;
+otherwise it is steered into the recipient's running turn; otherwise an idle
+recipient is woken with a new turn carrying the mail. Interrupt stops wakes until
+the next user prompt, which then carries the held mail. At most 8 wakes run per
+user prompt, and wakes do not reset the per-turn delegation limit. Steered and wake
+batches are capped at 9,000 characters; bodies at 8,000.
+
+Mail is acknowledged only when the turn that received it completes. If that turn
+fails or is canceled, the mail is delivered again marked `redelivered`. A requester
+whose turn ends while its assignments still run is not finished: it is woken by
+their mail and hands off only after a turn ends with nothing outstanding.
+
+An assignment with no activity in its session tree for 10 minutes is reported to its
+requester as `stalled`; after 20 minutes it fails. Time spent waiting in `alp_ask`
+does not count. Stall reports never wake or steer on their own.
 
 ## Structured handoff
 
