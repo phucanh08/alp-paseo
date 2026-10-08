@@ -11,11 +11,12 @@ import {
   type ProviderTimelineItem,
 } from './compat.js';
 import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAlpRuntime, type RuntimeOptions, type SessionSnapshot, type TimelineItem, type Envelope } from '../../../src/runtime/index.js';
 import { createDaemonServer, type DaemonConnection } from '../../../src/daemon/server.js';
 import { alpHome, connect, ensureDaemon } from '../../../src/client/index.js';
-import { DEFAULT_MODEL, models, modes, templates, thinkingOptions, thinkingOptionsFor, toSessionSpec } from './mapping.js';
+import { alpdSessionOf, DEFAULT_MODEL, handleFor, models, modes, templates, thinkingOptions, thinkingOptionsFor, toSessionSpec } from './mapping.js';
 
 /**
  * Paseo is a viewer of alpd: this provider translates Paseo inputs into daemon
@@ -29,6 +30,7 @@ const supported = [
   'session.persistence',
   'session.subsession',
   'session.configure',
+  'session.list',
 ] as const;
 
 /**
@@ -77,18 +79,6 @@ const errorData = (error: unknown) => ({
   message: error instanceof Error ? error.message : String(error),
 });
 
-const persistence = (session: SessionSnapshot): ProviderPersistence => ({
-  version: 1,
-  data: {
-    threadId: session.threadId,
-    agent: session.agent,
-    cwd: session.projectRoot,
-    runtime: session.runtime,
-    model: session.model,
-    workflow: session.workflow,
-  },
-});
-
 const workflowSetting = (mode: string) => ({ type: 'select' as const, id: 'workflow', label: 'Workflow (new session only)', value: mode, options: [{ value: 'smart', label: 'Smart' }, { value: 'supervised', label: 'Supervised' }] });
 
 function timelineItem(item: TimelineItem): ProviderTimelineItem {
@@ -127,6 +117,11 @@ export function createProvider(options: Options = {}): ProviderRegistration {
       const listeners = new Set<(event: ProviderEvent) => void>();
       /** Request ids of client-initiated opens; children are opened by the runtime. */
       const opening = new Map<string, string>();
+      /** Paseo names a resumed or imported root afresh; alpd keeps the original id. */
+      const alpdIds = new Map<string, string>();
+      const paseoIds = new Map<string, string>();
+      const toAlpd = (sessionId: string) => alpdIds.get(sessionId) ?? sessionId;
+      const toPaseo = (sessionId: string) => paseoIds.get(sessionId) ?? sessionId;
       let closed = false;
 
       const emit = (event: ProviderEvent) => {
@@ -134,21 +129,24 @@ export function createProvider(options: Options = {}): ProviderRegistration {
         for (const listener of listeners) listener(checked);
       };
 
-      function project({ sessionId, event }: Envelope) {
+      function project(envelope: Envelope) {
+        const sessionId = toPaseo(envelope.sessionId);
+        const { event } = envelope;
         switch (event.type) {
           case 'session.opened': {
             const { session } = event;
+            const parentId = session.parentId && toPaseo(session.parentId);
             emit({
               type: 'session.opened',
-              requestId: opening.get(sessionId) ?? `open-${sessionId}`,
+              requestId: opening.get(envelope.sessionId) ?? `open-${sessionId}`,
               sessionId,
               cwd: event.cwd,
               capabilities,
-              restoration: session.parentId ? 'parent' : 'core',
-              ...(session.parentId
-                ? { parentSessionId: session.parentId, toolCallId: session.toolCallId, title: `ALP ${session.agent} (${session.runtime})` }
+              restoration: parentId ? 'parent' : 'core',
+              ...(parentId
+                ? { parentSessionId: parentId, toolCallId: session.toolCallId, title: `ALP ${session.agent} (${session.runtime})` }
                 : {}),
-              ...(session.persistent ? { persistence: persistence(session) } : {}),
+              ...(session.persistent ? { persistence: handleFor(session) } : {}),
             });
             emit({
               type: 'session.config',
@@ -166,7 +164,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
             return;
           }
           case 'session.ready':
-            emit({ type: 'session.ready', requestId: opening.get(sessionId) ?? `open-${sessionId}`, sessionId });
+            emit({ type: 'session.ready', requestId: opening.get(envelope.sessionId) ?? `open-${sessionId}`, sessionId });
             return;
           case 'session.updated': {
             const { session } = event;
@@ -234,13 +232,41 @@ export function createProvider(options: Options = {}): ProviderRegistration {
           return;
         }
 
+        if (input.type === 'sessions') {
+          const { sessions } = await client.request('session.list', { projectRoot: input.cwd ? path.resolve(input.cwd) : undefined, rootsOnly: true, includeClosed: true });
+          const query = input.query?.toLowerCase();
+          emit({
+            type: 'sessions',
+            requestId: input.requestId,
+            sessions: sessions
+              .filter((session: any) => session.persistent && (!query || `${session.title ?? ''} ${session.agent}`.toLowerCase().includes(query)))
+              .slice(0, input.limit ?? 50)
+              .map((session: any) => ({
+                persistence: handleFor(session),
+                cwd: session.projectRoot,
+                title: session.title ? `${session.agent}: ${session.title}` : `ALP ${session.agent}`,
+                description: `${session.runtime}:${session.model} · ${session.status}`,
+                ...(session.updatedAt ? { updatedAt: session.updatedAt } : {}),
+              })),
+          });
+          return;
+        }
+
         if (input.type === 'session.open') {
-          opening.set(input.sessionId, input.requestId);
+          const named = alpdSessionOf(input.config, input.persistence);
+          const alpdId = named ?? input.sessionId;
+          opening.set(alpdId, input.requestId);
+          alpdIds.set(input.sessionId, alpdId);
+          paseoIds.set(alpdId, input.sessionId);
           try {
-            await client.request('session.create', { sessionId: input.sessionId, spec: toSessionSpec(input.config, input.persistence), history: input.history, delegation });
+            await client.request('session.create', { sessionId: alpdId, spec: toSessionSpec(input.config, input.persistence), history: input.history, delegation, resume: named !== undefined });
             roots.add(input.sessionId);
+          } catch (error) {
+            alpdIds.delete(input.sessionId);
+            paseoIds.delete(alpdId);
+            throw error;
           } finally {
-            opening.delete(input.sessionId);
+            opening.delete(alpdId);
           }
           return;
         }
@@ -254,7 +280,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
         if (input.type === 'session.prompt') {
           const { prompt } = input;
           await client.request('session.prompt', {
-            sessionId: input.sessionId,
+            sessionId: toAlpd(input.sessionId),
             clientMessageId: prompt.clientMessageId,
             delivery: prompt.delivery === 'steer' ? 'steer' : 'auto',
             content: prompt.input.type === 'message' ? prompt.input.content : [{ type: prompt.input.type }],
@@ -266,13 +292,13 @@ export function createProvider(options: Options = {}): ProviderRegistration {
         if (input.type === 'session.configure') {
           if (input.changes.settings?.workflow !== undefined) throw new Error('Workflow is fixed for this session; select Smart or Supervised when creating a new session');
           if (Object.keys(input.changes).some(key => key !== 'mode')) throw new Error('Only permission mode can be changed in an existing ALP session');
-          await client.request('session.configure', { sessionId: input.sessionId, mode: input.changes.mode === undefined ? undefined : input.changes.mode ?? 'read-only' });
+          await client.request('session.configure', { sessionId: toAlpd(input.sessionId), mode: input.changes.mode === undefined ? undefined : input.changes.mode ?? 'read-only' });
         } else if (input.type === 'session.close') {
           // Closing a view: alpd closes the session once idle, or lets running work finish.
-          await client.request('session.release', { sessionId: input.sessionId });
+          await client.request('session.release', { sessionId: toAlpd(input.sessionId) });
           roots.delete(input.sessionId);
         } else if (input.type === 'session.interrupt') {
-          await client.request('session.interrupt', { sessionId: input.sessionId });
+          await client.request('session.interrupt', { sessionId: toAlpd(input.sessionId) });
         } else {
           throw new Error(
             `Unsupported operation '${input.type}'`,
@@ -330,7 +356,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
 
         async close() {
           closed = true;
-          await Promise.all([...roots].map(sessionId => client.request('session.release', { sessionId }).catch(() => {})));
+          await Promise.all([...roots].map(sessionId => client.request('session.release', { sessionId: toAlpd(sessionId) }).catch(() => {})));
           roots.clear();
           await shutdown();
           listeners.clear();

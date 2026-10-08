@@ -132,7 +132,9 @@ test('lifecycle: open, prompt, steering, cancellation, persistence/reload preser
   await conn.send({ type: 'session.interrupt', sessionId: 's', requestId: 'stop' });
   assert.equal(events.filter(e => e.type === 'session.turn' && e.state === 'canceled').length, 1);
   const persistence = events.find(e => e.type === 'session.opened').persistence;
-  assert.deepEqual(Object.keys(persistence.data).sort(), ['agent', 'cwd', 'model', 'runtime', 'threadId', 'workflow']);
+  // Paseo stores only a pointer to the alpd session, which owns the native thread.
+  assert.equal(persistence.version, 2);
+  assert.deepEqual(persistence.data, { alpdSessionId: 's', agent: 'main', cwd: root });
   await conn.send({ type: 'session.close', sessionId: 's', requestId: 'close' });
   assert.equal(runtimes[0].closed, true);
   await writeFile(path.join(root, 'ALP.md'), 'Updated project');
@@ -213,4 +215,37 @@ test('Claude permission changes reach the runtime and failed changes are not pub
   await conn.send({ type: 'session.configure', requestId: 'failed', sessionId: 's', changes: { mode: 'read-only' } });
   assert.ok(events.some(e => e.type === 'request.failed' && e.requestId === 'failed'));
   assert.equal(events.filter(e => e.type === 'session.config').at(-1).config.mode, 'workspace-write');
+});
+
+test('a 0.2 handle is adopted by alpd and upgraded to a version 2 handle', async t => {
+  const root = await fixture(t);
+  const { conn, events, runtimes } = await connection(t, root);
+  const legacy = { version: 1, data: { threadId: 'native-thread', agent: 'main', cwd: root, runtime: 'codex', model: 'gpt-5.6-sol', workflow: { mode: 'custom', maxPeers: 2 } } };
+  await conn.send({ type: 'session.open', requestId: 'legacy', sessionId: 'old-agent', config: config(root), persistence: legacy, history: 'replay' });
+  assert.equal(runtimes[1].calls[0].method, 'thread/resume');
+  assert.equal(runtimes[1].calls[0].params.threadId, 'native-thread');
+  const opened = events.find(e => e.type === 'session.opened' && e.sessionId === 'old-agent');
+  assert.deepEqual(opened.persistence, { version: 2, data: { alpdSessionId: 'old-agent', agent: 'main', cwd: root } });
+});
+
+test('Paseo lists alpd roots for import and reopens one under its own id', async t => {
+  const root = await fixture(t);
+  const { conn, events, runtimes } = await connection(t, root);
+  await conn.send(prompt('m1'));
+  runtimes[0].notify('turn/completed', { threadId: 'native-thread', turn: { id: events.find(e => e.type === 'session.turn').turnId, status: 'completed' } });
+  await conn.send({ type: 'session.close', sessionId: 's', requestId: 'close' });
+  await conn.send({ type: 'sessions', requestId: 'list', cwd: root });
+  const listed = events.find(e => e.type === 'sessions');
+  assert.equal(listed.sessions.length, 1);
+  assert.deepEqual(listed.sessions[0].persistence, { version: 2, data: { alpdSessionId: 's', agent: 'main', cwd: root } });
+  assert.equal(listed.sessions[0].title, 'main: Hello');
+  // Paseo imports under a new agent id; the plugin maps it to the alpd session.
+  await conn.send({ type: 'session.open', requestId: 'import', sessionId: 'imported', config: config(root), persistence: listed.sessions[0].persistence, history: 'replay' });
+  assert.equal(runtimes[1].calls[0].method, 'thread/resume');
+  assert.ok(events.some(e => e.type === 'session.ready' && e.sessionId === 'imported' && e.requestId === 'import'));
+  await conn.send({ type: 'session.prompt', sessionId: 'imported', prompt: { clientMessageId: 'm2', delivery: 'auto', input: { type: 'message', content: [{ type: 'text', text: 'Again' }] } } });
+  assert.equal(events.find(e => e.type === 'session.prompt_result' && e.clientMessageId === 'm2').sessionId, 'imported');
+  const missing = { version: 2, data: { alpdSessionId: 'gone', agent: 'main', cwd: root } };
+  await conn.send({ type: 'session.open', requestId: 'gone', sessionId: 'x', config: config(root), persistence: missing, history: 'skip' });
+  assert.match(events.find(e => e.type === 'request.failed' && e.requestId === 'gone').error.message, /no longer exists/);
 });

@@ -7,6 +7,27 @@ export { DEFAULT_MODEL, DEFAULT_CLAUDE_MODEL, models, modes, thinkingOptions, th
 
 export const templates = bundledTemplates;
 
+/**
+ * Version 2 names a session in alpd, which keeps its native thread and history.
+ * Version 1 (plugin 0.2) carried the native thread itself; alpd adopts it on open.
+ */
+export type AlpdHandle = { alpdSessionId: string; agent: string; cwd: string };
+
+export const handleFor = (session: { id: string; agent: string; projectRoot: string }): ProviderPersistence => ({
+  version: 2,
+  data: { alpdSessionId: session.id, agent: session.agent, cwd: session.projectRoot },
+});
+
+/** The alpd session a version 2 handle names, after checking it belongs to this project. */
+export function alpdSessionOf(config: ProviderSessionConfig, persistence?: ProviderPersistence) {
+  if (persistence?.version !== 2) return undefined;
+  const data = persistence.data as Partial<AlpdHandle> | undefined;
+  if (!data || typeof data.alpdSessionId !== 'string' || typeof data.agent !== 'string' || data.cwd !== path.resolve(config.cwd)) throw new Error('Invalid ALP persistence or project mismatch');
+  const agent = config.providerOptions?.agent;
+  if (agent !== undefined && agent !== data.agent) throw new Error('Cannot resume a thread as a different ALP agent');
+  return data.alpdSessionId;
+}
+
 /** Validates Paseo's session config and persistence and translates them to a runtime spec. */
 export function toSessionSpec(config: ProviderSessionConfig, persistence?: ProviderPersistence): SessionSpec {
   const options = config.providerOptions ?? {};
@@ -15,8 +36,9 @@ export function toSessionSpec(config: ProviderSessionConfig, persistence?: Provi
   if (Object.keys(config.settings).some(key => key !== 'workflow')) throw new Error('Unknown ALP session setting');
   if (config.settings.workflow !== undefined && typeof config.settings.workflow !== 'string') throw new Error('workflow must be a string');
   if (config.toolPolicy) throw new Error('Per-tool approval policy is unsupported by this prototype');
-  const restored = persistence?.data as { agent?: string; cwd?: string; threadId?: string; runtime?: string; model?: string; workflow?: { mode: string; maxPeers: number } } | undefined;
-  if (persistence && (persistence.version !== 1 || !restored || typeof restored.agent !== 'string' || typeof restored.threadId !== 'string' || restored.cwd !== path.resolve(config.cwd))) throw new Error('Invalid ALP persistence or project mismatch');
+  const restored = persistence?.version === 2 ? undefined : persistence?.data as { agent?: string; cwd?: string; threadId?: string; runtime?: string; model?: string; workflow?: { mode: string; maxPeers: number } } | undefined;
+  if (persistence?.version === 2) alpdSessionOf(config, persistence);
+  else if (persistence && (persistence.version !== 1 || !restored || typeof restored.agent !== 'string' || typeof restored.threadId !== 'string' || restored.cwd !== path.resolve(config.cwd))) throw new Error('Invalid ALP persistence or project mismatch');
   if (options.workflow !== undefined && typeof options.workflow !== 'string') throw new Error('providerOptions.workflow must be a string');
   if (options.workflow !== undefined && config.settings.workflow !== undefined && options.workflow !== config.settings.workflow) throw new Error('Conflicting workflow selections');
   return {
