@@ -12,9 +12,9 @@ const USAGE = `Usage:
   alp <init|upgrade> [directory]
   alp daemon <start|stop|status|restart>
   alp run [--agent A] [--workflow smart|supervised] [--model M] [--mode read-only|workspace-write] [--thinking T] [--project DIR] [--json] <prompt>
-  alp ps
+  alp ps [--all]
   alp attach <session> [--json]
-  alp send <session> <text>
+  alp send <session> [--json] <text>
   alp interrupt <session>`;
 
 const DAEMON_ENTRY = fileURLToPath(new URL('../dist/alpd.js', import.meta.url));
@@ -188,18 +188,19 @@ async function run(args) {
 }
 
 async function ps(args) {
-  if (args.length) throw new UsageError();
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { all: { type: 'boolean' } } });
+  if (positionals.length) throw new UsageError();
   const client = await running();
-  const { sessions } = await client.request('session.list').finally(() => client.close());
-  if (!sessions.length) { console.log('No live sessions'); return; }
+  const { sessions } = await client.request('session.list', { includeClosed: values.all }).finally(() => client.close());
+  if (!sessions.length) { console.log(values.all ? 'No sessions' : 'No live sessions'); return; }
   const children = new Map();
   for (const session of sessions) {
     const key = session.parentId ?? '';
     children.set(key, [...(children.get(key) ?? []), session]);
   }
   const print = (session, depth) => {
-    const status = session.activeTurnId ? 'running' : session.busy ? 'waiting' : 'idle';
-    console.log(`${'  '.repeat(depth)}${session.id}  ${session.agent}  ${session.runtime}:${session.model}  ${session.mode}  ${status}${depth ? '' : `  ${session.projectRoot}`}`);
+    const status = session.status === 'running' || session.status === 'idle' ? (session.activeTurnId ? 'running' : session.busy ? 'waiting' : 'idle') : session.lastError?.code ?? session.status;
+    console.log(`${'  '.repeat(depth)}${session.id}  ${session.agent}  ${session.runtime}:${session.model}  ${session.mode}  ${status}${depth ? '' : `  ${session.projectRoot}${session.title ? `  "${session.title}"` : ''}`}`);
     for (const child of children.get(session.id) ?? []) print(child, depth + 1);
   };
   for (const root of children.get('') ?? []) print(root, 0);
@@ -213,20 +214,32 @@ async function attach(args) {
     const done = follow(client, positionals[0], printer(values.json), { untilIdle: false });
     const { session } = await client.request('session.attach', { sessionId: positionals[0] });
     if (session.id !== positionals[0]) console.error(`Following root ${session.id}`);
-    await done;
+    // A closed session has only history; resume it with alp send.
+    if (session.status === 'idle' || session.status === 'running') await done;
+    else console.error(`Session is ${session.lastError?.code ?? session.status}; resume it with: alp send ${session.id} <text>`);
   } finally {
     client.close();
   }
 }
 
-async function send([sessionId, ...words]) {
+/** Steers a running root, prompts an idle one, or resumes a closed one; then follows it until idle. */
+async function send(args) {
+  const { values, positionals: [sessionId, ...words] } = parseArgs({ args, allowPositionals: true, options: { json: { type: 'boolean' } } });
   const text = words.join(' ').trim();
   if (!sessionId || !text) throw new UsageError();
-  const client = await running();
+  const client = await connect(await start(), { name: 'alp-cli', version: '1' });
   try {
     const { session } = await client.request('session.get', { sessionId });
-    await client.request('session.prompt', { sessionId, clientMessageId: randomUUID(), delivery: session.activeTurnId ? 'steer' : 'auto', content: [{ type: 'text', text }] });
-    console.log(session.activeTurnId ? 'Steered the running turn' : 'Started a turn');
+    if (session.parentId) throw new Error('Send to the root session; assignments are reached through their requester');
+    const done = follow(client, sessionId, printer(values.json), { untilIdle: true });
+    const live = session.status === 'idle' || session.status === 'running';
+    if (live) await client.request('session.attach', { sessionId, replay: false });
+    else await client.request('session.create', { sessionId, spec: { cwd: session.projectRoot } });
+    const steer = live && !!session.activeTurnId;
+    await client.request('session.prompt', { sessionId, clientMessageId: randomUUID(), delivery: steer ? 'steer' : 'auto', content: [{ type: 'text', text }] });
+    if (!values.json) console.error(steer ? 'Steered the running turn' : live ? 'Started a turn' : 'Resumed the session');
+    if (!await done) process.exitCode = 1;
+    await client.request('session.release', { sessionId }).catch(() => {});
   } finally {
     client.close();
   }
