@@ -306,7 +306,7 @@ Each step ends with all existing unit tests and live e2e green.
 
 1. **Extract runtime in-process.** *(Done 2026-10-08 on `feat/alpd-runtime-extraction`: `src/runtime` with `createAlpRuntime`, events with per-session `seq`; the plugin projects them. Existing team tests stay on the plugin as the regression net; `test/runtime.test.js` covers the runtime API and its import boundary.)* Move transports, `nativeSessionConfig`, mail, delegation, and tool dispatch into `src/runtime` behind `SessionManager` + the §4 event model. The plugin calls it directly and projects events to Paseo (§8 mapping, without a socket). Port `test/team.test.js` to the runtime API; keep a projection subset in the plugin. *Acceptance:* no `@getpaseo` import under `src/runtime`; Paseo e2e (`team`, `mailbox`, `workflow`) unchanged and green.
 2. **Daemon + socket + CLI.** *(Built 2026-10-08 on the same branch; the API as built is in §14.)* Host `SessionManager` in `alpd`; plugin switches to `src/client`; add `alp run/ps/attach`. *Acceptance:* a CLI-only e2e runs main → lead → peer with no Paseo daemon; the same Paseo e2e passes through alpd; closing Paseo mid-delegation does not stop the tree.
-3. **Persistence + reconciliation + import.** Session records, timelines, receipts, crash reconciliation, `session.list`, v1 → v2 handle migration. *Acceptance:* kill -9 alpd mid-turn → restart → records reconciled, root resumable; a CLI-created root imports into Paseo and replays its children.
+3. **Persistence + reconciliation + import.** *(Built 2026-10-08 on the same branch; deltas in §15.)* Session records, timelines, receipts, crash reconciliation, `session.list`, v1 → v2 handle migration. *Acceptance:* kill -9 alpd mid-turn → restart → records reconciled, root resumable; a CLI-created root imports into Paseo and replays its children.
 4. **Phase C on top** (leases/worktrees), then D.
 
 ## 12. What we borrow from Paseo and what we do not
@@ -369,3 +369,18 @@ Step 2 implements a subset of §6 and changes a few shapes. §6 stays the target
 **Starting the daemon.** Clients run `alpd.js --detach`, which starts the daemon in a new session and exits, so the daemon is not part of the client's process tree. Paseo re-bundles and evaluates plugin code, so the plugin cannot locate files beside itself. It resolves alpd from `ALP_DAEMON_ENTRY`, then from the absolute path recorded at build time. **Before publishing the plugin to npm**, alpd needs a location that does not depend on the build machine, for example the `alp` package (Q5).
 
 **Embedded mode.** With `embedded: true` or a custom `transport`, the plugin hosts the daemon server in-process and connects through an in-memory connection (tests, `scripts/*runtime-e2e.mjs`).
+
+## 15. As built in step 3 (2026-10-08)
+
+**Storage.** `$ALP_HOME/state/sessions/<id>.json` holds one record per session (atomic temp + rename, one write queue per session) and `state/timeline/<rootId>.jsonl` holds every envelope of a tree in order. The record keeps the client's `SessionSpec` for roots, the last `SessionSnapshot` (native thread, runtime, model, frozen workflow), `status`, `lastError`, a title taken from the first user message, and timestamps. It does not yet carry the flat §5.2 fields; the snapshot holds them. Receipts are not built: `clientMessageId` is not deduplicated across restarts.
+
+**Reconciliation (§5.4).** On boot, a root left `running` or `initializing` becomes `error` with `lastError.code = 'daemon_restarted'` (an idle root becomes `closed`), an open turn gets a synthetic `turn.ended failed`, and children become `closed` with an `assignment.finished` entry (`status: 'failed', reconciled: true`) in the run log. Closed trees whose root was last updated more than 30 days ago are deleted.
+
+**Resume.** `session.create` with the id of a stored, closed root resumes it: alpd reopens the native thread (`restore`) with the stored spec (the caller may change only `mode` and `thinking`) and, with `history: 'replay'`, replays the stored timeline. That is the root's items, then the children's events in their original order, so a grandchild opens while its parent is open. Only the native thread is resumed; its children and mail are not. With `resume: true`, an unknown id fails with `1001` instead of creating a new session. The result carries `resumed: true`. `session.attach` also works for a closed root; it replays the stored timeline without reopening the root.
+
+**Listing.** `session.list { projectRoot?, rootsOnly? = false, includeClosed? = false }` merges live sessions and records, roots first, newest first. `session.get` returns the same summary (`status`, `title`, `lastError`, `updatedAt`) for live and stored sessions.
+
+**Paseo handles.** The plugin persists `{ version: 2, data: { alpdSessionId, agent, cwd } }`. Opening a version 2 handle resumes that alpd session (`resume: true`), so a pruned session reports that it no longer exists. A version 1 handle (plugin 0.2, carrying the native thread) is adopted: alpd opens a new session that resumes that thread, and Paseo stores the version 2 handle from then on. The plugin's `sessions` handler lists alpd roots, closed ones included, so a tree started with `alp run` can be imported into Paseo with its children.
+
+**CLI.** `alp ps --all` includes closed and errored sessions with their last error. `alp send` to a closed or errored root resumes it first. `alp attach` to a closed session prints its stored timeline and exits.
+

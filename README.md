@@ -28,7 +28,7 @@ npm run check
 npm test
 ```
 
-`npm test` builds the Paseo bundle and the runtime bundle (`dist/runtime`) before running tests. `npm run build` builds both. The runtime in `src/runtime` owns native harnesses, sessions, delegation, and mail without importing Paseo; the plugin is a viewer over it, and the coming `alpd` daemon will host it ([design](plans/reference/ALPD.md)). Core has no external dependencies and can be tested without installing Paseo:
+`npm test` builds the Paseo bundle and the runtime bundle (`dist/runtime`) before running tests. `npm run build` builds both. The runtime in `src/runtime` owns native harnesses, sessions, delegation, and mail without importing Paseo; `alpd` hosts it, and the plugin is a viewer over the daemon ([design](plans/reference/ALPD.md)). Core has no external dependencies and can be tested without installing Paseo:
 
 ```sh
 node --test test/init.test.js test/upgrade.test.js test/delegation.test.js test/resolver.test.js test/ir.test.js test/adapter.test.js
@@ -81,13 +81,13 @@ Use `resolveAgent(projectRoot, { agent: 'your-agent' })` from `src/core/resolver
 ```sh
 node src/cli.js daemon start          # or: status | stop | restart
 node src/cli.js run --workflow supervised "Your task"   # streams the agent tree; Ctrl-C interrupts
-node src/cli.js ps                    # live sessions as a tree
-node src/cli.js attach <session>      # follow a running tree
-node src/cli.js send <session> "More context"
+node src/cli.js ps [--all]            # live sessions as a tree; --all adds closed ones
+node src/cli.js attach <session>      # follow a running tree, or print a closed one
+node src/cli.js send <session> "More context"   # resumes a closed root first
 node src/cli.js interrupt <session>
 ```
 
-`ALP_HOME` selects the daemon's directory (default `~/.alp`); `ALP_RUN_LOG_DIR` overrides where assignment logs go (default `$ALP_HOME/runs`). The Paseo plugin starts the same daemon automatically.
+`ALP_HOME` selects the daemon's directory (default `~/.alp`); `ALP_RUN_LOG_DIR` overrides where assignment logs go (default `$ALP_HOME/runs`). alpd records sessions and their timelines under `$ALP_HOME/state`. After a restart, or a crash, a root can be resumed with `send` or imported into Paseo; work that was running is marked `daemon_restarted`. The Paseo plugin starts the same daemon automatically.
 
 ## Paseo
 

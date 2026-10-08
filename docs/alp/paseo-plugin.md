@@ -74,7 +74,7 @@ Installation commands above target the selected user's daemon. Implementation ve
 | Thinking | Explicit session choice → ALP reasoning → `medium`; `none`, `low`, `medium`, `high`, `xhigh`, `max` |
 | Mode | `read-only` by default; `workspace-write` also supported. Permissions can change while idle; advisors remain read-only and children cannot exceed parent permissions |
 | Approval | `never`; interactive approval and per-tool policy are not advertised and are rejected |
-| Persistence | Paseo stores versioned thread ID, agent identity, project root, runtime/model and workflow snapshot; the native runtime owns conversation storage |
+| Persistence | Paseo stores a version 2 handle naming the alpd session, its agent and project root; alpd keeps the native thread, workflow snapshot and timeline, and resumes them on reopen. Version 1 handles (native thread in Paseo) are adopted on open. Roots started outside Paseo, for example with `alp run`, appear in Paseo's import list with their children |
 | Refresh | Close then resume; reread ALP files and current launch config. Cross-project or cross-agent resume fails |
 | Prompt | Text only; one result per message ID; duplicate IDs in the live session do not re-execute |
 | Steering/cancel | Codex `turn/steer` and `turn/interrupt`; terminal events are deduplicated |
