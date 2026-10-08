@@ -6,7 +6,7 @@ import { createProvider } from '../plugins/paseo/server/dist/index.js';
 const cwd = path.resolve('.alp-test', `runtime-${Date.now()}`);
 await mkdir(path.join(cwd, '.alp', 'agents', 'main'), { recursive: true });
 await writeFile(path.join(cwd, '.alp', 'agents', 'main', 'AGENT.md'), 'You are testing lifecycle operations. Do not use tools or change files.');
-const connection = await createProvider().connect({ versions: [1], capabilities: ['prompt.message', 'prompt.steer', 'session.persistence'] });
+const connection = await createProvider().connect({ versions: [1], capabilities: ['prompt.message', 'prompt.steer', 'session.persistence', 'session.subsession'] });
 const events = [];
 connection.onEvent(event => events.push(event));
 try {
