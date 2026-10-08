@@ -7,6 +7,7 @@ import { alpHome, daemonPaths, PROTOCOL_VERSION } from '../client/index.js';
 import { createAlpRuntime } from '../runtime/index.js';
 import { createDaemonServer } from './server.js';
 import { acquireLock, heartbeat, releaseLock, updateLock } from './lock.js';
+import { createStore } from './store.js';
 
 declare const __ALP_VERSION__: string;
 const VERSION = typeof __ALP_VERSION__ === 'string' ? __ALP_VERSION__ : '0.0.0-dev';
@@ -41,7 +42,9 @@ async function run(home: string) {
   await mkdir(home, { recursive: true, mode: 0o700 });
   const { socket } = daemonPaths(home);
   const lock = await acquireLock(home, { version: VERSION, protocolVersion: PROTOCOL_VERSION, socket });
-  const runtime = createAlpRuntime({ templates, runLogDir: process.env.ALP_RUN_LOG_DIR || path.join(home, 'runs') });
+  const runLogDir = process.env.ALP_RUN_LOG_DIR || path.join(home, 'runs');
+  const runtime = createAlpRuntime({ templates, runLogDir });
+  const store = createStore(path.join(home, 'state'));
   let stopping: Promise<void> | undefined;
   const shutdown = (code = 0) => {
     stopping ??= (async () => {
@@ -50,13 +53,14 @@ async function run(home: string) {
       clearInterval(beat);
       await server.close().catch(() => {});
       await runtime.shutdown().catch(() => {});
+      await store.flush();
       await releaseLock(home);
       console.log(`${new Date().toISOString()} alpd stopped`);
       process.exit(code);
     })();
     return stopping;
   };
-  const server = createDaemonServer({ runtime, socketPath: socket, version: VERSION, onShutdown: () => void shutdown() });
+  const server = createDaemonServer({ runtime, socketPath: socket, version: VERSION, store, runLogDir, onShutdown: () => void shutdown() });
   const beat = setInterval(() => {
     void heartbeat(home).then(owned => { if (!owned) void shutdown(1); });
   }, 30_000);

@@ -20,7 +20,7 @@ const embeddedTemplates = {
 // Paseo re-bundles plugin code, so the plugin also learns where its alpd was built.
 await build({ entryPoints: ['plugins/paseo/server/index.ts'], outfile: 'plugins/paseo/server/dist/index.js', bundle: true, format: 'esm', platform: 'node', target: 'node20', external: ['@getpaseo/plugin/*', '@anthropic-ai/claude-agent-sdk'], plugins: [embeddedTemplates], define: { __ALP_DAEMON_ENTRY__: JSON.stringify(path.resolve('plugins/paseo/server/dist/alpd.js')) } });
 // The viewer-neutral runtime and the daemon server on their own, for tests.
-for (const [entry, outfile] of [['src/runtime/index.ts', 'dist/runtime/index.js'], ['src/daemon/server.ts', 'dist/daemon/server.js']]) {
+for (const [entry, outfile] of [['src/runtime/index.ts', 'dist/runtime/index.js'], ['src/daemon/index.ts', 'dist/daemon/index.js']]) {
   await build({ entryPoints: [entry], outfile, bundle: true, format: 'esm', platform: 'node', target: 'node20', external: ['@anthropic-ai/claude-agent-sdk'] });
 }
 

@@ -1,14 +1,17 @@
 import { randomBytes } from 'node:crypto';
-import { chmod, unlink } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, unlink } from 'node:fs/promises';
 import net from 'node:net';
+import path from 'node:path';
 import { AlpRpcError, MAX_FRAME, PROTOCOL_VERSION } from '../client/index.js';
-import { DEFAULT_MODEL, models, modes, thinkingOptions, type AlpRuntime, type Envelope, type SessionSnapshot } from '../runtime/index.js';
+import { DEFAULT_MODEL, models, modes, thinkingOptions, type AlpEvent, type AlpRuntime, type Envelope, type SessionSnapshot } from '../runtime/index.js';
+import type { SessionRecord, SessionStatus, Store } from './store.js';
 
 /**
- * alpd's JSON-RPC surface over one shared runtime (plans/reference/ALPD.md §3, §6).
+ * alpd's JSON-RPC surface over one shared runtime (plans/reference/ALPD.md §3, §6, §14).
  * Clients attach to root sessions to receive the events of the whole tree. A root
  * with no attached client is closed as soon as it is idle, so work started by a
- * viewer finishes even after the viewer goes away.
+ * viewer finishes even after the viewer goes away. With a store, every session is
+ * recorded and every tree's events are kept, so a closed root can be resumed later.
  */
 
 export const ERROR = { failed: 1000, notFound: 1001, protocol: 1006 } as const;
@@ -24,11 +27,11 @@ type Connection = {
   send(message: unknown): void;
 };
 
-type Logged = { order: number; envelope: Envelope };
-
-/** Retained events per tree, for attach and replay. */
+/** Retained events per live tree, for attach and replay. */
 const TREE_LOG_LIMIT = 20_000;
 const SESSION_ID = /^[\w.:-]{1,128}$/;
+const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const LIVE: SessionStatus[] = ['initializing', 'idle', 'running'];
 
 /** What clients need from a daemon connection; AlpClient implements it over the socket. */
 export type DaemonConnection = {
@@ -45,22 +48,61 @@ export type DaemonServer = {
   close(): Promise<void>;
 };
 
-export function createDaemonServer({ runtime, socketPath, version, onShutdown }: {
+/** A session as clients list it: its last snapshot plus lifecycle. */
+export type SessionSummary = SessionSnapshot & {
+  status: SessionStatus;
+  title?: string;
+  lastError?: SessionRecord['lastError'];
+  updatedAt?: string;
+};
+
+export function createDaemonServer({ runtime, socketPath, version, onShutdown, store, runLogDir }: {
   runtime: AlpRuntime;
   socketPath: string;
   version: string;
   onShutdown?: () => void;
+  /** Durable records and timelines; without it sessions live only in memory. */
+  store?: Store;
+  /** Where crash reconciliation reports assignments it ends, as the runtime does. */
+  runLogDir?: string;
 }): DaemonServer {
   const connections = new Set<Connection>();
-  /** Root of every session seen, until its root closes. */
+  /** Root of every live session. */
   const rootOf = new Map<string, string>();
   const attached = new Map<string, Set<Connection>>();
-  const logs = new Map<string, Logged[]>();
-  let order = 0;
+  const logs = new Map<string, Envelope[]>();
+  const records = new Map<string, SessionRecord & { activeTurnId?: string }>();
   let closing = false;
   const startedAt = new Date().toISOString();
+  const restored = store ? restore() : Promise.resolve();
 
   const deliver = (connection: Connection, envelope: Envelope) => connection.send({ jsonrpc: '2.0', method: 'event', params: envelope });
+
+  function save(record: SessionRecord & { activeTurnId?: string }, changes: Partial<SessionRecord & { activeTurnId?: string }> = {}) {
+    Object.assign(record, changes, { updatedAt: new Date().toISOString() });
+    records.set(record.id, record);
+    void store?.put(record);
+  }
+
+  /** Lifecycle bookkeeping for one event; returns true when the record changed. */
+  function track(sessionId: string, root: string, event: AlpEvent) {
+    const now = new Date().toISOString();
+    let record = records.get(sessionId);
+    if (event.type === 'session.opened') {
+      record ??= { version: 1, id: sessionId, rootId: root, status: 'initializing', createdAt: now, updatedAt: now };
+      save(record, { rootId: root, session: event.session, status: 'idle', lastError: undefined, activeTurnId: undefined });
+      return;
+    }
+    if (!record) return;
+    if (event.type === 'session.updated') save(record, { session: { ...record.session, ...event.session } });
+    else if (event.type === 'turn.started') save(record, { status: 'running', activeTurnId: event.turnId });
+    else if (event.type === 'turn.ended') save(record, { status: 'idle', activeTurnId: undefined, ...(event.state === 'failed' ? { lastError: { message: event.error?.message ?? 'Turn failed' } } : {}) });
+    else if (event.type === 'session.failed') save(record, { status: 'error', lastError: event.error });
+    else if (event.type === 'session.closed') save(record, { status: record.status === 'error' ? 'error' : 'closed', activeTurnId: undefined });
+    else if (event.type === 'item' && sessionId === root && !record.title && event.item.kind === 'user_message' && !event.item.clientMessageId?.startsWith('alp-')) {
+      save(record, { title: event.item.text.replace(/\s+/g, ' ').trim().slice(0, 80) });
+    }
+  }
 
   runtime.onEvent(envelope => {
     const { sessionId, event } = envelope;
@@ -71,9 +113,11 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown }:
     const root = rootOf.get(sessionId) ?? sessionId;
     if (rootOf.has(sessionId)) {
       const log = logs.get(root) ?? [];
-      log.push({ order: ++order, envelope });
+      log.push(envelope);
       if (log.length > TREE_LOG_LIMIT) log.splice(0, log.length - TREE_LOG_LIMIT);
       logs.set(root, log);
+      void store?.append(root, envelope);
+      track(sessionId, root, event);
     }
     for (const connection of attached.get(root) ?? []) deliver(connection, envelope);
     if (event.type === 'session.closed' && sessionId === root) {
@@ -83,12 +127,44 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown }:
     }
   });
 
+  /** Loads records, settles sessions a crash left working, and prunes expired trees. */
+  async function restore() {
+    const loaded = await store!.list();
+    const now = Date.now();
+    const ended = { code: 'daemon_restarted', message: 'alpd stopped while this session was working' };
+    const epoch = `restart-${startedAt}`;
+    const byRoot = new Map<string, SessionRecord[]>();
+    for (const record of loaded) byRoot.set(record.rootId, [...(byRoot.get(record.rootId) ?? []), record]);
+    for (const [root, tree] of byRoot) {
+      const head = tree.find(record => record.id === root);
+      if (head && !LIVE.includes(head.status) && now - Date.parse(head.updatedAt) > RETENTION_MS) {
+        await store!.remove(root, tree.map(record => record.id));
+        continue;
+      }
+      for (const record of tree as Array<SessionRecord & { activeTurnId?: string }>) {
+        records.set(record.id, record);
+        if (!LIVE.includes(record.status)) continue;
+        const envelope = (event: AlpEvent): Envelope => ({ sessionId: record.id, epoch, seq: 0, ts: new Date().toISOString(), event });
+        if (record.activeTurnId) void store!.append(root, envelope({ type: 'turn.ended', turnId: record.activeTurnId, state: 'failed', error: { message: ended.message } }));
+        if (record.id === root) {
+          save(record, record.status === 'idle' ? { status: 'closed', activeTurnId: undefined } : { status: 'error', lastError: ended, activeTurnId: undefined });
+        } else {
+          // Children never survive their runtime; their requester learns the assignment failed.
+          void store!.append(root, envelope({ type: 'session.closed' }));
+          save(record, { status: 'closed', lastError: ended, activeTurnId: undefined });
+          if (runLogDir) {
+            const line = JSON.stringify({ ts: new Date().toISOString(), rootSessionId: root, event: 'assignment.finished', assignmentId: record.id, agent: record.session?.agent, sessionId: record.id, status: 'failed', error: ended.message, reconciled: true }) + '\n';
+            await mkdir(runLogDir, { recursive: true }).then(() => appendFile(path.join(runLogDir, `${root.replace(/[^\w.-]/g, '_')}.jsonl`), line)).catch(() => {});
+          }
+        }
+      }
+    }
+  }
+
   function forget(root: string) {
     if (runtime.snapshot(root)) return;
     for (const [id, candidate] of rootOf) if (candidate === root) rootOf.delete(id);
     logs.delete(root);
-    for (const connection of attached.get(root) ?? []) connection.roots.delete(root);
-    attached.delete(root);
   }
 
   /** Closes an idle root that no client watches. */
@@ -109,7 +185,23 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown }:
 
   function detach(connection: Connection, root: string) {
     attached.get(root)?.delete(connection);
+    if (!attached.get(root)?.size) attached.delete(root);
     connection.roots.delete(root);
+  }
+
+  function summary(id: string): SessionSummary | undefined {
+    const record = records.get(id);
+    const live = runtime.snapshot(id);
+    const session = live ?? record?.session;
+    if (!session) return undefined;
+    const status: SessionStatus = live ? (live.activeTurnId ? 'running' : 'idle') : record?.status === 'error' ? 'error' : 'closed';
+    return { ...session, ...(live ? {} : { busy: false, activeTurnId: undefined }), status, title: record?.title, lastError: record?.lastError, updatedAt: record?.updatedAt };
+  }
+
+  function known(sessionId: string) {
+    const found = summary(sessionId);
+    if (!found) throw new RpcError(ERROR.notFound, 'Session is not open');
+    return found;
   }
 
   function live(sessionId: string) {
@@ -118,9 +210,21 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown }:
     return session;
   }
 
-  function treeRoot(sessionId: string) {
-    live(sessionId);
-    return rootOf.get(sessionId) ?? sessionId;
+  async function treeLog(root: string) {
+    return logs.get(root) ?? await store?.timeline(root) ?? [];
+  }
+
+  /**
+   * Delivers a tree's history: the root's latest items, then the children's events in their
+   * original order, so a grandchild opens while its parent is still open.
+   */
+  function replayHistory(connection: Connection, root: string, log: Envelope[], { children = true } = {}) {
+    const items = new Map<string, Envelope>();
+    for (const envelope of log) {
+      if (envelope.sessionId === root && envelope.event.type === 'item') items.set(envelope.event.item.id, envelope);
+    }
+    for (const item of items.values()) deliver(connection, item);
+    if (children) for (const envelope of log) if (envelope.sessionId !== root) deliver(connection, envelope);
   }
 
   /**
@@ -128,7 +232,7 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown }:
    * its timeline when asked, then live children and running turns.
    */
   function announce(connection: Connection, root: string, history: 'replay' | 'skip') {
-    const log = (logs.get(root) ?? []).map(entry => entry.envelope);
+    const log = logs.get(root) ?? [];
     const sessions = runtime.list().filter(session => (rootOf.get(session.id) ?? session.id) === root);
     for (const session of sessions) {
       const opened = log.find(envelope => envelope.sessionId === session.id && envelope.event.type === 'session.opened');
@@ -136,15 +240,35 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown }:
       const seq = Math.max(...log.filter(envelope => envelope.sessionId === session.id).map(envelope => envelope.seq));
       const envelope = (event: Envelope['event']): Envelope => ({ sessionId: session.id, epoch: opened.epoch, seq, ts: new Date().toISOString(), event });
       deliver(connection, envelope({ ...opened.event, session }));
-      if (history === 'replay' && session.id === root) {
-        const items = new Map<string, Envelope>();
-        for (const candidate of log) {
-          if (candidate.sessionId === root && candidate.event.type === 'item') items.set(candidate.event.item.id, candidate);
-        }
-        for (const item of items.values()) deliver(connection, item);
-      }
+      if (history === 'replay' && session.id === root) replayHistory(connection, root, log, { children: false });
       deliver(connection, envelope({ type: 'session.ready' }));
       if (session.activeTurnId) deliver(connection, envelope({ type: 'turn.started', turnId: session.activeTurnId, origin: 'user' }));
+    }
+  }
+
+  /** Reopens a closed root from its record: the native thread resumes, alpd replays the history. */
+  async function resume(connection: Connection, record: SessionRecord, spec: any, history: 'replay' | 'skip', delegation: boolean) {
+    const session = record.session;
+    if (record.rootId !== record.id) throw new RpcError(ERROR.failed, 'Only root sessions can be resumed');
+    if (!session?.persistent || !session.threadId || !record.spec) throw new RpcError(ERROR.failed, 'This session cannot be resumed');
+    const agent = spec.agent ?? spec.restore?.agent;
+    if (agent !== undefined && agent !== session.agent) throw new RpcError(ERROR.failed, 'Cannot resume a session as a different ALP agent');
+    const stored = await treeLog(record.id);
+    logs.set(record.id, [...stored]);
+    attach(connection, record.id);
+    try {
+      const opened = await runtime.open(record.id, {
+        ...record.spec,
+        ...(spec.mode !== undefined ? { mode: spec.mode } : {}),
+        ...(spec.thinking !== undefined ? { thinking: spec.thinking } : {}),
+        persist: true,
+        restore: { agent: session.agent, threadId: session.threadId, runtime: session.runtime, model: session.model, workflow: session.workflow },
+      }, { history: stored.length ? 'skip' : history, delegation: record.delegation ?? delegation });
+      if (history === 'replay') replayHistory(connection, record.id, stored);
+      return opened;
+    } catch (error) {
+      detach(connection, record.id);
+      throw error;
     }
   }
 
@@ -158,7 +282,7 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown }:
 
     'catalog.get': () => ({ models, modes, thinkingOptions, defaultModel: `codex:${DEFAULT_MODEL}` }),
 
-    async 'session.create'(connection, { sessionId, spec, history = 'skip', delegation = true }) {
+    async 'session.create'(connection, { sessionId, spec, history = 'skip', delegation = true, resume: resuming = false }) {
       if (!spec || typeof spec !== 'object' || typeof spec.cwd !== 'string') throw new RpcError(-32602, 'spec.cwd is required');
       if (sessionId !== undefined && (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId))) throw new RpcError(-32602, 'Invalid session id');
       if (history !== 'replay' && history !== 'skip') throw new RpcError(-32602, 'history must be replay or skip');
@@ -172,20 +296,29 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown }:
         announce(connection, id, history);
         return { session: existing, attached: true };
       }
+      const record = records.get(id);
+      if (!record && resuming) throw new RpcError(ERROR.notFound, `ALP session ${id} no longer exists in alpd`);
+      if (record) return { session: await resume(connection, record, spec, history, delegation), attached: false, resumed: true };
+      const { restore: _restore, ...kept } = spec;
+      const now = new Date().toISOString();
+      save({ version: 1, id, rootId: id, spec: kept, delegation, status: 'initializing', createdAt: now, updatedAt: now });
       attach(connection, id);
       try {
         return { session: await runtime.open(id, spec, { history, delegation }), attached: false };
       } catch (error) {
         detach(connection, id);
+        records.delete(id);
+        await store?.remove(id, [id]);
         throw error;
       }
     },
 
-    'session.attach'(connection, { sessionId, replay = true }) {
-      const root = treeRoot(sessionId);
+    async 'session.attach'(connection, { sessionId, replay = true }) {
+      const found = known(sessionId);
+      const root = rootOf.get(sessionId) ?? records.get(sessionId)?.rootId ?? sessionId;
       attach(connection, root);
-      if (replay) for (const { envelope } of logs.get(root) ?? []) deliver(connection, envelope);
-      return { session: runtime.snapshot(root) };
+      if (replay) for (const envelope of await treeLog(root)) deliver(connection, envelope);
+      return { session: root === found.id ? found : summary(root) };
     },
 
     async 'session.release'(connection, { sessionId }) {
@@ -218,11 +351,17 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown }:
     },
 
     'session.get'(_connection, { sessionId }) {
-      return { session: live(sessionId) };
+      return { session: known(sessionId) };
     },
 
-    'session.list'(): { sessions: SessionSnapshot[] } {
-      return { sessions: runtime.list() };
+    'session.list'(_connection, { projectRoot, rootsOnly = false, includeClosed = false } = {}): { sessions: SessionSummary[] } {
+      const ids = new Set([...runtime.list().map(session => session.id), ...records.keys()]);
+      const sessions = [...ids].map(summary).filter((session): session is SessionSummary => !!session)
+        .filter(session => includeClosed || session.status === 'idle' || session.status === 'running')
+        .filter(session => !rootsOnly || !session.parentId)
+        .filter(session => projectRoot === undefined || session.projectRoot === projectRoot)
+        .sort((a, b) => Number(!!a.parentId) - Number(!!b.parentId) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+      return { sessions };
     },
   };
 
@@ -238,6 +377,7 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown }:
         return;
       }
       if (!connection.helloed) throw new RpcError(ERROR.protocol, 'daemon.hello is required first');
+      await restored;
       const handler = Object.hasOwn(handlers, method) ? handlers[method] : undefined;
       if (!handler) throw new RpcError(-32601, `Unknown method '${method}'`);
       respond({ result: await handler(connection, params ?? {}) });
@@ -339,6 +479,7 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown }:
       for (const connection of connections) connection.socket?.destroy();
       await stopped;
       await unlink(socketPath).catch(() => {});
+      await store?.flush();
     },
   };
 }

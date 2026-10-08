@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initProject } from '../src/core/init.js';
 import { connect, daemonPaths, ensureDaemon, readLock, PROTOCOL_VERSION } from '../src/client/index.js';
 import { createAlpRuntime } from '../dist/runtime/index.js';
-import { createDaemonServer } from '../dist/daemon/server.js';
+import { createDaemonServer, createStore } from '../dist/daemon/index.js';
 
 async function until(check) {
   for (let i = 0; i < 400; i++) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 5)); }
@@ -154,4 +154,127 @@ test('alpd starts detached, publishes its socket in the lock, and shuts down cle
   client.close();
   await until(async () => !(await readLock(home)));
   await assert.rejects(access(socket));
+});
+
+/** A daemon over a durable store; `stop(false)` abandons it without a clean shutdown, like a crash. */
+async function durable(t, directory, project, runtimes) {
+  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), runLogDir: path.join(directory, 'runs') });
+  const store = createStore(path.join(directory, 'state'));
+  const socketPath = path.join(directory, `d${runtimes.length}.sock`);
+  const server = createDaemonServer({ runtime, socketPath, version: 'test', store, runLogDir: path.join(directory, 'runs') });
+  await server.listen();
+  const client = await connect(socketPath);
+  const events = [];
+  client.onEvent(envelope => events.push(envelope));
+  let stopped = false;
+  const stop = async (clean = true) => {
+    if (stopped) return;
+    stopped = true;
+    client.close();
+    if (clean) { await server.close(); await runtime.shutdown(); } else { await store.flush(); await server.close(); }
+  };
+  t.after(async () => { await stop(); await runtime.shutdown(); });
+  return { client, events, store, stop };
+}
+
+async function durableProject(t) {
+  const directory = await mkdtemp(path.join(tmpdir(), 'alpd-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const project = path.join(directory, 'project');
+  await initProject(project);
+  await writeFile(path.join(project, '.alp/settings.json'), JSON.stringify({ delegation: { main: ['lead'] } }));
+  return { directory, project };
+}
+
+test('sessions survive a daemon restart and resume with their history', async t => {
+  const { directory, project } = await durableProject(t);
+  const runtimes = [];
+  const first = await durable(t, directory, project, runtimes);
+  const { session } = await first.client.request('session.create', { spec: { cwd: project, persist: true } });
+  await first.client.request('session.prompt', { sessionId: session.id, clientMessageId: 'm1', content: text('Remember ORCHID') });
+  runtimes[0].finish('Noted');
+  await until(() => first.events.some(e => e.event.type === 'turn.ended'));
+  await first.stop();
+
+  const second = await durable(t, directory, project, runtimes);
+  const { sessions } = await second.client.request('session.list', { includeClosed: true });
+  assert.deepEqual(sessions.map(s => [s.id, s.status, s.title]), [[session.id, 'closed', 'Remember ORCHID']]);
+  const resumed = await second.client.request('session.create', { sessionId: session.id, spec: { cwd: project }, history: 'replay' });
+  assert.equal(resumed.resumed, true);
+  const resumeCall = runtimes[1].calls.find(c => c.method === 'thread/resume');
+  assert.equal(resumeCall.params.threadId, 'thread-0');
+  const replayed = second.events.filter(e => e.event.type === 'item').map(e => e.event.item.text);
+  assert.deepEqual(replayed, ['Remember ORCHID', 'Noted']);
+  assert.equal((await second.client.request('session.get', { sessionId: session.id })).session.status, 'idle');
+});
+
+test('a crash leaves records that the next daemon settles: root errored and resumable, assignments failed', async t => {
+  const { directory, project } = await durableProject(t);
+  const runtimes = [];
+  const first = await durable(t, directory, project, runtimes);
+  const { session } = await first.client.request('session.create', { spec: { cwd: project, persist: true } });
+  await first.client.request('session.prompt', { sessionId: session.id, clientMessageId: 'm1', content: text('Delegate') });
+  void runtimes[0].call('alp_delegate', { agent: 'lead', task: 'Work' });
+  await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start') && first.events.some(e => e.event.type === 'session.opened' && e.event.session.parentId));
+  const child = first.events.find(e => e.event.type === 'session.opened' && e.event.session.parentId).sessionId;
+  await first.stop(false);
+
+  const second = await durable(t, directory, project, runtimes);
+  const { sessions } = await second.client.request('session.list', { includeClosed: true });
+  const root = sessions.find(s => s.id === session.id);
+  assert.equal(root.status, 'error');
+  assert.equal(root.lastError.code, 'daemon_restarted');
+  assert.equal(sessions.find(s => s.id === child).status, 'closed');
+  const runLog = (await readFile(path.join(directory, 'runs', `${session.id}.jsonl`), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.ok(runLog.some(entry => entry.event === 'assignment.finished' && entry.assignmentId === child && entry.status === 'failed' && entry.reconciled));
+  const timeline = await second.store.timeline(session.id);
+  assert.ok(timeline.some(e => e.sessionId === session.id && e.event.type === 'turn.ended' && e.event.state === 'failed'));
+  await second.client.request('session.create', { sessionId: session.id, spec: { cwd: project } });
+  assert.equal(runtimes.at(-1).calls[0].method, 'thread/resume');
+});
+
+test('closed trees older than 30 days are pruned at startup', async t => {
+  const { directory, project } = await durableProject(t);
+  const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+  const store = createStore(path.join(directory, 'state'));
+  await store.put({ version: 1, id: 'old-root', rootId: 'old-root', status: 'closed', createdAt: old, updatedAt: old });
+  await store.put({ version: 1, id: 'recent', rootId: 'recent', status: 'closed', createdAt: old, updatedAt: new Date().toISOString() });
+  await store.append('old-root', { sessionId: 'old-root', epoch: 'e', seq: 1, ts: old, event: { type: 'session.ready' } });
+  await store.flush();
+  const runtimes = [];
+  const daemon = await durable(t, directory, project, runtimes);
+  const { sessions } = await daemon.client.request('session.list', { includeClosed: true });
+  assert.deepEqual(sessions.map(s => s.id), []);
+  assert.deepEqual((await store.list()).map(r => r.id), ['recent']);
+  assert.deepEqual(await store.timeline('old-root'), []);
+});
+
+test('resumed history replays a grandchild while its parent is open', async t => {
+  const { directory, project } = await durableProject(t);
+  await writeFile(path.join(project, '.alp/settings.json'), JSON.stringify({ delegation: { main: ['lead'], lead: ['peer'] } }));
+  const runtimes = [];
+  const first = await durable(t, directory, project, runtimes);
+  const { session } = await first.client.request('session.create', { spec: { cwd: project, persist: true } });
+  await first.client.request('session.prompt', { sessionId: session.id, clientMessageId: 'm1', content: text('Delegate') });
+  const lead = runtimes[0].call('alp_delegate', { agent: 'lead', task: 'Work' });
+  await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
+  const peer = runtimes[1].call('alp_delegate', { agent: 'peer', task: 'Work' });
+  await until(() => runtimes[2]?.calls.some(c => c.method === 'turn/start'));
+  runtimes[2].finish('peer done');
+  await peer;
+  runtimes[1].finish('lead done');
+  await lead;
+  runtimes[0].finish('main done');
+  await until(() => first.events.some(e => e.sessionId === session.id && e.event.type === 'turn.ended'));
+  await first.stop();
+
+  const second = await durable(t, directory, project, runtimes);
+  await second.client.request('session.create', { sessionId: session.id, spec: { cwd: project }, history: 'replay' });
+  const open = new Set([session.id]);
+  for (const { sessionId, event } of second.events) {
+    if (event.type === 'session.opened' && event.session.parentId) assert.ok(open.has(event.session.parentId), `${event.session.agent} opened after its parent closed`);
+    if (event.type === 'session.opened') open.add(sessionId);
+    if (event.type === 'session.closed') open.delete(sessionId);
+  }
+  assert.deepEqual(second.events.filter(e => e.event.type === 'session.opened').map(e => e.event.session.agent), ['main', 'lead', 'peer']);
 });
