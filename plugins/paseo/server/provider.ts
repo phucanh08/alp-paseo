@@ -22,6 +22,7 @@ const supported = [
   'prompt.steer',
   'session.persistence',
   'session.subsession',
+  'session.configure',
 ] as const;
 
 type RuntimeKind = 'codex' | 'claude';
@@ -1108,6 +1109,25 @@ export function createProvider(options: Options = {}): ProviderRegistration {
           throw new Error('Workflow is fixed for this session; select Smart or Supervised when creating a new session');
         }
 
+        if (input.type === 'session.configure') {
+          if (session.active || session.pending || session.children.size) throw new Error('Wait for the current turn and child sessions to finish before changing permissions');
+          if (Object.keys(input.changes).some(key => key !== 'mode')) throw new Error('Only permission mode can be changed in an existing ALP session');
+          const mode = input.changes.mode === undefined ? session.mapping.mode : input.changes.mode ?? 'read-only';
+          if (!modes.some(candidate => candidate.id === mode)) throw new Error(`Unsupported mode '${mode}'`);
+          if (['oracle', 'reviewer'].includes(session.mapping.agent.name) && mode !== 'read-only') throw new Error('Advisors must remain read-only');
+          if (session.parent && sessions.get(session.parent)?.mapping.mode === 'read-only' && mode !== 'read-only') throw new Error('Child cannot exceed parent permissions');
+          if (session.runtimeKind === 'claude') await session.runtime.request('session/configure', { sandbox: mode });
+          session.mapping.mode = mode;
+          session.config = { ...session.config, mode };
+          emit({ type: 'session.config', sessionId: input.sessionId, config: {
+            model: session.mapping.model, mode, thinkingOption: session.mapping.thinking,
+            models, modes, thinkingOptions: thinkingOptionsFor(session.runtimeKind, session.mapping.model),
+            settings: [{ type: 'select', id: 'workflow', label: 'Workflow (new session only)', value: session.mapping.workflow.mode, options: [{ value: 'smart', label: 'Smart' }, { value: 'supervised', label: 'Supervised' }] }],
+          } });
+          emit({ type: 'request.completed', requestId: input.requestId });
+          return;
+        }
+
         if (input.type === 'session.close') {
           await closeSession(
             input.sessionId,
@@ -1282,6 +1302,9 @@ export function createProvider(options: Options = {}): ProviderRegistration {
                     input: nativeInput,
                     effort:
                       session.mapping.thinking,
+                    sandboxPolicy: session.mapping.mode === 'read-only'
+                      ? { type: 'readOnly', networkAccess: false }
+                      : { type: 'workspaceWrite', writableRoots: [session.mapping.agent.projectRoot], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
                   },
                 );
 
