@@ -1,9 +1,12 @@
 // Opt-in integration: requires a running daemon with the ALP plugin and Claude Code authentication.
 import assert from 'node:assert/strict';
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { createPaseoClient } from '@getpaseo/client';
 
-const root = path.resolve(process.env.ALP_TEST_ROOT ?? '.');
+// Default to an ignored fixture: the provider installs ALP starter files into the project.
+const root = path.resolve(process.env.ALP_TEST_ROOT ?? path.join('.alp-test', `claude-${Date.now()}`));
+await mkdir(root, { recursive: true });
 const url = process.env.ALP_TEST_PASEO_URL ?? 'ws://127.0.0.1:6767/ws';
 const model = process.env.ALP_TEST_CLAUDE_MODEL ?? 'sonnet';
 const client = createPaseoClient({ url, clientId: `alp-claude-e2e-${Date.now()}` });
