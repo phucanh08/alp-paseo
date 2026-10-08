@@ -62,9 +62,13 @@ Use a Paseo plugin/provider integration as the first runtime host because Paseo 
 
 Do not fork Paseo unless the plugin boundary proves insufficient for a concrete requirement.
 
+Superseded by D12 on 2026-10-08: Paseo validated the runtime path and remains the primary viewer, but it is no longer the runtime host.
+
 ## D9 — ACP later
 
 Do not make ACP the canonical ALP config format. Implement standalone ALP ACP only after `ResolvedAgent` and the ALP session/event model are stable.
+
+Updated 2026-10-08: ACP is an adapter over the `alpd` API (D12), not the daemon's primary protocol, because ACP cannot represent mailbox and delegation trees faithfully.
 
 ## D10 — Progressive disclosure
 
@@ -79,3 +83,11 @@ The Paseo adapter owns runtime tool calls and child session lifecycle. It binds 
 Updated by explicit user decision on 2026-10-08: delegation may be asynchronous, with two-way mail along the delegation tree (`alp_wait`, `alp_send`, `alp_ask`). Siblings never address each other directly; the requester relays. Direct sibling mail is deferred until parallel writers are isolated. User steering no longer closes children; interrupt, inactivity, and parent shutdown still close the subtree. Idle requesters are woken by mail.
 
 Main's expanded authority does not elevate sandbox permissions or override user constraints. Authorship and independent review remain distinct. Role instructions are behavioral contracts; the runtime enforces delegation routes and modes, not arbitrary prose ownership rules or per-file access controls.
+
+## D12 — Native ALP daemon
+
+Decided by the user on 2026-10-08. ALP runs as `alpd`, one native daemon per user that serves many projects. `alpd` owns native runtimes (Codex, Claude), session lifecycle, delegation trees, mailbox, persistence, and later file leases/worktrees. Agent-to-agent calls stay inside `alpd` and never round-trip through a viewer.
+
+`alpd` exposes ALP's own JSON-RPC API with a provider-neutral event stream over a user-only local socket. Clients are views: the Paseo plugin becomes a thin RPC client that may create, prompt, steer, and interrupt sessions, all forwarded to `alpd`; the `alp` CLI proves headless operation; ACP is a later adapter (D9). Paseo stores only a pointer to the ALP session. Clients auto-start the daemon when it is not running.
+
+Migration is incremental, with existing e2e evidence kept green at each step: (1) extract runtimes, delegation, and mailbox from the Paseo plugin into a Paseo-free in-process runtime (Phase 8); (2) host that runtime in `alpd` behind the socket and reduce the plugin to a client, adding CLI commands; (3) move persistence to `alpd`; (4) build phase C (leases/worktrees) in the daemon. The daemon precedes phase C.

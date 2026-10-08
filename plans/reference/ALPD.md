@@ -1,0 +1,345 @@
+# alpd — Native ALP Daemon
+
+Status: **approved by the user on 2026-10-08**, including every proposal in §13. Implements decision D12.
+
+This spec defines what `alpd` owns, how clients talk to it, what it stores, and how we get there from the current Paseo plugin without breaking v0.2.x. Where a design is borrowed from Paseo 0.11.1, the Paseo symbol is named so it can be re-read (`@getpaseo/*` in `node_modules`, daemon source inside `/Applications/Paseo.app/Contents/Resources/app.asar`).
+
+## 1. Goals and non-goals
+
+Goals:
+
+- One daemon per user serves every ALP project on the machine.
+- `alpd` owns native runtimes (Codex app-server, Claude Agent SDK), sessions, delegation trees, mailbox, timeline, and persistence. Agent-to-agent calls never leave the daemon.
+- Clients are views: the Paseo plugin (thin proxy), the `alp` CLI, later ACP.
+- A session survives viewer restarts. Closing Paseo does not stop work.
+- Existing ALP semantics (D11: routes, limits, mail, steer/interrupt rules, handoff) are preserved exactly; this is a relocation, not a redesign.
+
+Non-goals for v1 (explicitly deferred):
+
+- Remote access, TCP listen, passwords, relay, WebSocket, browser clients.
+- Resuming an in-flight turn after a daemon crash (native runtimes cannot).
+- Interactive permission approvals (today they are unsupported; the event schema reserves them, §6.4).
+- File leases / worktrees (phase C, built on top of v1).
+- Human mail channel and dashboards (phase D).
+- Windows named pipes (keep the transport abstract so it can be added).
+
+## 2. Process model
+
+Borrowed from Paseo's `runSupervisor` / `daemon-worker` / `acquirePidLock`, simplified.
+
+- **Home:** `ALP_HOME`, default `~/.alp` (already holds `runs/`). Created `0700`.
+- **v1 is a single process** (no supervisor/worker split). Paseo's split exists to restart a crashed worker and to own logs; we take the restart responsibility to the client auto-start path (§2.3) and revisit the split if crashes happen in practice.
+- **Lock file** `~/.alp/alpd.lock`, created with `open(..., 'wx')`:
+  `{ pid, startedAt, bootTime, uid, version, protocolVersion, socket, ready: boolean }`.
+  - Stale when `kill(pid, 0)` fails, or `bootTime` differs from the current boot (pid reuse guard, as Paseo).
+  - Before removing a stale lock, re-read it and confirm it is unchanged.
+  - Heartbeat: touch mtime every 30 s; if the daemon finds it no longer owns the lock, it shuts down.
+- **Socket** `~/.alp/alpd.sock` (unix domain socket, `0600`, inside the `0700` home). File permissions are the authentication in v1; no token. (Paseo admits any loopback client as owner when no password is set — we avoid TCP entirely instead.)
+- **Logs** `~/.alp/logs/alpd.log`, rotated at 10 MB × 3. Never log prompts' credentials or env values.
+
+### 2.1 Startup
+
+1. Acquire lock (or exit with "already running" + the live lock contents).
+2. Load state (§5), reconcile crashed records (§5.4).
+3. Listen on the socket, then set `ready: true` in the lock. Clients wait on the lock, not on probing the socket (Paseo `waitForDaemonReady`).
+
+### 2.2 Shutdown
+
+Order, borrowed from Paseo `stop()`: stop accepting connections → refuse new sessions/turns → interrupt running turns (bounded 5 s each) → close all subtrees → flush storage → close runtimes and kill their process trees → remove socket → release lock. SIGINT/SIGTERM trigger it; a forced exit after 10 s.
+
+### 2.3 Auto-start and version skew
+
+Shared client library (`src/client/`), used by CLI and plugin:
+
+1. Read the lock. If live and `ready`, connect to `socket`.
+2. Otherwise spawn `alpd` detached (stdio to the log), and poll the lock every 100 ms up to 15 s. On timeout, report the last 30 log lines (as Paseo does).
+3. `daemon.hello` (§3.2). If `protocolVersion` differs, fail with a clear message (`alp daemon restart` after upgrading). Clients never restart a daemon they did not start, and never one with running sessions, without the user's command.
+
+**Environment:** an auto-started daemon inherits the starting client's environment (PATH, provider credentials). Runtimes receive that environment with the same scrubbing as today (`PASEO_*`, `CODEX_*`, `CLAUDE_CODE_*`). See open question Q3.
+
+## 3. Transport and protocol
+
+### 3.1 Framing
+
+JSON-RPC 2.0, one JSON object per line (NDJSON) over the unix socket — the same framing our `CodexTransport` already speaks. Maximum frame 16 MiB. Requests `{jsonrpc, id, method, params}`, responses `{jsonrpc, id, result | error{code, message, data?}}`, server pushes are notifications `{jsonrpc, method: "event", params}`.
+
+Paseo uses a bespoke `*_request`/`*_response` envelope with three error channels; we do not copy that. One error channel, stable codes:
+
+| code | meaning |
+|---|---|
+| -32600..-32603 | JSON-RPC standard |
+| 1001 `not_found` | session/subscription unknown |
+| 1002 `invalid_state` | e.g. configure while running |
+| 1003 `forbidden` | route/limit/permission violation |
+| 1004 `conflict` | idempotency key reused with different input |
+| 1005 `unavailable` | runtime failed / daemon shutting down |
+
+### 3.2 Handshake
+
+`daemon.hello { protocolVersion: 1, client: { name, version }, capabilities: string[] }`
+→ `{ protocolVersion: 1, daemonVersion, daemonId, capabilities: string[] }`.
+
+Capabilities are negotiated by intersection, reusing Paseo provider capability names where they mean the same thing (`session.persistence`, `session.subsession`, `prompt.steer`, `session.list`). Any compatibility shim is tagged `COMPAT(name): added vX, remove after <date>` (Paseo's discipline). Start with one protocol version and few capabilities.
+
+### 3.3 Connections
+
+Each connection is independent. A client that reconnects re-subscribes with its last cursor (§4.3) and the daemon replays what it missed — this closes the gap Paseo leaves to clients. No session grace period is needed because subscriptions are cheap to recreate and no state lives on the connection, except subscriptions.
+
+## 4. Event model
+
+### 4.1 Session events
+
+Every event belongs to exactly one session and carries a per-session position:
+
+```ts
+type Envelope = {
+  sessionId: string;
+  epoch: string;      // random per timeline store; changes only on reset/rewrite
+  seq: number;        // strictly increasing per session
+  ts: string;         // ISO
+  turnId?: string;
+  event: AlpEvent;
+};
+
+type AlpEvent =
+  | { type: 'session.created'; session: SessionSnapshot }        // includes children
+  | { type: 'session.updated'; session: SessionSnapshot }        // status/config/title/archive
+  | { type: 'turn.started'; turnId: string; origin: 'user' | 'wake' | 'delegation' }
+  | { type: 'turn.ended'; turnId: string; state: 'completed' | 'failed' | 'canceled'; error?: AlpError }
+  | { type: 'item'; item: TimelineItem }                          // id-keyed upsert
+  | { type: 'usage'; usage: Usage }
+  | { type: 'mail'; mail: MailEvent; direction: 'in' | 'out' }    // §7
+  | { type: 'assignment'; assignment: AssignmentSnapshot }        // started/finished
+  | { type: 'permission.requested'; request: PermissionRequest }  // reserved, §6.4
+  | { type: 'permission.resolved'; requestId: string; resolution: PermissionResolution }
+  | { type: 'notice'; level: 'info' | 'warning' | 'error'; message: string };
+```
+
+`origin: 'wake'` makes mail-driven turns visible; Paseo renders them as autonomous runs (`trackAutonomousRun`).
+
+### 4.2 Timeline items
+
+Shapes copied nearly verbatim from Paseo's `AgentTimelineItem` / `ToolCallDetail` so the plugin projection is renames only. Unlike Paseo's client wire (deltas + collapse rules), alpd emits **full snapshots keyed by `item.id`**; a later event with the same id replaces the earlier one. That matches Paseo's provider contract (`timeline.item`), and Paseo's daemon produces deltas itself.
+
+```ts
+type TimelineItem = { id: string } & (
+  | { kind: 'user_message'; text: string; clientMessageId?: string; source?: 'user' | 'mail' | 'assignment' }
+  | { kind: 'assistant_message'; text: string }
+  | { kind: 'reasoning'; text: string }
+  | { kind: 'tool_call'; callId: string; name: string; status: 'running' | 'completed' | 'failed' | 'canceled';
+      detail: { type: 'shell'; command: string; cwd?: string; output?: string; exitCode?: number }
+            | { type: 'sub_agent'; childSessionId: string; agent: string; assignmentId: string }
+            | { type: 'unknown'; input?: unknown; output?: unknown };
+      error?: string }
+  | { kind: 'handoff'; assignmentId: string; handoff: Handoff }
+  | { kind: 'error'; message: string }
+);
+```
+
+`sub_agent` replaces today's `detail.type: 'unknown'` for `alp_delegate`, so viewers can link parent and child. More native item types (file edits, search, todo) are added as the transports surface them; the union is open by `kind`.
+
+### 4.3 Storage, fetch, and catch-up
+
+- alpd **owns the timeline**: each session has an append-only `timeline/<sessionId>.jsonl` of envelopes. This is required because Claude has no replay (`turns: []`) and child threads are ephemeral; Paseo instead rebuilds from provider history, which we cannot.
+- `session.timeline { sessionId, direction: 'tail' | 'before' | 'after', cursor?: { epoch, seq }, limit? = 200 }` → `{ epoch, entries: Envelope[], reset, hasOlder, hasNewer }`. A cursor with another epoch, or an `after` cursor below the retained window, returns the tail with `reset: true` (Paseo `staleCursor` / `gap`).
+- Fetch returns raw envelopes; collapsing same-id items is the client's job (a trivial `Map` by id). No `seqStart/seqEnd/collapsed/projection` modes.
+
+## 5. Data model and storage
+
+### 5.1 Layout
+
+```text
+~/.alp/
+  alpd.lock  alpd.sock  logs/alpd.log
+  state/
+    sessions/<sessionId>.json       # SessionRecord, atomic temp+rename, per-session write queue
+    timeline/<sessionId>.jsonl      # envelopes, append-only
+    receipts/<sha256>.json          # idempotency receipts, pruned after 7 days
+  runs/<rootSessionId>.jsonl        # assignment log (unchanged format, still written)
+```
+
+Flat `sessions/<id>.json` (not Paseo's `agents/<cwd-slug>/<id>.json`, which moves when cwd changes). All JSON is validated on load; invalid files are logged and skipped.
+
+### 5.2 SessionRecord
+
+```ts
+type SessionRecord = {
+  version: 1;
+  id: string;                    // 'ses_' + 16 hex
+  projectRoot: string;           // absolute, realpath
+  agent: string;
+  runtime: 'codex' | 'claude';
+  model: string;
+  mode: 'read-only' | 'workspace-write';
+  thinking?: string;
+  workflow: WorkflowSnapshot;    // frozen at creation, as today
+  title?: string;
+  parentId?: string; rootId: string; assignmentId?: string; toolCallId?: string;
+  native: { threadId?: string; persistent: boolean };   // children: persistent=false
+  status: 'initializing' | 'idle' | 'running' | 'error' | 'closed';
+  lastError?: AlpError;
+  createdAt: string; updatedAt: string; archivedAt?: string;
+};
+```
+
+Unlike today, `mode` and `thinking` are persisted. Mail queues, assignments, waiters, and wake counters are runtime state rebuilt from the run log only for reporting; they are not resumed (§5.4).
+
+### 5.3 Multi-project
+
+Sessions are keyed by id; `projectRoot` scopes resolution. `.alp/settings.json`, `ALP.md`, and agent packages are read from the project at session creation and on explicit refresh, exactly as `mapSession` does now. A delegation tree never crosses projects. A global limit `maxRunningSessions` (default 8) is enforced in addition to per-root limits; see Q4.
+
+### 5.4 Crash reconciliation
+
+On boot, any record left `initializing` or `running` becomes `error` with `lastError: { code: 'daemon_restarted' }`, any live assignment is recorded `finished` with status `failed`, and child sessions are marked `closed`. Root sessions stay resumable: the next prompt resumes the native thread (Codex `thread/resume`, Claude `resume`). Paseo does no boot reconciliation; we do.
+
+## 6. Client API (v1)
+
+All methods except `daemon.*` take the session id the client got from `session.create` / `session.list`. Agent-facing tools (`alp_delegate`, `alp_wait`, `alp_ask`, `alp_send`, `alp_handoff`) are **not** client methods; the daemon handles them internally.
+
+### 6.1 Daemon
+
+| method | params → result |
+|---|---|
+| `daemon.hello` | §3.2 |
+| `daemon.status` | → `{ version, pid, startedAt, sessions: { running, idle, total } }` |
+| `daemon.shutdown` | `{ force? }` → `{}`; refused with running sessions unless `force` |
+| `catalog.get` | `{ projectRoot? }` → `{ runtimes, models, modes, thinking, agents? }` (agents listed when a project is given) |
+
+### 6.2 Sessions
+
+| method | params → result |
+|---|---|
+| `session.create` | `{ projectRoot, agent?, runtime?, model?, mode?, thinking?, title?, idempotencyKey?, prompt?: PromptInput, adoptThreadId? }` → `{ session }`. Runs `initProject` when needed, as the plugin does now. `adoptThreadId` resumes an existing native thread (v1 handle migration, §8). |
+| `session.list` | `{ projectRoot?, rootsOnly? = true, includeArchived? = false, limit?, cursor? }` → `{ sessions, nextCursor? }` |
+| `session.get` | `{ sessionId }` → `{ session, children: SessionSnapshot[] }` |
+| `session.prompt` | `{ sessionId, clientMessageId, text, whenRunning: 'steer' \| 'interrupt' \| 'reject' }` → `{ result: 'turn' \| 'steer', turnId }`. Same rules as today: a user steer reaches only this session, children keep running. |
+| `session.interrupt` | `{ sessionId }` → `{ state: 'not_running' \| 'canceled' }`. Closes the whole subtree (D11). Borrowed Paseo flow: native interrupt → wait ≤ 2 s → synthesize `turn.ended canceled`. |
+| `session.configure` | `{ sessionId, mode }` → `{ session }`. Only while idle with no live children (unchanged). |
+| `session.refresh` | `{ sessionId }` → `{ session }`. Close and resume with re-read ALP files (today's "Refresh"). |
+| `session.archive` / `session.unarchive` | `{ sessionId }`. Archive closes the subtree. |
+| `session.timeline` | §4.3 |
+
+`clientMessageId` and `idempotencyKey` are deduplicated with receipts (Paseo `MessageReceipts` / `CreationService`): a receipt still pending after a crash answers `conflict` with `outcome_unknown` rather than re-sending.
+
+### 6.3 Subscriptions
+
+`events.subscribe { sessionIds?: string[], rootId?: string, after?: Record<sessionId, {epoch, seq}> }` → `{ subscriptionId }`.
+
+- `rootId` subscribes to a whole tree, including children created later (this is what the Paseo proxy uses).
+- Without `sessionIds`/`rootId`, it receives `session.created/updated` for all sessions (directory view for `alp ps` and the plugin's `session.list`).
+- With `after`, the daemon first replays envelopes after each cursor, then streams live. Pushes are `event` notifications `{ subscriptionId, envelope }`.
+
+`events.unsubscribe { subscriptionId }`. Per-connection send buffer is capped (Paseo: 64 MiB); a client that exceeds it is disconnected and must resubscribe with its cursor.
+
+### 6.4 Permissions (reserved)
+
+`permission.respond { sessionId, requestId, response: { allow: true, updatedInput? } | { allow: false, message? } }`. v1 keeps today's policy (Codex `approvalPolicy: 'never'` + sandbox, Claude `canUseTool` gate), so no request is ever raised. When interactive approval is added: pending requests are persisted, delivered to subscribers, denied on interrupt, and denied after a timeout when no client is subscribed (Paseo has no timeout; we want one).
+
+## 7. Delegation and mailbox inside alpd
+
+The logic moves from `provider.ts` unchanged; only its plumbing changes:
+
+- `runDelegation` today re-enters the Paseo-shaped `handle({type:'session.open'})` and `handle({type:'session.prompt'})`. In alpd these become internal `SessionManager.openChild()` and `SessionManager.startTurn({ origin })`, which emit `session.created` and `turn.started` events instead of provider events.
+- Wakes (`autoWake`) stay serialized through the per-root queue; they call `startTurn({ origin: 'wake' })`.
+- `MailEvent`, `takeBatch`, `renderMail`, delivery order, acknowledgement on completed turns, redelivery, passive `stalled`, and the inactivity watchdog are moved verbatim (`mailbox.ts` is already Paseo-free).
+- Mail ids become per-root (`#n` per tree) instead of one counter per Paseo connection, because a daemon has no connection scope.
+- Limits stay: route graph, depth 4, 16 calls per root turn, `maxPeers`, one writer, read-only advisors, children never exceed parent mode, wake limit 8, ask timeout, wait cap.
+- Every mail and assignment change is also emitted as a `mail` / `assignment` event, so viewers see what today only reaches `~/.alp/runs`.
+
+## 8. The Paseo plugin as a proxy
+
+The plugin keeps its Paseo-facing contract (`compat.ts`, capabilities, catalog, config UI) and drops runtimes, delegation, and mailbox.
+
+| Paseo provider input | alpd call |
+|---|---|
+| `catalog` | `catalog.get` |
+| `sessions` (new: declare `session.list`) | `session.list { projectRoot: cwd, rootsOnly: true }` |
+| `session.open` (no persistence) | `session.create`, then `events.subscribe { rootId }` |
+| `session.open` (with persistence) | `session.get` + `events.subscribe { rootId, after }`; `history: 'replay'` → `session.timeline` |
+| `session.prompt` (`delivery: auto/steer`) | `session.prompt` (`whenRunning: 'steer'`) |
+| `session.interrupt` | `session.interrupt` |
+| `session.configure` | `session.configure` |
+| `session.close` | unsubscribe only; the alpd session keeps running |
+| `session.archive` | `session.archive` |
+
+| alpd event | Paseo provider event |
+|---|---|
+| `session.created` with `parentId` | `session.opened { parentSessionId, toolCallId, restoration: 'parent' }` then `session.ready` |
+| `turn.started` / `turn.ended` | `session.turn` (wake turns appear as autonomous runs) |
+| `item` | `timeline.item` (rename fields; `handoff` and `mail` → `tool_call`/`notification` or a `plugin` item) |
+| `usage` | `session.usage` |
+| `session.updated` | `session.config` / `session.closed` |
+
+Persistence handed to Paseo: `{ version: 2, data: { alpdSessionId } }` with deterministic JSON so Paseo's duplicate-import check stays stable. Version 1 handles (native `threadId`) are migrated on first open: the plugin asks alpd to adopt that thread (`session.create` with `adoptThreadId`), then emits `session.persistence` with the v2 handle.
+
+Roots created from the CLI become visible in Paseo through the import list (`session.list`). Optional, later: alpd registers them itself via `DaemonClient.importAgent` (an internal Paseo export, kept behind `compat.ts`).
+
+Known limit (from the visibility spike): children only appear while their root is open in Paseo; opening the root later replays them from alpd.
+
+## 9. CLI
+
+`alp daemon start | stop | status | restart | logs`, plus:
+
+- `alp run [--agent A] [--project DIR] "prompt"`: create, stream the tree until the root is idle, print the handoff/result. Ctrl-C interrupts.
+- `alp ps [--all]`: list sessions as a tree.
+- `alp attach <id>`: stream a tree from its tail.
+- `alp send <id> "text"` and `alp interrupt <id>`.
+
+The CLI is the headless proof and the e2e driver that does not need Paseo.
+
+## 10. Code layout
+
+```text
+src/core/        # unchanged: resolver, IR, workflow, delegation graph (pure JS, no deps)
+src/runtime/     # NEW, Paseo-free: SessionManager, delegation, mailbox, transports (moved from plugins/paseo/server)
+src/daemon/      # NEW: lock, socket server, JSON-RPC, storage, reconciliation, logs
+src/client/      # NEW: auto-start + typed RPC client (used by CLI and plugin)
+src/cli.js       # gains daemon/run/ps/attach/send/interrupt
+plugins/paseo/   # becomes a proxy over src/client
+```
+
+`src/runtime`, `src/daemon`, `src/client` are TypeScript, built with the existing esbuild script. An import-graph test (as `adapter.test.js:29` does for core) enforces that `src/runtime` and `src/daemon` never import `@getpaseo/*`. Packaging: the `alp` npm package ships the CLI and daemon; `alp-paseo-plugin` depends on it (Q5).
+
+## 11. Migration steps
+
+Each step ends with all existing unit tests and live e2e green.
+
+1. **Extract runtime in-process.** Move transports, `nativeSessionConfig`, mail, delegation, and tool dispatch into `src/runtime` behind `SessionManager` + the §4 event model. The plugin calls it directly and projects events to Paseo (§8 mapping, without a socket). Port `test/team.test.js` to the runtime API; keep a projection subset in the plugin. *Acceptance:* no `@getpaseo` import under `src/runtime`; Paseo e2e (`team`, `mailbox`, `workflow`) unchanged and green.
+2. **Daemon + socket + CLI.** Host `SessionManager` in `alpd`; plugin switches to `src/client`; add `alp run/ps/attach`. *Acceptance:* a CLI-only e2e runs main → lead → peer with no Paseo daemon; the same Paseo e2e passes through alpd; closing Paseo mid-delegation does not stop the tree.
+3. **Persistence + reconciliation + import.** Session records, timelines, receipts, crash reconciliation, `session.list`, v1 → v2 handle migration. *Acceptance:* kill -9 alpd mid-turn → restart → records reconciled, root resumable; a CLI-created root imports into Paseo and replays its children.
+4. **Phase C on top** (leases/worktrees), then D.
+
+## 12. What we borrow from Paseo and what we do not
+
+| Borrow | Paseo source |
+|---|---|
+| Pid lock with boot-aware staleness and published endpoint | `acquirePidLock`, `updatePidLock` |
+| Clients wait on the lock, not port probing | `waitForDaemonReady` |
+| Ordered graceful shutdown with per-agent timeout | daemon `stop()` |
+| Status set `initializing/idle/running/error/closed` | `agent-lifecycle` |
+| Autonomous runs for provider-initiated turns | `trackAutonomousRun` |
+| Interrupt → bounded wait → synthesized cancel | `cancelAgentRunNow` |
+| Atomic temp+rename writes with per-key queues | `writeJsonFileAtomic`, `AgentStorage` |
+| Idempotency receipts with "outcome unknown" | `MessageReceipts`, `CreationService` |
+| `{epoch, seq}` cursors, `tail/before/after`, `reset` | timeline fetch |
+| Timeline item and tool-call shapes | `AgentTimelineItem`, `ToolCallDetail` |
+| Capability negotiation + `COMPAT(...)` tags | `CLIENT_CAPS`, `server_info.features` |
+
+| Avoid | Why |
+|---|---|
+| Loopback TCP admitted as owner without password | unix socket with file permissions instead |
+| No boot reconciliation of `running` records | §5.4 |
+| Timelines rebuilt from provider history | Claude has no replay; alpd owns the log |
+| cwd-slug storage paths, no receipt retention | flat ids, 7-day pruning |
+| Bespoke request/response envelope, three error channels | JSON-RPC 2.0 |
+| Client-side catch-up after reconnect | server replays from cursor |
+| Supervisor/worker split (for now) | v1 simplicity; revisit if needed |
+
+## 13. Resolved questions (approved 2026-10-08)
+
+- **Q1 — Process model:** single process in v1. A crash ends running turns until a client auto-starts the daemon again. Revisit the supervisor/worker split only if crashes occur in practice.
+- **Q2 — Lifetime:** runs until `alp daemon stop`; no idle exit.
+- **Q3 — Environment:** the daemon uses the environment of whoever started it, scrubbed as today. Per-session env from clients is not accepted in v1.
+- **Q4 — Global concurrency:** `maxRunningSessions = 8` across all projects, configurable in `~/.alp/config.json`.
+- **Q5 — Packaging:** the `alp` package ships the CLI and daemon; `alp-paseo-plugin` depends on it and auto-starts the daemon.
+- **Q6 — Retention:** timelines of archived sessions are deleted after 30 days; live sessions are kept indefinitely; receipts after 7 days.

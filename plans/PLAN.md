@@ -18,10 +18,11 @@ Build a small provider-neutral ALP core, integrate it with Paseo first, then sta
 | 7 | Multi-agent/custom-agent support | `phases/07-custom-agents.md` |
 | 8 | Session/event model stabilization | `phases/08-session-model.md` |
 | 9 | Standalone ALP ACP implementation | `phases/09-acp.md` |
+| 10 | Native `alpd` daemon (D12): runtime extraction, daemon + CLI, persistence | `reference/ALPD.md` §11 |
 
 ## Non-goals for early phases
 
-Do not build a marketplace, broad preset role library, distributed scheduler, custom desktop UI, or standalone daemon before the Paseo plugin path is validated. The explicitly requested main/lead/peer starter is in scope.
+Do not build a marketplace, broad preset role library, distributed scheduler, or custom desktop UI. The Paseo plugin path is validated (v0.2.0); the native `alpd` daemon is now authorized by D12. The explicitly requested main/lead/peer starter is in scope.
 
 ## Authorized team workflow update — 2026-10-07
 
