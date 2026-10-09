@@ -103,7 +103,7 @@ Use `resolveAgent(projectRoot, { agent: 'your-agent' })` from `src/core/resolver
 `alpd` hosts ALP sessions for all projects of a user. After `npm run build`:
 
 ```sh
-node src/cli.js daemon start          # or: status | stop | restart
+node src/cli.js daemon start          # or: status | stop | restart | install | uninstall
 node src/cli.js doctor [--fix]        # what ALP needs here, and what earlier runs left behind
 node src/cli.js run --profile cafe "Your task"   # streams the agent tree; Ctrl-C interrupts
 node src/cli.js ps [--all]            # live sessions as a tree; --all adds closed ones
@@ -151,7 +151,7 @@ The result is recorded on the task, and an agent cannot close a task as done aft
 
 Text one agent wrote reaches another without `<system-reminder>` tags, so a peer cannot pose as the harness.
 
-Work survives alpd: after a crash, `alp daemon stop` or `alp daemon restart`, the next alpd reopens trees that were working, by itself, and their assignments continue with their thread, worktree and task. When a Codex or Claude process dies under a session, ALP restarts it and the session continues; three restarts in a row with no progress end it. Details: [Crashes and restarts](docs/alp/team-workflow.md#crashes-and-restarts).
+Work survives alpd: after a crash, `alp daemon stop` or `alp daemon restart`, the next alpd reopens trees that were working, by itself, and their assignments continue with their thread, worktree and task. When a Codex or Claude process dies under a session, ALP restarts it and the session continues; three restarts in a row with no progress end it. `alp daemon install` runs alpd as a login service (launchd on macOS, systemd on Linux) that starts it again after a crash. Details: [Crashes and restarts](docs/alp/team-workflow.md#crashes-and-restarts).
 
 When a runtime hits its usage limit, ALP pauses it by itself. Assignments the limit stopped are parked instead of failed, and every open session shows a notice saying when the limit resets. Agents on the other runtime keep working. `alp resume codex` continues the parked assignments; `"limits": { "autoResume": true }` in `$ALP_HOME/settings.json` resumes after the reset instead. Details: [Pause and usage limits](docs/alp/team-workflow.md#pause-and-usage-limits).
 
