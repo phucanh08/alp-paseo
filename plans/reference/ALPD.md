@@ -1196,3 +1196,40 @@ Goal (D21, C2): one command that says why ALP does not work here, and cleans up 
 - the fixes then remove the lock, tighten the mode, drop only the gone entry, prune, and delete only the merged branch;
 - with no runtime both fail, and with Codex alone Claude only warns;
 - `alp doctor --json` through the CLI.
+
+## 37. alpd as a login service as built (2026-10-09)
+
+Goal (D21, C3): recovery (§31) needs an alpd to start again after a crash. Gas City's supervisor runs under launchd or systemd and is restarted by them; ALP does the same.
+
+- `src/client/service.js`:
+  - `serviceFor({ home, env, platform, uid })` gives the definition file, its name, and the manager commands to install, start and uninstall:
+    - macOS: label `com.alp.alpd` (with `.<sha8 of ALP_HOME>` for a non-default home) in `~/Library/LaunchAgents`, managed with `launchctl bootout`, `bootstrap` and `kickstart` in `gui/<uid>`;
+    - Linux: `alpd[-<sha8>].service` in `$XDG_CONFIG_HOME/systemd/user`, managed with `systemctl --user daemon-reload`, `enable --now`, `start` and `disable --now`;
+    - other platforms: none.
+  - `serviceDefinition` writes the definition:
+    - it runs `[node, alpd.js, --service]` with `ALP_HOME`, the installing shell's `PATH`, and `ALP_RUN_LOG_DIR`, `ALP_CODEX_BIN`, `ALP_CLAUDE_BIN` and `ALP_GH_BIN` when they are set;
+    - launchd: `RunAtLoad`, `KeepAlive { Crashed: true, SuccessfulExit: false }`, `ThrottleInterval 10`;
+    - systemd: `Restart=on-failure`, `RestartSec=10`;
+    - so a crash or a kill restarts alpd, and a clean exit (0) does not.
+  - `installedProgram` reads the program back from the file. `ALP_SERVICE_DIR`, `ALP_LAUNCHCTL` and `ALP_SYSTEMCTL` redirect these for tests.
+- `alp daemon`:
+  - `install`: stops a running alpd (its work continues, §31), writes and loads the definition, and waits until alpd is ready.
+  - `uninstall`: unloads the service, which stops alpd, and removes the file.
+  - `start`: goes through the service when it is installed and no alpd runs.
+  - `restart`: stops, then starts the same way.
+  - `stop`: notes that the service starts alpd again at login.
+  - `status`: prints `managed by launchd as …`.
+- alpd `--service`:
+  - it rotates `logs/alpd.log` and writes its stdout and stderr there itself, since the manager holds its own output file (`logs/alpd.service.log`), which then keeps only what Node prints when it dies;
+  - when another alpd already holds the lock, it exits 0, so the manager does not retry.
+- `alp doctor` adds a `service` check: it fails when the node or alpd.js the service runs is gone.
+
+**Evidence.**
+- `test/service.test.js` checks:
+  - both definitions: KeepAlive, environment, quoting, per-home names, and reading back;
+  - with a fake manager that starts alpd as launchd would, `install`, `status`, `doctor`, `stop`, `start` (through the manager) and `uninstall` on a real alpd in a temporary home.
+- Live on macOS 27 with real launchd, a scratch `ALP_HOME` and the plist in the scratchpad:
+  - after `kill -9` of the alpd, launchd started a new one about 10 s later, and `alp daemon status` reported the crash;
+  - after `alp daemon stop`, alpd stayed down;
+  - `alp daemon start` kickstarted it;
+  - `uninstall` removed the job.

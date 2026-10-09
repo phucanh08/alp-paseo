@@ -1,7 +1,8 @@
-import { spawn } from 'node:child_process';
 import { access, chmod, constants, lstat, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { runCommand } from './command.js';
 import { daemonPaths, lockAlive, readLock } from './index.js';
+import { installedProgram, serviceFor } from './service.js';
 import { jsonObject, discoverAgents, resolveAgent } from '../core/resolver.js';
 import { settingsWarnings, validateSettings, validateUserSettings } from '../core/validation.js';
 
@@ -16,21 +17,6 @@ import { settingsWarnings, validateSettings, validateUserSettings } from '../cor
  * (stale locks, merged branches, entries for vanished projects) or tighten modes;
  * they never touch running work or unmerged branches.
  */
-
-/** Runs a command; resolves with its exit code and output, never rejects. */
-export function runCommand(command, args, { cwd, env = process.env, timeoutMs = 15_000 } = {}) {
-  return new Promise(resolve => {
-    let child;
-    try { child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] }); }
-    catch (error) { resolve({ code: -1, stdout: '', stderr: error.message }); return; }
-    let stdout = '', stderr = '';
-    child.stdout.on('data', chunk => { stdout += chunk; });
-    child.stderr.on('data', chunk => { stderr += chunk; });
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
-    child.on('error', error => { clearTimeout(timer); resolve({ code: -1, stdout, stderr: error.message }); });
-    child.on('close', code => { clearTimeout(timer); resolve({ code: code ?? -1, stdout, stderr }); });
-  });
-}
 
 const firstLine = text => text.trim().split('\n')[0] ?? '';
 
@@ -74,6 +60,18 @@ async function runtimeChecks({ env, run }) {
   // One runtime is enough; with neither, nothing can run.
   if (checks.every(check => check.status !== 'ok')) for (const check of checks) if (check.status === 'warn') check.status = 'fail';
   return checks;
+}
+
+/** An installed alpd service whose node or alpd.js moved can no longer start alpd. */
+async function serviceCheck(home, env) {
+  const service = serviceFor({ home, env });
+  const program = service && await installedProgram(service);
+  if (!program) return undefined;
+  const missing = [];
+  for (const file of program) if (!await lstat(file).then(() => true, () => false)) missing.push(file);
+  return missing.length
+    ? { id: 'service', status: 'fail', summary: `the ${service.kind} service ${service.name} runs files that are gone; run alp daemon install again`, details: missing }
+    : { id: 'service', status: 'ok', summary: `${service.kind} runs alpd as ${service.name}` };
 }
 
 async function daemonCheck(home) {
@@ -277,6 +275,8 @@ async function branchCheck(project, home, run) {
  * Runs every check. `project` is an ALP project root or undefined; `sandbox` says whether
  * Claude can sandbox Bash here (undefined when unknown); `daemonEntry` is alpd's path.
  */
+export { runCommand };
+
 export async function diagnose({ home, project, env = process.env, run = runCommand, sandbox, daemonEntry } = {}) {
   const checks = [];
   if (daemonEntry) {
@@ -285,6 +285,8 @@ export async function diagnose({ home, project, env = process.env, run = runComm
   checks.push(...await runtimeChecks({ env, run }));
   const daemon = await daemonCheck(home);
   checks.push(daemon);
+  const service = await serviceCheck(home, env);
+  if (service) checks.push(service);
   const running = daemon.status === 'ok' && daemon.summary.startsWith('running');
   if (sandbox !== undefined) checks.push(sandbox
     ? { id: 'sandbox', status: 'ok', summary: 'Claude sessions run Bash in an OS sandbox that holds their mode' }

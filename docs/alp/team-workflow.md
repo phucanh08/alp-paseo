@@ -439,6 +439,21 @@ the file at start, the previous alpd crashed around the file's last touch.
 say "alpd stopped unexpectedly" instead of "alpd restarted". `alp log` shows
 `⏹` interrupted, `↻` reopened or restarted, and `▶` running again.
 
+**Restart after a crash.** Recovery needs an alpd to run. `alp daemon install`
+makes alpd a login service: a LaunchAgent on macOS
+(`~/Library/LaunchAgents/com.alp.alpd.plist`), a systemd user unit on Linux
+(`~/.config/systemd/user/alpd.service`). The service starts alpd at login, and
+again about ten seconds after it crashes or is killed. A clean stop stays
+stopped: `alp daemon stop` holds until `alp daemon start` or the next login,
+and `alp daemon start` and `restart` go through the service. The service runs
+alpd with the `PATH` of the shell that installed it, so `codex` and `claude` are
+found as they were then; after moving Node or ALP, run `alp daemon install`
+again, and `alp doctor` says when it is needed. alpd writes its log to
+`$ALP_HOME/logs/alpd.log` as before; `alpd.service.log` beside it keeps only
+what Node prints when it dies. `alp daemon uninstall` stops alpd and removes the
+service. A non-default `ALP_HOME` gets its own service, named with a digest of
+the path.
+
 ## Talking to the user
 
 The user talks with main. Main asks the user with `alp_ask` (for a root session

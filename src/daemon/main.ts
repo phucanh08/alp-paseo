@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { openSync, writeSync } from 'node:fs';
 import { mkdir, open, readFile, rename, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,6 +41,26 @@ async function detach(home: string) {
 }
 
 /**
+ * Under a service manager (ALPD §37), which holds alpd's stdout open: alpd rotates its
+ * log at start as the detached launcher does, then writes its output there itself. The
+ * manager's own file keeps only what Node prints when it dies.
+ */
+async function serviceLog(home: string) {
+  const { log } = daemonPaths(home);
+  await mkdir(path.dirname(log), { recursive: true, mode: 0o700 });
+  await rotate(log);
+  const fd = openSync(log, 'a', 0o600);
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.write = ((chunk: string | Uint8Array, encoding?: unknown, callback?: unknown) => {
+      try { if (typeof chunk === 'string') writeSync(fd, chunk); else writeSync(fd, chunk); } catch {}
+      const done = typeof encoding === 'function' ? encoding : callback;
+      if (typeof done === 'function') done();
+      return true;
+    }) as typeof stream.write;
+  }
+}
+
+/**
  * The user's alpd settings in $ALP_HOME/settings.json; none when it is missing.
  * Invalid settings are logged and alpd starts with the defaults, so a typo never
  * keeps it from running; alp doctor reports them too.
@@ -68,7 +89,17 @@ async function previousExit(marker: string): Promise<{ kind: 'clean' | 'crash'; 
 async function run(home: string) {
   await mkdir(home, { recursive: true, mode: 0o700 });
   const { socket } = daemonPaths(home);
-  const lock = await acquireLock(home, { version: VERSION, protocolVersion: PROTOCOL_VERSION, socket });
+  let lock;
+  try {
+    lock = await acquireLock(home, { version: VERSION, protocolVersion: PROTOCOL_VERSION, socket });
+  } catch (error: any) {
+    // Under a service manager, another alpd serving this home is no failure to retry.
+    if (process.argv.includes('--service') && /already running/.test(error?.message ?? '')) {
+      console.log(`${new Date().toISOString()} ${error.message}; this one exits`);
+      process.exit(0);
+    }
+    throw error;
+  }
   const runLogDir = process.env.ALP_RUN_LOG_DIR || path.join(home, 'runs');
   const worktreeDir = path.join(home, 'worktrees');
   // Worktrees of assignments a crash interrupted: their work goes to their branches.
@@ -132,4 +163,7 @@ async function run(home: string) {
 
 const home = alpHome();
 if (process.argv.includes('--detach')) await detach(home);
-else await run(home);
+else {
+  if (process.argv.includes('--service')) await serviceLog(home);
+  await run(home);
+}
