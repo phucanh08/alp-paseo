@@ -27,10 +27,15 @@ test('a hook gets the event on stdin and ALP variables, and is stopped at its ti
   assert.deepEqual([ran.exitCode, ran.timedOut, ran.stderr], [2, false, 'warn\n']);
   assert.match(ran.stdout, /^handoff peer .*alp-tools-/);
   assert.deepEqual(JSON.parse(await readFile(path.join(cwd, 'event.json'), 'utf8')), { event: 'handoff', n: 1 });
-  const slow = await runHook({ command: 'sleep 5' }, {}, { cwd, timeoutMs: 100 });
+  // The shell's children are stopped with it: a forked sleep would otherwise hold the output open.
+  const slow = await runHook({ command: 'sleep 5; echo late' }, {}, { cwd, timeoutMs: 100 });
   assert.equal(slow.timedOut, true);
   assert.equal(slow.signal, 'SIGTERM');
-  assert.ok(slow.durationMs < 3000);
+  assert.ok(slow.durationMs < 3000, `took ${slow.durationMs} ms`);
+  // A background process does not keep a finished hook waiting.
+  const spawned = await runHook({ command: 'sleep 5 & echo started' }, {}, { cwd });
+  assert.deepEqual([spawned.exitCode, spawned.stdout], [0, 'started\n']);
+  assert.ok(spawned.durationMs < 3000, `took ${spawned.durationMs} ms`);
 });
 
 test('an MCP server is started, asked for its tools over stdio or HTTP, and stopped', async t => {

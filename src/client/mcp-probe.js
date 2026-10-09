@@ -30,7 +30,9 @@ export async function probeMcp(server, { cwd, timeoutMs = 15_000 } = {}) {
 }
 
 function stdioSession(server, cwd, timeoutMs) {
-  const child = spawn(server.command, server.args ?? [], { cwd: server.cwd ?? cwd, env: { ...process.env, ...(server.env ?? {}) }, stdio: ['pipe', 'pipe', 'pipe'] });
+  // Its own process group, so a launcher such as npx is stopped with what it started.
+  const child = spawn(server.command, server.args ?? [], { cwd: server.cwd ?? cwd, env: { ...process.env, ...(server.env ?? {}) }, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+  const signal = name => { try { process.kill(-child.pid, name); } catch { child.kill(name); } };
   let stderr = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', chunk => { if (stderr.length < 4000) stderr += chunk; });
@@ -68,8 +70,8 @@ function stdioSession(server, cwd, timeoutMs) {
       if (child.exitCode !== null || child.signalCode !== null) return;
       const done = new Promise(resolve => child.once('exit', resolve));
       child.stdin.end();
-      child.kill('SIGTERM');
-      const timer = setTimeout(() => child.kill('SIGKILL'), 2000);
+      signal('SIGTERM');
+      const timer = setTimeout(() => signal('SIGKILL'), 2000);
       await done;
       clearTimeout(timer);
     },
