@@ -1233,3 +1233,32 @@ Goal (D21, C3): recovery (§31) needs an alpd to start again after a crash. Gas 
   - after `alp daemon stop`, alpd stayed down;
   - `alp daemon start` kickstarted it;
   - `uninstall` removed the job.
+
+## 38. Review verdicts as built (2026-10-09)
+
+Goal (D21, C7): every review answers in the same shape, so a requester acts on it without reading prose, and a later review quorum (phase 12, D4) can combine two. Gas City's review lanes return `pass`, `pass_with_findings`, `fail` or `blocked`, reduced by fixed rules.
+
+- `alp_handoff` takes an optional `verdict { result, criteria, findings? }`:
+  - each criterion is `{ criterion, result: pass | fail | not_checked, evidence }`, with 1 to 50 of them;
+  - each finding is `{ severity: critical | high | medium | low, where, problem, fix? }`, with up to 100.
+- `parseVerdict` checks that the result follows:
+  - `fail` needs a failed criterion or a critical or high finding;
+  - `pass` and `pass_with_findings` allow neither;
+  - `pass` has no findings, and `pass_with_findings` has some;
+  - `blocked` is free, and the summary says what is missing.
+- An assignment of the agent named `reviewer` cannot file a `complete` handoff without a verdict. Partial and blocked handoffs need none.
+- The verdict travels with the handoff:
+  - in the result `alp_delegate` and `alp_wait` return, and in the run log;
+  - on the task (`HANDOFF_FIELDS` includes it);
+  - in main's task digest (`handoff complete, verdict fail`);
+  - in the supervisor's digest (`verdict FAIL (1 passed, 1 failed, 2 findings)`) and in `alp log`.
+- Templates:
+  - reviewer's AGENT.md gains a Verdict section and files the verdict through `alp_handoff`;
+  - main and lead brief reviewer with the acceptance criteria and do not accept `fail` or `blocked`.
+  - `alp upgrade` recognizes the previous shipped reviewer, main and lead files.
+
+**Evidence.** `test/verdict.test.js` checks that:
+- each inconsistent verdict, and a complete review without one, are refused with the reason;
+- a partial handoff passes without a verdict;
+- a valid `fail` verdict reaches main through `alp_wait` and the run log;
+- a task keeps the verdict, and the task digest shows it.

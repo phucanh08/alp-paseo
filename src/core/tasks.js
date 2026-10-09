@@ -479,7 +479,7 @@ export function reopenTask(projectRoot, id, { note } = {}, by, options) {
   }, options);
 }
 
-const HANDOFF_FIELDS = ['outcome', 'summary', 'candidate', 'scope', 'verification', 'risks', 'discovered', 'ownership'];
+const HANDOFF_FIELDS = ['outcome', 'summary', 'candidate', 'scope', 'verification', 'risks', 'discovered', 'ownership', 'verdict'];
 
 /** The parts of a structured handoff a task keeps. */
 function keptHandoff(handoff, agent) {
@@ -629,7 +629,7 @@ export function taskDigest(tasks, errors = []) {
   const gated = tasks.filter(task => task.status === 'open' && task.type !== 'epic' && !blockersOf(task, tasks, index).length && gatesOf(task, tasks, index).length).sort(rank);
   const lines = [
     ...landed.map(({ task, children }) => `- ready to close: ${line(task)}; all ${children} children are closed. Close it with a summary; ALP reports it to the user`),
-    ...review.map(task => `- review: ${line(task)} ← ${task.handoff?.agent ?? task.assignee?.agent ?? 'unknown'}, handoff ${task.handoff?.outcome ?? 'none'}${task.verified ? `, ${describeVerification(task.verified)}` : ''}; accept with close, or send it back`),
+    ...review.map(task => `- review: ${line(task)} ← ${task.handoff?.agent ?? task.assignee?.agent ?? 'unknown'}, handoff ${task.handoff?.outcome ?? 'none'}${task.handoff?.verdict ? `, verdict ${task.handoff.verdict.result}` : ''}${task.verified ? `, ${describeVerification(task.verified)}` : ''}; accept with close, or send it back`),
     ...working.map(task => `- in progress: ${line(task)} ← ${task.assignee?.agent ?? 'unknown'}${verificationFailed(task) ? `, ${describeVerification(task.verified)}` : ''}`),
     ...interrupted.map(task => { const entry = orphanedEntry(task); return `- interrupted: ${line(task)} ← ${entry.agent}; alpd stopped while it worked${entry.note ? `, ${entry.note}` : ''}; delegate it again`; }),
     ...gated.map(task => `- waiting on ${gatesOf(task, tasks, index).join('; ')}: ${line(task)}`),

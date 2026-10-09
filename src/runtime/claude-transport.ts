@@ -140,6 +140,12 @@ export const toolShapes: Record<string, Record<string, z.ZodType>> = {
     risks: handoffList,
     discovered: handoffList,
     ownership: z.string().optional(),
+    // ALP checks that the result follows from the criteria and findings (ALPD §38).
+    verdict: z.object({
+      result: z.enum(['pass', 'pass_with_findings', 'fail', 'blocked']),
+      criteria: z.array(z.object({ criterion: z.string().min(1), result: z.enum(['pass', 'fail', 'not_checked']), evidence: z.string().min(1) }).strict()).min(1).max(50),
+      findings: z.array(z.object({ severity: z.enum(['critical', 'high', 'medium', 'low']), where: z.string().min(1), problem: z.string().min(1), fix: z.string().min(1).optional() }).strict()).max(100).optional(),
+    }).strict().optional(),
   },
 };
 
