@@ -102,7 +102,7 @@ node src/cli.js log <session>         # delegations, mail, handoffs, worktrees a
 node src/cli.js interrupt <session>
 ```
 
-Any agent can ask you a question with `alp_ask` and `to: "user"`, without ending its turn. `run`, `attach` and `send` show the question and, in a terminal, read the answer; `alp answer` answers from anywhere by question id or a unique prefix. In Paseo the question appears as a question prompt on the root agent.
+You talk with main. Main can ask you a question with `alp_ask` without ending its turn; `run`, `attach` and `send` show it and, in a terminal, read the answer, and `alp answer` answers from anywhere by question id or a unique prefix. In Paseo the question appears as a question prompt. Other agents do not talk to you unless you write to them first with `alp send <agent session>`; ALP then tells the agent that assigned them, and they may ask you questions too.
 
 `ALP_HOME` selects the daemon's directory (default `~/.alp`); `ALP_RUN_LOG_DIR` overrides where assignment logs go (default `$ALP_HOME/runs`). alpd records sessions, their timelines, and prompt receipts under `$ALP_HOME/state`, and its own location in `$ALP_HOME/alpd.json`. After a restart, or a crash, a root can be resumed with `send` or imported into Paseo; work that was running is marked `daemon_restarted`. The Paseo plugin starts the same daemon automatically.
 

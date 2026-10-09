@@ -96,6 +96,11 @@ Migration is incremental, with existing e2e evidence kept green at each step: (1
 
 Built on 2026-10-09 as phase C in alpd, at the user's request to proceed on the proposed design. Writing assignments run in parallel only when each has its own git worktree (`isolation: "worktree"`); the requester applies a finished change to its checkout with `alp_merge` (uncommitted, conflicts left as markers) or drops it with `alp_discard`. In a shared checkout, alpd grants one write lease per checkout to assignments across all trees, shared with assignments nested under the holder. Work is never deleted silently: unmerged or interrupted work stays on its `alp/<assignment>` branch. Advisory per-path leases within a shared checkout are deferred. Details: [alpd §16](ALPD.md).
 
-## D14 — The user as a participant in the tree
+## D14 — The user talks with main
 
-Built on 2026-10-09 as phase D, at the user's request to proceed. Any agent may ask the user with `alp_ask` and `to: "user"` and wait for the answer without ending its turn. Assignments are told to ask the user only for decisions that neither they nor their requester can make. Routing between agents still goes through requesters (D11); the user is the one participant every agent can reach, and the user can mail any agent. Questions appear in Paseo as question prompts on the root agent and in the CLI; trees are observable with `alp top` and `alp log`. Details: [alpd §17](ALPD.md).
+Built on 2026-10-09 as phase D; the rule below was set by the user on 2026-10-09. By default the user talks only with main. Other agents do not talk to the user unless the user writes down to them first. When the user writes to an agent, that agent must let its requester know; ALP posts the note itself, so it cannot be forgotten. Main asks the user with `alp_ask`, without ending its turn. An assignment's `alp_ask` to the user is refused until the user has written to it, and the answers it then gets are also reported to its requester. Routing between agents still goes through requesters (D11). Questions appear in Paseo as question prompts and in the CLI; trees are observable with `alp top` and `alp log`. Details: [alpd §17](ALPD.md).
+
+## D15 — Findings go to a project group channel (direction, not yet designed)
+
+Noted from the user on 2026-10-09. This replaces the deferred "direct sibling messaging" item of D11. Each project or workspace gets one group, and agents pin what they find to its chat channel instead of mailing siblings. Later there will also be a channel for pinning tasks, plus tools that show these channels to the user. To be designed before implementation.
+

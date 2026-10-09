@@ -79,19 +79,23 @@ to their branches and removes the directories.
 
 ## Talking to the user
 
-`alp_ask` asks the requester by default. With `to: "user"` (the default for a
-root session, which has no requester) it asks the user and waits, up to 30
-minutes, without ending the turn; `options` suggests answers. Assignments are
-told to ask the user only for decisions that neither they nor their requester
-can make. The question appears in Paseo as a question prompt on the root agent,
-and in `alp run`/`attach`/`send`, `alp questions` and `alp top`; `alp answer`
-answers or dismisses it. The agent receives `answered` with the answer,
-`dismissed`, or `unanswered` on timeout, and the watchdog does not count the
-wait as silence. A question ends with the turn that asked it.
+The user talks with main. Main asks the user with `alp_ask` (for a root session
+the question goes to the user) and waits, up to 30 minutes, without ending its
+turn; `options` suggests answers. The question appears in Paseo as a question
+prompt, and in `alp run`/`attach`/`send`, `alp questions` and `alp top`;
+`alp answer` answers or dismisses it. Main receives `answered` with the answer,
+`dismissed`, or `unanswered` on timeout. A question ends with the turn that
+asked it.
 
-The user can also write to a running assignment directly: `alp send <agent
-session> <text>` delivers mail sent by `user`, which the agent follows as a user
-instruction, into its running turn.
+Other agents do not talk to the user: their questions go to their requester
+(`alp_ask` defaults to `to: "parent"`), and `to: "user"` is refused. The user
+may write down to a running assignment with `alp send <agent session> <text>`.
+The agent receives it as mail sent by `user` and follows it as a user
+instruction. ALP immediately tells the agent's requester, as a note from that
+agent ("The user wrote to me directly: …"). From then on the agent may also ask
+the user with `to: "user"`. Each answer it gets is reported to its requester
+the same way, and its handoff must say what the user asked and what it did. The
+watchdog does not count the wait for the user as silence.
 
 ## Observing a tree
 

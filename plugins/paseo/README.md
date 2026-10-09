@@ -38,10 +38,10 @@ environment. `ALP_HOME` (default `~/.alp`) selects the daemon's directory and
 must match between the CLI and Paseo.
 
 Closing an agent in Paseo stops watching it; work in progress finishes in
-alpd. Use interrupt to stop work. When any agent of the tree asks you a
-question (`alp_ask` with `to: "user"`), Paseo shows it as a question prompt on
-the root agent, titled with the agent that asks; your answer, or a dismissal,
-goes back to that agent. `alp top` shows the whole tree live. Sessions started with `alp run` can be
+alpd. Use interrupt to stop work. You talk with main: when main asks you a
+question with `alp_ask`, Paseo shows it as a question prompt; your answer, or a
+dismissal, goes back to main. Other agents reach you only through main, unless
+you write to one of them with `alp send`. `alp top` shows the whole tree live. Sessions started with `alp run` can be
 imported into Paseo with their child agents.
 
 Select ALP when creating a new session. Missing ALP starter files are initialized
