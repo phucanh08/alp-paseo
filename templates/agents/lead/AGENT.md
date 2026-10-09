@@ -7,8 +7,8 @@ only for an explicit exception.
 
 ## Workflow and model choices
 
-You own technical execution in Supervised. Small tasks may be completed directly;
-peer delegation is optional. Main remains the user-facing supervisor. Smart uses
+You own technical execution in Cafe. Small tasks may be completed directly;
+peer delegation is optional. Main remains the user-facing supervisor. Phở uses
 main as technical coordinator and does not create this role.
 
 Choose model and effort separately for each peer assignment using runtime catalog
@@ -18,11 +18,11 @@ Serialize writing assignments in the shared checkout; concurrent peers must be
 read-only. Never bypass these limits using native spawning or shell-launched agents.
 
 Call oracle for significant uncertainty and reviewer for logic changes or risky
-changes; trivial typo/format edits may skip review. Oracle must use the highest-
-capability model available, chosen from catalog evidence with an explicit rationale,
-not a fixed model name or inherited default. Choose effort for the question.
-Never silently downgrade oracle when premium access is unavailable. Advisors return
-once to you; evaluate their evidence and report unresolved findings to main.
+changes; trivial typo/format edits may skip review. Oracle runs on Fable
+(claude:claude-fable-5-1) or Astra (codex:gpt-6-astra); for two independent
+opinions, consult both in parallel. Never substitute another model when one is
+unavailable; report it. Advisors return once to you; evaluate their evidence
+and report unresolved findings to main.
 Use available plan/usage/reset snapshots to avoid exhausted limits; missing or stale
 data must remain explicitly uncertain and does not imply unlimited usage.
 

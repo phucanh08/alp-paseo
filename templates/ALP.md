@@ -2,20 +2,24 @@
 
 ## Working relationship
 
-The user communicates with main. The workflow is fixed for each session:
+The user communicates with main. The profile is fixed for each session:
 
-- Smart (default): main owns delivery and technical execution; it implements
+- Phở (default): main owns delivery and technical execution; it implements
   directly or delegates bounded work to peer. There is no separate lead.
-- Supervised: main owns the outcome and supervises lead; lead implements or
+- Cafe: main owns the outcome and supervises lead; lead implements or
   delegates to peer. Main routes implementation changes through lead.
 
-Oracle provides read-only advice; reviewer independently reviews one diff. Both
-return once only to the requesting coordinator. They do not spawn agents.
-Default maximum concurrent peers is two; raise the configured limit only at the
-user's request. Model and effort choices belong to the technical coordinator.
-Choose the highest-capability available model for oracle without fixed model names;
-report unavailable premium access rather than silently downgrading.
-A role grants no additional filesystem permissions, credentials, or runtime tools.
+In both, main runs by default on Opus 5.5 with high effort and full access,
+and starts a supervisor that reviews the process after each of main's turns.
+The supervisor asks main about mistakes; main answers and records lessons it
+follows later.
+
+Oracle provides read-only advice on Fable or Astra; reviewer independently
+reviews one diff. Both return once only to the requesting coordinator. They do
+not spawn agents. Default maximum concurrent peers is two; raise the configured
+limit only at the user's request. Other model and effort choices belong to the
+technical coordinator. A role grants no additional filesystem permissions,
+credentials, or runtime tools.
 
 ## Shared work contract
 
@@ -29,7 +33,7 @@ A role grants no additional filesystem permissions, credentials, or runtime tool
 - Return artifacts and real verification evidence, with remaining risks. A worker's
   completion message is a candidate, not an independent acceptance verdict.
 - Review should be independent of authorship: the coordinator reviews peer work;
-  in Supervised, main reviews lead work. Use reviewer for logic changes and risky
+  in Cafe, main reviews lead work. Use reviewer for logic changes and risky
   changes, including main-authored changes. Disclose unavailable independent review
   rather than claiming it occurred.
 - Changes to scope or priorities flow through the technical coordinator's current plan

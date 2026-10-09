@@ -14,9 +14,11 @@ export function validateSettings(settings, source) {
   if (settings.defaultAgent !== undefined) check(nonempty(settings.defaultAgent), 'defaultAgent must be a nonempty string');
   if (settings.workflow !== undefined) {
     check(object(settings.workflow), 'workflow must be an object');
-    check(Object.keys(settings.workflow).every(key => ['mode', 'maxPeers'].includes(key)), 'unsupported workflow field');
-    if (settings.workflow.mode !== undefined) check(['smart', 'supervised'].includes(settings.workflow.mode), 'workflow.mode must be smart or supervised');
+    check(Object.keys(settings.workflow).every(key => ['mode', 'maxPeers', 'supervisor'].includes(key)), 'unsupported workflow field');
+    // smart and supervised are the profiles' names before 0.4.
+    if (settings.workflow.mode !== undefined) check(['pho', 'cafe', 'smart', 'supervised'].includes(settings.workflow.mode), 'workflow.mode must be pho or cafe');
     if (settings.workflow.maxPeers !== undefined) check(Number.isSafeInteger(settings.workflow.maxPeers) && settings.workflow.maxPeers > 0, 'workflow.maxPeers must be a positive integer');
+    if (settings.workflow.supervisor !== undefined) check(typeof settings.workflow.supervisor === 'boolean', 'workflow.supervisor must be true or false');
   }
   const runtime = settings.runtime ?? {};
   if (settings.runtime !== undefined) check(object(settings.runtime), 'runtime must be an object');
