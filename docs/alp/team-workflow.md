@@ -70,9 +70,13 @@ must be read-only or isolated.
 
 ## Permission profiles
 
-A permission profile tunes what one agent may do. It caps the agent's mode at
-its `base`, lets it run what `allow` names even beyond that mode, and refuses what
-`deny` names in any mode. Profiles live in `permissions` in `.alp/settings.json`,
+A permission profile tunes what one agent may do:
+- It caps the agent's mode at its `base`.
+- It lets the agent run what `allow` names, even beyond that mode.
+- It asks the user each time before what `ask` names.
+- It refuses what `deny` names, in any mode.
+
+Deny wins over ask, and ask over allow. Profiles live in `permissions` in `.alp/settings.json`,
 which is committed with the project, and in the user's `$ALP_HOME/settings.json`:
 
 ```json
@@ -82,7 +86,9 @@ which is committed with the project, and in the user's `$ALP_HOME/settings.json`
       "review": {
         "base": "read-only",
         "allow": ["Bash(npm test:*)", "Bash(node --test:*)"],
-        "deny": ["Bash(rm:*)", "Bash(git push:*)"]
+        "ask": ["Bash(npm install *)"],
+        "deny": ["Bash(rm:*)", "Bash(git push:*)"],
+        "beyondMode": "ask"
       }
     },
     "agents": { "reviewer": "review", "auditor": "review", "lead": "workspace-write" }
@@ -117,6 +123,29 @@ which is committed with the project, and in the user's `$ALP_HOME/settings.json`
     deny rules there only stop commands from leaving it.
 - Every Codex decision goes to the assignment log as a `permission` event. The
   session's instructions list its profile's rules.
+
+**Asking the user.** An `ask` rule, and with `"beyondMode": "ask"` anything
+the mode refuses that no rule covers, becomes a question to the user. The question
+shows in Paseo and in `alp questions`, names the agent and what it wants, and the
+agent waits:
+- **Allow once** runs it this time.
+- **Always allow** adds a rule to the profile's `allow`, in the settings file
+  that defines the profile (the project's first). Open sessions using that profile
+  stop asking about it at once. For Claude this is its own suggested rule (such as
+  `Bash(npm test *)`); for Codex, its proposed command prefix, else the exact command.
+  An `ask` rule offers no always: it asks every time.
+- **Deny**, any other answer, or no answer within 30 minutes refuses it. Any other
+  answer is passed to the agent as the reason.
+
+Only the user answers; main cannot grant permissions. One question per session
+is open at a time. Without `beyondMode`, a profile refuses what its mode does not
+allow, as before.
+
+On Claude, `ask` rules hold in every mode, because Claude asks ALP itself.
+`beyondMode` asks only in read-only sessions, since the other modes allow what
+they reach. On Codex, read-only and workspace-write sessions ask before a command
+leaves the sandbox; a full-access session with Bash `ask` rules asks before
+every command it covers.
 
 `alp permissions` lists every agent's profile. `alp permissions check reviewer "npm test 2>&1"`
 says what a profile decides about a command.

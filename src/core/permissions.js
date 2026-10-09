@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { readFile, rename, writeFile } from 'node:fs/promises';
 import { AlpError } from './errors.js';
 
 /**
@@ -11,7 +12,9 @@ import { AlpError } from './errors.js';
  * Profiles and the agents they apply to come from `permissions` in the project's
  * .alp/settings.json and the user's $ALP_HOME/settings.json. A profile defined in
  * both takes its base from the project and the rules of both. An agent's entry in
- * the project wins over the user's. Deny always wins over allow.
+ * the project wins over the user's. Deny wins over ask, and ask over allow: an ask
+ * rule makes ALP ask the user every time. With `beyondMode: "ask"`, what the mode
+ * refuses and no rule covers is asked too, and the user may allow it always.
  *
  * ALP enforces rules natively where it can: Claude receives them as its own
  * allowed and disallowed tools, which hold in every permission mode. Codex runs
@@ -55,16 +58,17 @@ export function validatePermissions(value, source) {
       const where = `permissions.profiles.${name}`;
       if (!NAME.test(name)) fail(source, `${where}: a profile name has letters, digits, dots, dashes and underscores`);
       if (!object(profile)) fail(source, `${where} must be an object`);
-      for (const key of Object.keys(profile)) if (!['base', 'allow', 'deny'].includes(key)) fail(source, `${where}: unsupported field '${key}'`);
+      for (const key of Object.keys(profile)) if (!['base', 'allow', 'ask', 'deny', 'beyondMode'].includes(key)) fail(source, `${where}: unsupported field '${key}'`);
       if (profile.base !== undefined && !BASES.includes(profile.base)) fail(source, `${where}.base must be ${BASES.join(', ')}`);
+      if (profile.beyondMode !== undefined && !['refuse', 'ask'].includes(profile.beyondMode)) fail(source, `${where}.beyondMode must be refuse or ask`);
       const rules = {};
-      for (const kind of ['allow', 'deny']) {
+      for (const kind of ['allow', 'ask', 'deny']) {
         const list = profile[kind] ?? [];
         if (!Array.isArray(list) || list.length > MAX_RULES) fail(source, `${where}.${kind} must list at most ${MAX_RULES} rules`);
         for (const rule of list) parseRule(rule, `${source}: ${where}.${kind}`);
         rules[kind] = list.map(rule => rule.trim());
       }
-      profiles[name] = { ...(profile.base ? { base: profile.base } : {}), ...rules };
+      profiles[name] = { ...(profile.base ? { base: profile.base } : {}), ...(profile.beyondMode ? { beyondMode: profile.beyondMode } : {}), ...rules };
     }
   }
   const agents = {};
@@ -90,14 +94,14 @@ async function settingsPermissions(file) {
 /**
  * The permission profile of an agent, or null when none applies: then the agent
  * keeps the runtime's defaults. Advisors without a profile get a read-only one.
- * @returns {Promise<{ name: string, base: string, allow: string[], deny: string[] } | null>}
+ * @returns {Promise<{ name: string, base: string, allow: string[], ask: string[], deny: string[], beyondMode: 'refuse' | 'ask' } | null>}
  */
 export async function profileFor(projectRoot, home, agent) {
   const project = await settingsPermissions(path.join(projectRoot, '.alp', 'settings.json'));
   const user = home ? await settingsPermissions(path.join(home, 'settings.json')) : { profiles: {}, agents: {} };
   const name = project.agents[agent] ?? user.agents[agent];
   const advisor = ADVISORS.includes(agent);
-  if (!name) return advisor ? { name: 'read-only', base: 'read-only', allow: [], deny: [] } : null;
+  if (!name) return advisor ? { name: 'read-only', base: 'read-only', allow: [], ask: [], deny: [], beyondMode: 'refuse' } : null;
   const defined = [project.profiles[name], user.profiles[name]].filter(Boolean);
   if (!defined.length && !BASES.includes(name)) {
     throw new AlpError('INVALID_SETTINGS', `permissions.agents.${agent} names profile '${name}', which no settings file defines`);
@@ -108,8 +112,31 @@ export async function profileFor(projectRoot, home, agent) {
   return {
     name, base,
     allow: [...new Set(defined.flatMap(profile => profile.allow ?? []))],
+    ask: [...new Set(defined.flatMap(profile => profile.ask ?? []))],
     deny: [...new Set(defined.flatMap(profile => profile.deny ?? []))],
+    beyondMode: defined.find(profile => profile.beyondMode)?.beyondMode ?? 'refuse',
   };
+}
+
+/**
+ * Adds an allow rule to a profile, in the settings file that defines it (the
+ * project's first), when the user allows something always. Returns the file.
+ */
+export async function addAllowRule(projectRoot, home, profileName, rule) {
+  parseRule(rule);
+  for (const file of [path.join(projectRoot, '.alp', 'settings.json'), ...(home ? [path.join(home, 'settings.json')] : [])]) {
+    let settings;
+    try { settings = JSON.parse(await readFile(file, 'utf8')); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    const profile = settings?.permissions?.profiles?.[profileName];
+    if (!object(profile)) continue;
+    profile.allow = [...new Set([...(profile.allow ?? []), rule])];
+    validatePermissions(settings.permissions, file);
+    const temporary = `${file}.${randomUUID().slice(0, 8)}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(settings, null, 2)}\n`);
+    await rename(temporary, file);
+    return file;
+  }
+  throw new AlpError('INVALID_SETTINGS', `No settings file defines profile ${profileName}`);
 }
 
 /** The lower of two modes. */
@@ -161,7 +188,8 @@ export function simpleCommands(line) {
 function covers(specifier, command) {
   if (specifier === undefined) return true;
   const normalized = command.replace(/\s+/g, ' ');
-  if (specifier.endsWith(':*')) {
+  // `npm test:*` and `npm test *` both cover npm test and anything after it.
+  if (specifier.endsWith(':*') || specifier.endsWith(' *')) {
     const prefix = specifier.slice(0, -2).trim().replace(/\s+/g, ' ');
     return normalized === prefix || normalized.startsWith(`${prefix} `);
   }
@@ -184,8 +212,9 @@ const bashRules = rules => rules.map(rule => parseRule(rule)).filter(rule => rul
 
 /**
  * What a profile says about running a command: 'deny' when a deny rule covers any
- * of its simple commands, 'allow' when allow rules cover every one of them and
- * none writes through a redirect, otherwise undefined (the base mode decides).
+ * of its simple commands, 'ask' when an ask rule covers any, 'allow' when allow
+ * rules cover every one of them and none writes through a redirect, otherwise
+ * undefined (the base mode decides).
  */
 export function commandDecision(profile, command) {
   const line = unwrapShell(command);
@@ -193,8 +222,10 @@ export function commandDecision(profile, command) {
   const deny = bashRules(profile.deny);
   if (deny.some(rule => rule.specifier === undefined)) return 'deny';
   // A command ALP cannot split may hide anything a deny rule names.
-  if (!parts) return deny.length ? 'deny' : undefined;
+  if (!parts) return deny.length ? 'deny' : (profile.ask ?? []).length ? 'ask' : undefined;
   if (parts.some(part => deny.some(rule => covers(rule.specifier, part)))) return 'deny';
+  const ask = bashRules(profile.ask ?? []);
+  if (ask.some(rule => rule.specifier === undefined) || parts.some(part => ask.some(rule => covers(rule.specifier, part)))) return 'ask';
   const allow = bashRules(profile.allow);
   if (parts.every(part => !redirects(part) && allow.some(rule => covers(rule.specifier, part)))) return 'allow';
   return undefined;

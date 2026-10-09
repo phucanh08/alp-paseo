@@ -16,7 +16,7 @@ import { checkoutKey, commitWorktree, createWorktree, mergeWorktree, removeWorkt
 import { ALP_REPO, gh, projectRepo, type GitHubRunner } from './github.js';
 import { parse as toml } from 'smol-toml';
 import { findFormula, formulaDirs, listFormulas, pourFormula } from '../core/formulas.js';
-import { ADVISORS, capMode, commandDecision, profileFor, type PermissionProfile } from '../core/permissions.js';
+import { ADVISORS, addAllowRule, capMode, commandDecision, profileFor, unwrapShell, type PermissionProfile } from '../core/permissions.js';
 import { CLOSE_REASONS, GATE_KINDS, addGate, checkGates, resolveGate, TASK_STATUSES, TASK_TYPES, TASKS_DIR, blockersOf, childrenOf, closeTask, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, releaseTask, reopenTask, startRefusal, startTask, submitTask, summarize, taskDigest, updateTask, type Task } from '../core/tasks.js';
 
 export type RuntimeTransport = {
@@ -150,6 +150,8 @@ type Session = {
   wakes: number;
   /** Set by interrupt: pending mail waits for the next user prompt. */
   wakeBlocked: boolean;
+  /** Permission questions to the user, one at a time. */
+  permissionQueue?: Promise<unknown>;
 
   toolCalls: Map<string, Promise<unknown>>;
   acknowledged: Promise<void>;
@@ -586,27 +588,32 @@ function createTransport(
  */
 function codexApproval(mapping: Pick<ResolvedSession, 'mode' | 'permissions'>) {
   const bash = (rules: string[] = []) => rules.some(rule => /^Bash(\(|$)/.test(rule));
-  if (mapping.mode === 'full-access') return bash(mapping.permissions?.deny) ? 'untrusted' : 'never';
-  return bash(mapping.permissions?.allow) ? 'on-request' : 'never';
+  const profile = mapping.permissions;
+  if (mapping.mode === 'full-access') return bash(profile?.deny) || bash(profile?.ask) ? 'untrusted' : 'never';
+  return bash(profile?.allow) || bash(profile?.ask) || profile?.beyondMode === 'ask' ? 'on-request' : 'never';
 }
 
 /** What the session's permission profile adds to its mode, for its instructions. */
 function permissionNote(mapping: Pick<ResolvedSession, 'mode' | 'permissions' | 'runtimeKind'>) {
   const profile = mapping.permissions;
-  if (!profile || (!profile.allow.length && !profile.deny.length)) return [];
+  if (!profile || (!profile.allow.length && !profile.ask.length && !profile.deny.length && profile.beyondMode !== 'ask')) return [];
   return [`Permissions: profile ${profile.name}, mode ${mapping.mode}.` +
     (profile.allow.length ? ` Beyond your mode you may also use: ${profile.allow.join(', ')}.` : '') +
+    (profile.ask.length ? ` The user approves each use of: ${profile.ask.join(', ')}; ALP asks them and you wait.` : '') +
+    (profile.beyondMode === 'ask' ? ' ALP asks the user before anything else your mode does not allow; wait for the answer, and if they refuse, report it rather than working around it.' : '') +
     (profile.deny.length ? ` Never: ${profile.deny.join(', ')}.` : '') +
     ' ALP refuses anything else your mode does not allow; do not try to work around a refusal, report it.' +
-    (mapping.runtimeKind === 'codex' && profile.allow.length && mapping.mode !== 'full-access' ? ' Other commands run in your sandbox. Run a command an allow rule covers with escalated permissions from the start: ALP approves it, and it runs outside the sandbox.' : '')];
+    (mapping.runtimeKind === 'codex' && mapping.mode !== 'full-access' && (profile.allow.length || profile.ask.length || profile.beyondMode === 'ask') ? ' Other commands run in your sandbox. Run a command that needs more than your sandbox (an allowed one, or one for the user to approve) with escalated permissions from the start: ALP decides, and an approved command runs outside the sandbox.' : '')];
 }
 
 /** The profiles of a coordinator's targets that change what it may expect of them. */
 function targetNote(profiles: Record<string, PermissionProfile | null>) {
-  const shown = Object.entries(profiles).filter(([agent, profile]) => profile && (profile.allow.length || profile.deny.length || !ADVISORS.includes(agent)));
+  const shown = Object.entries(profiles).filter(([agent, profile]) => profile && (profile.allow.length || profile.ask.length || profile.deny.length || profile.beyondMode === 'ask' || !ADVISORS.includes(agent)));
   if (!shown.length) return [];
   return ['Permission profiles of your targets; an assignment never runs above its profile\'s mode, whatever mode you request, and may run what its allow rules name even beyond that mode, so brief it to: ' +
-    shown.map(([agent, profile]) => `${agent}: at most ${profile!.base}` + (profile!.allow.length ? `, may also run ${profile!.allow.join(', ')}` : '') + (profile!.deny.length ? `, never ${profile!.deny.join(', ')}` : '')).join('; ') + '.'];
+    shown.map(([agent, profile]) => `${agent}: at most ${profile!.base}` + (profile!.allow.length ? `, may also run ${profile!.allow.join(', ')}` : '') +
+      (profile!.ask.length ? `, with the user's approval each time ${profile!.ask.join(', ')}` : '') + (profile!.beyondMode === 'ask' ? ', and asks the user before anything else beyond that mode' : '') +
+      (profile!.deny.length ? `, never ${profile!.deny.join(', ')}` : '')).join('; ') + '.'];
 }
 
 function nativeSessionConfig(
@@ -1092,22 +1099,85 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
   /**
    * Answers Codex when it asks to run a command or change files: a deny rule
-   * declines, an allow rule accepts, and otherwise only full access accepts.
+   * declines, an ask rule asks the user, an allow rule accepts, and otherwise full
+   * access accepts and a profile with beyondMode ask asks the user.
    */
-  function approve(sessionId: string, session: Session, method: string, params: any) {
+  async function approve(sessionId: string, session: Session, method: string, params: any) {
     if (method !== 'item/commandExecution/requestApproval' && method !== 'item/fileChange/requestApproval') throw new Error('Unsupported runtime request');
     const profile = session.mapping.permissions;
     const full = session.mapping.mode === 'full-access';
     const command = method === 'item/commandExecution/requestApproval' && params?.kind !== 'writeStdin' && !params?.networkApprovalContext && typeof params?.command === 'string' ? params.command : undefined;
     const rule = command !== undefined && profile ? commandDecision(profile, command) : undefined;
-    const decision = rule === 'deny' ? 'decline' : rule === 'allow' || full ? 'accept' : 'decline';
-    runLog(rootOf(sessionId), {
+    const log = (decision: string, extra: Record<string, unknown> = {}) => runLog(rootOf(sessionId), {
       event: 'permission', agent: session.mapping.agent.name, sessionId,
       request: command !== undefined ? 'command' : method === 'item/fileChange/requestApproval' ? 'file change' : 'other',
       ...(command !== undefined ? { command: command.slice(0, 500) } : {}),
-      decision, ...(rule ? { rule } : {}), ...(profile ? { profile: profile.name } : {}),
+      decision, ...(rule ? { rule } : {}), ...(profile ? { profile: profile.name } : {}), ...extra,
     });
-    return { decision };
+    if (rule === 'deny' || rule === 'allow' || (rule === undefined && (full || profile?.beyondMode !== 'ask'))) {
+      const decision = rule === 'deny' ? 'decline' : rule === 'allow' || full ? 'accept' : 'decline';
+      log(decision);
+      return { decision };
+    }
+    // Codex proposes a command prefix to allow; else the exact command.
+    const prefix = Array.isArray(params?.proposedExecpolicyAmendment) && params.proposedExecpolicyAmendment.every((token: unknown) => typeof token === 'string') ? params.proposedExecpolicyAmendment.join(' ') : undefined;
+    const exact = command !== undefined ? unwrapShell(command) : undefined;
+    const always = rule === undefined && (prefix || exact) && !(prefix ?? exact)!.includes(')') ? (prefix ? `Bash(${prefix} *)` : `Bash(${exact})`) : undefined;
+    const what = command !== undefined ? `run \`${unwrapShell(command).slice(0, 400)}\`${params?.reason ? ` (${String(params.reason).slice(0, 200)})` : ''}` : `change files${params?.grantRoot ? ` under ${params.grantRoot}` : ''}${params?.reason ? ` (${String(params.reason).slice(0, 200)})` : ''}`;
+    const answer = await askPermission(sessionId, session, { what, reason: rule === 'ask' ? 'rule' : 'mode', always, recheck: command });
+    log(answer.allow ? 'accept' : 'decline', { asked: true, ...(answer.always ? { always: always } : {}) });
+    return { decision: answer.allow ? 'accept' : 'decline' };
+  }
+
+  /** Claude asks when an ask rule covers a tool use, or when a read-only mode refuses it and the profile asks beyond its mode. */
+  async function claudePermission(sessionId: string, session: Session, request: { tool: string; input: Record<string, unknown>; reason: 'rule' | 'mode'; rule?: string }) {
+    const command = request.tool === 'Bash' && typeof request.input?.command === 'string' ? request.input.command : undefined;
+    const target = command ?? (typeof request.input?.file_path === 'string' ? request.input.file_path : typeof request.input?.url === 'string' ? request.input.url : undefined);
+    const what = `use ${request.tool}${target ? `: \`${String(target).slice(0, 400)}\`` : ''}`;
+    const answer = await askPermission(sessionId, session, { what, reason: request.reason, always: request.reason === 'mode' ? request.rule : undefined, recheck: command });
+    runLog(rootOf(sessionId), {
+      event: 'permission', agent: session.mapping.agent.name, sessionId, request: request.tool, ...(target ? { command: String(target).slice(0, 500) } : {}),
+      decision: answer.allow ? 'accept' : 'decline', asked: true, ...(request.reason === 'rule' ? { rule: 'ask' } : {}), ...(answer.always ? { always: request.rule } : {}),
+      ...(session.mapping.permissions ? { profile: session.mapping.permissions.name } : {}),
+    });
+    return answer;
+  }
+
+  /**
+   * Asks the user about one permission, one question per session at a time.
+   * "Always allow" adds the rule to the profile in its settings file and to the
+   * open sessions that use it; an ask rule offers only once or no.
+   */
+  function askPermission(sessionId: string, session: Session, request: { what: string; reason: 'rule' | 'mode'; always?: string; recheck?: string }) {
+    const run = async (): Promise<{ allow: boolean; always?: boolean; message?: string }> => {
+      const profile = session.mapping.permissions;
+      // Another question may have allowed it always in the meantime.
+      if (request.reason === 'mode' && request.recheck && profile && commandDecision(profile, request.recheck) === 'allow') return { allow: true };
+      const choices = request.always && profile ? ['Allow once', 'Always allow', 'Deny'] : ['Allow once', 'Deny'];
+      const body = `${session.mapping.agent.name} wants to ${request.what}. ` +
+        (request.reason === 'rule' ? `Its permission profile ${profile?.name} asks you each time.` : `Its ${session.mapping.mode} mode does not allow that.`) +
+        (choices.length === 3 ? ` Always allow adds ${request.always} to profile ${profile!.name}.` : '');
+      const assignment = session.parent ? sessions.get(session.parent)?.assignments.get(sessionId) : undefined;
+      const result = await askUser(sessionId, session, assignment, body, choices) as { contentItems: Array<{ text: string }> };
+      let value: any;
+      try { value = JSON.parse(result.contentItems[0].text); } catch { value = {}; }
+      if (value.status !== 'answered') return { allow: false, message: `The user did not answer (${value.status ?? 'canceled'}); it was not allowed` };
+      const answer = String(value.answer).trim();
+      const choice = answer.toLowerCase();
+      if (choice === 'always allow' && choices.length === 3) {
+        await addAllowRule(session.mapping.agent.projectRoot, options.libraryDir, profile!.name, request.always!);
+        for (const other of sessions.values()) {
+          const rules = other.mapping.permissions;
+          if (rules?.name === profile!.name && other.mapping.agent.projectRoot === session.mapping.agent.projectRoot && !rules.allow.includes(request.always!)) rules.allow.push(request.always!);
+        }
+        return { allow: true, always: true };
+      }
+      if (choice === 'allow once' || APPROVALS.includes(choice)) return { allow: true };
+      return { allow: false, message: choice === 'deny' ? 'The user refused it' : `The user refused it: ${answer}` };
+    };
+    const next = (session.permissionQueue ?? Promise.resolve()).then(run, run);
+    session.permissionQueue = next.catch(() => {});
+    return next;
   }
 
   function rootOf(sessionId: string) {
@@ -2542,8 +2612,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
     runtime.onRequest?.(
       async (method, params) =>
-        method === 'item/tool/call'
-          ? toolCall(sessionId, session, params)
+        method === 'item/tool/call' ? toolCall(sessionId, session, params)
+          : method === 'item/permission/request' ? claudePermission(sessionId, session, params)
           : approve(sessionId, session, method, params),
     );
 
