@@ -111,3 +111,21 @@ Decided by the user on 2026-10-09. The workflows Smart and Supervised are rename
 ## D17 — Main turns lessons into skills and raises issues, with the user's approval
 
 Decided by the user on 2026-10-09. When lessons pile up on one theme or recur, the supervisor suggests and main proposes a skill distilled from them, scoped to the roles it guides: main itself, lead, peer, oracle, reviewer, the supervisor, or a custom agent. Approved skills go to the user's library (D16) and replace the lessons they absorb. Main also searches, comments on and opens GitHub issues, both of the project it works on and of ALP itself, when a problem outside the task is worth tracking. Every skill and every post waits for the user's approval of the full draft; ALP enforces this in the tool, not only in instructions. Details: [alpd §19](ALPD.md).
+
+## D18 — A task graph in the project, changed only by the user and main
+
+Decided by the user on 2026-10-09, after reviewing [beads](https://github.com/gastownhall/beads). This resumes the task channel that D15 left for later. ALP keeps its own task graph built on beads' model rather than running beads. The model covers hash ids, types, priorities 0–4, blocking and parent relations, a computed ready list, and an atomic start. Tasks are stored in the project as `.alp/tasks/<id>.json`, one file per task, so they are committed with the code. Only the user and main create or change tasks. Other agents read them and report work they find to their requester, who records it.
+
+The user also accepted these proposals:
+- Ids are `t-` plus a short hash (`t-a3f8`), with numbered children (`t-a3f8.1`).
+- A finished handoff moves a task to a separate `review` status until main accepts it.
+- Main creates tasks without asking the user. The supervisor watches how it does this.
+- Delegating a task that lists paths claims them on the board.
+
+The work runs in four steps, one PR each:
+1. Model, storage, `alp_task` and the CLI.
+2. Linking tasks to delegation, handoff, board claims, main's turn context, the supervisor, and Paseo `todo` items.
+3. A Paseo panel, gates and compaction.
+4. Optional beads import/export and formulas.
+
+Details: [alpd §20](ALPD.md).
