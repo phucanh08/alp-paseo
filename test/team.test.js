@@ -13,6 +13,9 @@ async function until(check) {
   assert.fail('Expected event did not arrive');
 }
 async function setup(t, options = {}) {
+  // The runtime's watchdog is unref'd; keep the loop alive while a test waits on it (Node 22 cancels otherwise).
+  const alive = setInterval(() => {}, 1000);
+  t.after(() => clearInterval(alive));
   const root = await mkdtemp(path.join(tmpdir(), 'alp-team-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await initProject(root);
