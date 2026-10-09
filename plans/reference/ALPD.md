@@ -663,3 +663,65 @@ The CLI adds `alp tasks export [-o file]` and `alp tasks import [file] [--dry-ru
   - main's `formulas` and `pour` actions and the CLI `formula`, `tasks export` and `tasks import`
 - On 2026-10-09, with a release formula in a fresh project, the prompt "set up the tracked work the way this project does releases" made main on Phở, then on Cafe, list the formulas and pour `release` with the right version. Each run reported the step ids and the human step, and the supervisor found both turns sound.
 - The same day, beads 1.3.1 (`@beads/bd`, installed in a scratch directory with its own HOME) exported an epic with children, a `blocks` dependency, an in-progress task with a design, and a closed bug. `alp tasks import` took them with the parent numbering, blocker, description and close reason. The ALP export went into `bd import` with parents, blockers, the deferral and `metadata.alp` intact, and bd's own export of that imported back with nothing to change.
+
+## 24. Permission profiles as built, step 1 (2026-10-09)
+
+Goal: what an agent may do is settings, not a fixed list. A reviewer can run the tests, and agents added later get the permissions the user gives them (D19).
+
+**Probes before building** (2026-10-09, on macOS):
+- Claude Agent SDK:
+  - `allowedTools` rules run without calling `canUseTool`. `disallowedTools` rules are refused in `default`, `acceptEdits` and `bypassPermissions`. A compound command (`git status && touch b`) is refused when a deny rule covers any part of it.
+  - Claude also runs read-only commands such as `ls` without asking in `default`.
+  - Its `sandbox` setting with `filesystem.denyWrite` on the project blocks writes there while the temp directory stays writable.
+- Codex 0.160.1 app-server:
+  - With `approvalPolicy: 'untrusted'` it asks before every command, and a command ALP accepts runs outside the sandbox, even in a read-only session.
+  - With `on-request` it runs commands inside the sandbox without asking. It asks only before leaving the sandbox, and a declined request never runs.
+  - `workspaceWrite` always lets the session write its cwd, whatever `writableRoots` says.
+  - Execpolicy rules load only from files (`~/.codex/rules`, a project's `.codex/rules`), not per thread.
+
+**Profiles.** `src/core/permissions.js` (Node built-ins only):
+- `validatePermissions` checks `permissions: { profiles: { <name>: { base?, allow?, deny? } }, agents: { <agent>: <profile or base> } }` in a settings file:
+  - A profile name has letters, digits, dots, dashes and underscores.
+  - `base` is one of the three modes.
+  - Each rule is `Tool` or `Tool(specifier)`, with at most 200 rules per list. The tool is one of Claude's tools or `mcp__<server>__<tool>`, so a misspelt name fails when the settings load.
+  - `validateSettings` calls it, so a bad profile fails when the session resolves.
+- `profileFor(projectRoot, home, agent)` merges the project's `.alp/settings.json` with `$ALP_HOME/settings.json`:
+  - The project's agent entry wins over the user's.
+  - A profile's base comes from the project when both files define it, and its rules are the union of both files.
+  - A bare base name is a profile without rules.
+  - Agents without an entry get `null` and keep today's behavior. `oracle`, `reviewer` and `supervisor` get a read-only profile, and a profile with another base is refused for them.
+  - An entry that names an undefined profile is an error.
+- `commandDecision(profile, command)`:
+  - It unwraps a shell wrapper such as `/bin/zsh -lc '…'` and splits the line at `&&`, `||`, `;`, `|`, `&` and new lines, outside quotes.
+  - It returns `deny` when a deny rule covers any part. It also returns `deny` when deny rules exist and the line cannot be split: command substitution, process substitution, or an unclosed quote.
+  - It returns `allow` when allow rules cover every part and no part writes a file through a redirect; descriptor duplication and `/dev/null` are allowed.
+  - Otherwise it returns `undefined`, and the mode decides.
+  - Prefix rules (`:*`) match on a word boundary.
+
+**Runtime.**
+- `resolveSession` caps the requested mode at the profile's base and carries `permissions` on the mapping. `alp_delegate` computes a child's mode the same way, so worktree isolation and parallelism see the capped mode. `configureSession` refuses a mode above the base. `READ_ONLY_AGENTS` now only marks the roles that take no tasks.
+- `permissionNote` adds a line to the session's instructions with its profile, mode and rules, when it has rules. `targetNote` tells a coordinator about the profiles of its delegation targets that cap or add rules, so its briefs match them. `alp_delegate` returns `mode` and `modeNote` when a profile capped the mode the coordinator asked for.
+- Claude: `claudePermissions(sandbox, current, rules)` passes allow rules as `allowedTools` and appends deny rules to `disallowedTools`. Only Claude sessions get `permissions` in their native config.
+- Codex:
+  - `codexApproval` chooses `on-request` for a read-only or workspace-write session with Bash allow rules, `untrusted` for a full-access session with Bash deny rules, and `never` otherwise, at thread start and on every turn.
+  - `CodexTransport` passes `item/commandExecution/requestApproval` and `item/fileChange/requestApproval` to the session's handler. `approve` declines what a deny rule covers and accepts what an allow rule covers. For anything else it accepts only in full access.
+  - File changes, network approvals and stdin writes have no rules yet.
+  - Each decision is logged as `{ event: 'permission', agent, request, command?, decision, rule?, profile? }`.
+
+The CLI adds `alp permissions [--json]` and `alp permissions check <agent> "<command>"`.
+
+**Evidence.**
+- `test/permissions.test.js` covers:
+  - rule syntax and settings errors, including misspelt tools
+  - the decision table: compound lines, redirects, substitutions, unclosed quotes, shell wrappers
+  - merging the project and user files, the advisor rules, and mode caps in `resolveSession`
+  - Claude's native rule options
+  - the Codex approval policies and answers through a fake transport, with the run log
+  - unchanged behavior without settings
+  - the CLI
+- Live on 2026-10-09, in a project whose `npm test` writes a file into the project and whose `reviewer` profile allows `Bash(npm test:*)`, Phở main asked for reviews:
+  - The Claude reviewer (Sonnet 5.5, read-only) ran `npm test`. It passed and wrote its file.
+  - The first Codex reviewer failed to start: Codex 0.160 has a `permissions` thread field of its own and rejected ALP's object. ALP now sends the profile only to Claude.
+  - The next Codex reviewer ran `npm test` in its sandbox, failed on the write, and never asked to escalate. Main did not know the profile capped the reviewer at read-only, so its brief forbade retries.
+  - Since then, a coordinator's instructions list its targets' profiles (`targetNote`), and `alp_delegate` reports `mode` and `modeNote` when a profile caps the child. Codex sessions are told to request escalation for allowed commands from the start.
+  - Rerun with a fresh ALP home: the Codex reviewer (`gpt-6.1-sol`) asked to run `/bin/zsh -lc 'npm test'` outside the sandbox. ALP accepted it under the allow rule (logged), and the test wrote its file. The supervisor found the turn sound.

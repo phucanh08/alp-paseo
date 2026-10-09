@@ -28,7 +28,8 @@ export class CodexTransport {
       try {
         const message = JSON.parse(line);
         if (message.method && message.id !== undefined) {
-          if (message.method === 'item/tool/call' && this.requestHandler) {
+          // Tool calls, and Codex asking to run a command or change files, which ALP answers by permission profile.
+          if (['item/tool/call', 'item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(message.method) && this.requestHandler) {
             void Promise.resolve().then(() => this.requestHandler!(message.method, message.params)).then(
               result => { if (!this.closed) this.write({ id: message.id, result }); },
               error => { if (!this.closed) this.write({ id: message.id, error: { code: -32603, message: error instanceof Error ? error.message : String(error) } }); },
