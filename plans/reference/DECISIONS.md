@@ -146,3 +146,16 @@ The work runs in three steps, one PR each:
 Details: [alpd §24](ALPD.md).
 
 All three steps were built on 2026-10-09 (ALPD §24–§26). With no settings, there is one visible change: on Claude, oracle, reviewer and the supervisor run Bash in a read-only OS sandbox instead of being refused Bash.
+
+## D20 — Upgrades taken from Gas Town
+
+Decided by the user on 2026-10-09, after reviewing [Gas Town](https://github.com/gastownhall/gastown). ALP takes four ideas from it, one PR each:
+1. Recovery and recall. Tasks whose assignment died with alpd go back to open, and requesters and the user can ask a finished assignment about its work (`alp_recall`, `alp recall`) for 14 days.
+2. Verification gates. Configured `verify` commands run before `alp_merge` applies a change and after shared writers, and are recorded on the task. Closing a task whose last verification failed needs a stated reason.
+3. Pause and usage limits. `alp pause` and `alp resume` hold delegation. A usage limit pauses that runtime and parks its assignments instead of failing them, and tells the user. The user resumes by default.
+4. Epic landed. The user and main are told when all children of an epic are closed, with a report.
+
+Deferred until a real need appears: an integration branch per epic, formula overlays, and per-agent and per-model statistics. Not taken: tmux, Dolt, patrol agents, federation, OTEL, email and SMS escalation, and rotating accounts to avoid limits.
+
+Step 1 was built on 2026-10-09. Details: [alpd §27](ALPD.md).
+

@@ -310,6 +310,20 @@ linked, closed or reopened, every task an assignment submitted or released, and
 the discovered work of each handoff. It asks about tasks closed without real
 verification, discovered work dropped silently, and tasks left in review.
 
+If alpd stops while an assignment holds a task, the assignment ends with it,
+but the task file still says `in_progress`. At main's next turn, ALP puts every
+such task back to `open` and logs it as `orphaned`. It does this once per
+project after alpd starts. Main's task list shows the task as interrupted,
+with the branch that kept the assignment's work, until someone starts it again:
+
+```text
+- interrupted: t-e73e P2 Slow work ← peer; alpd stopped while it worked, work kept on branch alp/alp-child-0f23…; delegate it again
+```
+
+A task records which alpd process its assignment ran in. ALP leaves alone a task
+whose assignment belongs to another alpd that is still running, such as one with
+a different `ALP_HOME`. It also leaves tasks that main took for itself.
+
 When a root's turn ends, its timeline shows the tasks the tree created or worked
 on as a todo list, if the list changed. Paseo renders it as a task list, and
 `alp run` prints it.
@@ -602,6 +616,49 @@ to files instead.
 `alp_delegate` returns `handoff` (or `null` when the child filed none) and `output`,
 the child's final message. Interim messages stay in the child timeline and are no
 longer concatenated into the result.
+
+## Recalling an assignment
+
+A handoff says what an assignment did, not always why. `alp_recall` asks a
+finished assignment directly:
+
+```json
+{ "assignmentId": "alp-child-f61d…", "question": "Why rewrite the tokenizer instead of patching it?" }
+```
+
+Main may pass `taskId` instead, which asks the last assignment that worked on
+that task. Any agent that delegates gets the tool:
+- Main may recall any assignment of its project, including ones from earlier
+  sessions.
+- Lead may recall only the assignments it, or its own assignments, started.
+- An assignment that is still running is refused; ask it with `alp_send`.
+
+The user asks the same way:
+
+```sh
+alp recall t-7412 "How did you arrive at your number?"
+alp recall alp-child-f61d… "What did you leave out?" --json
+```
+
+How it works:
+- **Kept threads.** ALP keeps every assignment's native thread on disk: a Codex
+  rollout, or a Claude session file. It records each one in
+  `$ALP_HOME/state/recall.json`.
+- **A recall forks the thread.** It uses Codex `thread/fork` or Claude
+  `forkSession`, read-only. The fork has no ALP tools, gets no approvals, and
+  is ephemeral, so it leaves no thread of its own. It is asked the question and
+  then closed, and the assignment's own thread never changes.
+- **A removed worktree.** If the assignment worked in a worktree that is gone,
+  a Codex recall runs in the project. A Claude recall recreates the directory
+  empty for the fork, because Claude finds a session by the directory it ran in.
+- **Expiry.** After 14 days, or past the newest 1000 assignments, ALP deletes
+  the native threads. It does this when alpd starts and after each assignment
+  ends.
+- **Logging.** Recalls appear in the assignment log as `recall` entries, and in
+  the supervisor's digest.
+
+Kept Claude assignment sessions show up in `claude --resume` for the directory
+they ran in until ALP deletes them.
 
 ## Assignment log
 

@@ -42,6 +42,11 @@ export const toolShapes: Record<string, Record<string, z.ZodType>> = {
   alp_merge: {
     assignmentId: z.string().min(1),
   },
+  alp_recall: {
+    assignmentId: z.string().min(1).optional(),
+    taskId: z.string().min(1).optional(),
+    question: z.string().min(1).max(4000),
+  },
   alp_lesson: {
     scope: z.enum(['project', 'user']),
     lesson: z.string().min(1).max(600),
@@ -342,11 +347,18 @@ export class ClaudeTransport {
       return {};
     }
 
-    if (method === 'thread/start' || method === 'thread/resume') {
+    if (method === 'thread/delete') {
+      const { deleteSession } = await import(CLAUDE_SDK);
+      await deleteSession(params.threadId, params.cwd ? { dir: params.cwd } : {});
+      return {};
+    }
+
+    if (method === 'thread/start' || method === 'thread/resume' || method === 'thread/fork') {
       this.config = params as NativeConfig;
       this.threadId =
         method === 'thread/resume' ? params.threadId : randomUUID();
-      await this.start(method === 'thread/resume');
+      // A fork resumes the thread's history under a new id, leaving the thread itself unchanged.
+      await this.start(method === 'thread/start' ? undefined : { resume: params.threadId, fork: method === 'thread/fork' });
       return {
         thread: { id: this.threadId, turns: [] },
         cwd: this.cwd,
@@ -385,7 +397,7 @@ export class ClaudeTransport {
     throw new Error(`Unsupported Claude runtime operation '${method}'`);
   }
 
-  private async start(resume: boolean) {
+  private async start(from?: { resume: string; fork: boolean }) {
     const { createSdkMcpServer, query, tool } = await import(CLAUDE_SDK);
     const config = this.config!;
     const mcpServers = this.convertMcp(config.mcpServers);
@@ -476,7 +488,7 @@ export class ClaudeTransport {
       persistSession: !config.ephemeral,
       promptSuggestions: false,
       includePartialMessages: false,
-      ...(resume ? { resume: this.threadId } : { sessionId: this.threadId }),
+      ...(from ? { resume: from.resume, ...(from.fork ? { forkSession: true, sessionId: this.threadId } : {}) } : { sessionId: this.threadId }),
       // Explicit native path avoids SDK optional binaries inside Electron app.asar.
       pathToClaudeCodeExecutable: this.command,
     };
