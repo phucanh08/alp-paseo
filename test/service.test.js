@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
@@ -85,7 +85,9 @@ exit 0
   // Under the service alpd writes its own log, as when it runs detached.
   assert.match(await readFile(path.join(home, 'logs', 'alpd.log'), 'utf8'), /alpd .* ready on /);
   assert.match(alp('daemon', 'status'), new RegExp(`managed by (launchd|systemd) as ${service.name.replace(/\./g, '\\.')}`));
-  assert.ok(JSON.parse(alp('doctor', '--json')).checks.some(check => check.id === 'service' && check.status === 'ok'));
+  // doctor exits 1 where no runtime is installed (CI); only its service check matters here.
+  const doctor = spawnSync(process.execPath, [CLI, 'doctor', '--json'], { env }).stdout.toString();
+  assert.ok(JSON.parse(doctor).checks.some(check => check.id === 'service' && check.status === 'ok'));
 
   assert.match(alp('daemon', 'stop'), /alpd stopped; its service starts it again at login, or with alp daemon start/);
   assert.match(alp('daemon', 'start'), /alpd .* running \(pid \d+\)/);
