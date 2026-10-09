@@ -44,7 +44,7 @@ export async function findDaemonEntry({ home = alpHome(), env = process.env, can
     const root = path.resolve(path.dirname(cli), '..');
     const name = await readFile(path.join(root, 'package.json'), 'utf8').then(text => JSON.parse(text).name, () => undefined);
     const entry = path.join(root, 'dist', 'alpd.js');
-    if (name === 'alp' && await isFile(entry)) return entry;
+    if (name === 'alp-cli' && await isFile(entry)) return entry;
   }
   return undefined;
 }

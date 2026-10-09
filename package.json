@@ -1,8 +1,16 @@
 {
-  "name": "alp",
-  "version": "0.0.0",
-  "private": true,
+  "name": "alp-cli",
+  "version": "0.2.0",
+  "description": "ALP command line and alpd, the per-user daemon that runs filesystem-defined Codex and Claude Code agent teams",
   "type": "module",
+  "files": [
+    "src/cli.js",
+    "src/client",
+    "src/core",
+    "dist/alpd.js",
+    "templates",
+    "README.md"
+  ],
   "bin": {
     "alp": "src/cli.js"
   },
@@ -26,13 +34,13 @@
     "test:e2e:detach": "node scripts/viewer-detach-e2e.mjs",
     "test:e2e:persistence": "node scripts/build-paseo.mjs && node scripts/persistence-e2e.mjs",
     "test:e2e:import": "node scripts/import-e2e.mjs",
-    "test:daemon": "node scripts/build-paseo.mjs && node --test test/daemon.test.js"
+    "test:daemon": "node scripts/build-paseo.mjs && node --test test/daemon.test.js",
+    "prepack": "node scripts/build-paseo.mjs"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.292",
     "@anthropic-ai/sdk": "^0.131.0",
     "@getpaseo/client": "0.11.1",
     "@getpaseo/plugin": "0.11.1",
@@ -42,5 +50,17 @@
     "esbuild": "0.25.12",
     "typescript": "5.9.3",
     "zod": "4.4.3"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.292"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/phucanh08/alp-paseo.git"
+  },
+  "homepage": "https://github.com/phucanh08/alp-paseo#readme",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }
