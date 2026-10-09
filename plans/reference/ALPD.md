@@ -1110,3 +1110,27 @@ So briefs, handoffs, mail, board pins, recall answers, task text and command out
 - the git environment.
 
 No live run was needed: each guard acts on local processes and text, which the tests exercise for real.
+
+## 33. Settings keys as built (2026-10-09)
+
+Goal (D21, C5): a mistyped setting is reported, not silently ignored.
+
+- `validation.js` lists the known top-level keys:
+  - `PROJECT_SETTINGS`: `defaultAgent`, `workflow`, `runtime`, `permissions`, `verify`, `delegation`;
+  - `USER_SETTINGS`: `permissions`, `limits`, `recovery`;
+  - `$schema` in both.
+- `settingsKeys` sorts the keys of a settings object into:
+  - unknown keys, each with the nearest known key when the edit distance is at most 2;
+  - retired keys, from `RETIRED_SETTINGS` (empty today).
+- `validateSettings` throws on the first unknown key: `unknown setting 'verfy'; did you mean 'verify'?`. Without a near key, the message lists the known ones.
+- `settingsWarnings` returns the retired-key warnings, which `alp doctor` shows.
+- `validateUserSettings` checks `$ALP_HOME/settings.json`:
+  - `limits` and `recovery` are objects whose only field is `autoResume`, a boolean;
+  - `permissions` goes through `validatePermissions`.
+- alpd validates the user's file at start. An invalid file is logged as `ignoring <file>: <reason>`, and alpd starts with the defaults, so a typo never keeps it from running.
+
+**Evidence.** `test/settings.test.js` covers:
+- suggestions and lists of known keys, and the user fields;
+- the retired-key warnings;
+- a project whose typo stops resolution;
+- a real alpd that starts despite a mistyped user setting and logs it.

@@ -10,9 +10,60 @@ function requireValue(condition, code, source, message) {
   if (!condition) throw new AlpError(code, `${source}: ${message}`);
 }
 
+/** Top-level keys of a project's .alp/settings.json. */
+export const PROJECT_SETTINGS = ['$schema', 'defaultAgent', 'workflow', 'runtime', 'permissions', 'verify', 'delegation'];
+/** Top-level keys of the user's $ALP_HOME/settings.json. */
+export const USER_SETTINGS = ['$schema', 'permissions', 'limits', 'recovery'];
+/**
+ * Top-level keys ALP no longer reads, with what to use instead. They warn rather than
+ * fail, so settings written for an older ALP keep working.
+ */
+export const RETIRED_SETTINGS = { project: {}, user: {} };
+
+/** The edit distance of two short keys, for suggestions. */
+function distance(a, b) {
+  const row = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    let previous = row[0];
+    row[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const kept = row[j];
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, previous + (a[i - 1].toLowerCase() === b[j - 1].toLowerCase() ? 0 : 1));
+      previous = kept;
+    }
+  }
+  return row[b.length];
+}
+
+/**
+ * Sorts a settings object's top-level keys: unknown ones, with the closest known key
+ * when it is near, and retired ones, with what replaced them.
+ */
+export function settingsKeys(settings, known, retired = {}) {
+  const unknown = [];
+  const old = [];
+  for (const key of Object.keys(object(settings) ? settings : {})) {
+    if (known.includes(key)) continue;
+    if (Object.hasOwn(retired, key)) { old.push({ key, instead: retired[key] }); continue; }
+    const near = known.filter(candidate => !candidate.startsWith('$')).map(candidate => ({ candidate, d: distance(key, candidate) })).sort((a, b) => a.d - b.d)[0];
+    unknown.push({ key, ...(near && near.d <= 2 ? { suggestion: near.candidate } : {}) });
+  }
+  return { unknown, retired: old };
+}
+
+const unknownMessage = (unknown, known) => `unknown setting '${unknown.key}'${unknown.suggestion ? `; did you mean '${unknown.suggestion}'?` : `; known settings are ${known.filter(key => !key.startsWith('$')).join(', ')}`}`;
+
+/** Warnings for retired keys of a settings object; unknown keys are errors instead. */
+export function settingsWarnings(settings, scope) {
+  return settingsKeys(settings, scope === 'user' ? USER_SETTINGS : PROJECT_SETTINGS, RETIRED_SETTINGS[scope]).retired
+    .map(({ key, instead }) => `setting '${key}' is no longer read; ${instead}`);
+}
+
 export function validateSettings(settings, source) {
   const check = (ok, message) => requireValue(ok, 'INVALID_SETTINGS', source, message);
   check(object(settings), 'expected an object');
+  const { unknown } = settingsKeys(settings, PROJECT_SETTINGS, RETIRED_SETTINGS.project);
+  check(!unknown.length, unknown.length ? unknownMessage(unknown[0], PROJECT_SETTINGS) : '');
   if (settings.defaultAgent !== undefined) check(nonempty(settings.defaultAgent), 'defaultAgent must be a nonempty string');
   if (settings.workflow !== undefined) {
     check(object(settings.workflow), 'workflow must be an object');
@@ -31,6 +82,23 @@ export function validateSettings(settings, source) {
     check(nonempty(runtime[key]), `runtime.${key} must be a nonempty string`);
   }
   return { ...runtime };
+}
+
+/** Checks the user's $ALP_HOME/settings.json; returns it. */
+export function validateUserSettings(settings, source) {
+  const check = (ok, message) => requireValue(ok, 'INVALID_SETTINGS', source, message);
+  check(object(settings), 'expected an object');
+  const { unknown } = settingsKeys(settings, USER_SETTINGS, RETIRED_SETTINGS.user);
+  check(!unknown.length, unknown.length ? unknownMessage(unknown[0], USER_SETTINGS) : '');
+  for (const key of ['limits', 'recovery']) {
+    if (settings[key] === undefined) continue;
+    check(object(settings[key]), `${key} must be an object`);
+    const extra = Object.keys(settings[key]).find(field => field !== 'autoResume');
+    check(!extra, `unsupported ${key} field '${extra}'; use autoResume`);
+    if (settings[key].autoResume !== undefined) check(typeof settings[key].autoResume === 'boolean', `${key}.autoResume must be true or false`);
+  }
+  validatePermissions(settings.permissions, source);
+  return settings;
 }
 
 export function normalizeMcp(raw, directory, source) {

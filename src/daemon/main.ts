@@ -8,6 +8,7 @@ import { createAlpRuntime, reclaimCopies, reclaimWorktrees } from '../runtime/in
 import { createDaemonServer } from './server.js';
 import { acquireLock, heartbeat, releaseLock, updateLock } from './lock.js';
 import { createStore } from './store.js';
+import { validateUserSettings } from '../core/validation.js';
 
 declare const __ALP_VERSION__: string;
 const VERSION = typeof __ALP_VERSION__ === 'string' ? __ALP_VERSION__ : '0.0.0-dev';
@@ -38,9 +39,20 @@ async function detach(home: string) {
   await output.close();
 }
 
-/** The user's alpd settings in $ALP_HOME/settings.json; none when it is missing or unreadable. */
+/**
+ * The user's alpd settings in $ALP_HOME/settings.json; none when it is missing.
+ * Invalid settings are logged and alpd starts with the defaults, so a typo never
+ * keeps it from running; alp doctor reports them too.
+ */
 async function userSettings(home: string): Promise<any> {
-  try { return JSON.parse(await readFile(path.join(home, 'settings.json'), 'utf8')) ?? {}; } catch { return {}; }
+  const file = path.join(home, 'settings.json');
+  let text: string;
+  try { text = await readFile(file, 'utf8'); } catch { return {}; }
+  try { return validateUserSettings(JSON.parse(text), file); }
+  catch (error: any) {
+    console.error(`${new Date().toISOString()} ignoring ${file}: ${error?.message ?? error}`);
+    return {};
+  }
 }
 
 /**

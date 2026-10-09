@@ -930,6 +930,20 @@ custom routing unless a profile is explicitly selected. Existing projects are no
 silently rewritten on plugin reload. Reconcile any customized instructions reported
 by upgrade yourself.
 
+**Settings keys.** ALP rejects a top-level key it does not know, and names the
+closest known one:
+
+- `.alp/settings.json` knows `defaultAgent`, `workflow`, `runtime`,
+  `permissions`, `verify` and `delegation`. A typo such as `"verfy"` stops the
+  session from opening with `unknown setting 'verfy'; did you mean 'verify'?`.
+- `$ALP_HOME/settings.json` knows `permissions`, `limits` and `recovery`.
+  `limits` and `recovery` take only `autoResume: true | false`. An invalid file
+  does not stop alpd: it logs `ignoring …settings.json: …` to
+  `$ALP_HOME/logs/alpd.log` and starts with the defaults.
+
+`$schema` is allowed in both files. Keys that a later ALP retires will warn
+instead of failing, so older settings keep working.
+
 ## Live verification
 
 Run the opt-in real-model smoke tests against a running daemon (default loopback
