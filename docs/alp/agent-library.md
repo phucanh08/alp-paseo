@@ -118,6 +118,47 @@ the same id replaces one whole.
 `alp teams [--project DIR] [--json]` lists them with members, delegation and
 supervisor, and Paseo offers them in its model picker.
 
+## Editing
+
+The CLI changes your library in `~/.alp`, or with `--project [DIR]` the project's
+`.alp/`. It never changes a built-in. To change one, copy it (`cp`), or save an entry
+of its name in the library or the project, which overrides it.
+
+```sh
+alp agent new writer -d "Docs writer" --model claude:claude-sonnet-5-5 --skills style
+alp agent edit main --project --instructions main.md   # the project's own main
+alp team new docs --from pho --label Docs --main writer --member reviewer=reviewer \
+  --delegate writer=reviewer --member-model writer=claude:claude-opus-5-5 --rules rules.md
+alp skill new style --file style.md
+alp mcp add docs --url https://example.test/mcp --header Authorization="Bearer …"
+alp hook add tests --event handoff --command "npm test" --blocking --timeout 600
+alp agent show main            # the entry that applies, where from, and who uses it
+alp agent cp main architect    # built-ins too
+alp hook mv tests checks
+alp mcp rm docs
+```
+
+- **Editing a lower layer's entry:** `edit` on an entry that only a lower layer has
+  (a built-in, or the library's for `--project`) creates this scope's override from it.
+- **What an entry names must exist where it lives:**
+  - a library agent can name only library skills, MCP servers and hooks;
+  - a project agent can name the project's and the library's;
+  - a team names agents that exist.
+- **Removing or renaming:** refused while an agent, a team or the project's settings
+  use the entry, and the error lists them. Removing an override is always allowed:
+  the entry below it applies again.
+- **Testing:**
+  - `alp mcp test <name>` starts the server, lists its tools, and stops it;
+  - `alp hook test <name>` runs the hook once, with a sample event on stdin and
+    `ALP_EVENT`, `ALP_SESSION`, `ALP_AGENT`, `ALP_TASK` and `ALP_PROJECT` set, and
+    says whether a blocking hook would refuse the action.
+- **Concurrent edits:** every save checks the entry's revision from when it was read,
+  so two editors cannot overwrite each other. Files are written through a temporary
+  file and a rename.
+
+The Paseo plugin offers the same operations to its settings screen as `alp.library.*`
+RPC.
+
 ## Listing
 
 ```sh

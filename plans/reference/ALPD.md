@@ -1414,3 +1414,54 @@ Goal (D23, phase 13, step 2): Phở and Cafe become teams, and the user can defi
   - that settings and the caller come before the team;
   - the Paseo catalog and `alp teams`.
 - Existing tests changed only messages ("team" for "profile"), the session config's model list, and init's settings.
+
+## 43. Editing the library as built (2026-10-09)
+
+Goal (D23, phase 13, step 3): one set of core functions edits agents, skills, MCP servers, hooks and teams. The CLI and the Paseo settings screen both use them.
+
+- **`src/core/library-edit.js`:**
+  - Functions: `getEntry`, `listEntries`, `usersOf`, `saveEntry`, `deleteEntry`, `duplicateEntry` and `renameEntry`, over the kinds `agents`, `skills`, `mcp`, `hooks` and `teams`.
+  - Content is per kind:
+    - agents: `{ instructions, config }`;
+    - skills: `{ body }`;
+    - MCP servers: `{ server }`;
+    - hooks: `{ hook }`;
+    - teams: `{ team, houseRules }`.
+  - The scope is `library` (`$ALP_HOME`) or `project` (`.alp/`). Built-ins are read from the templates and never written.
+  - **Saving:**
+    - Validation comes first: `validateAgentConfig`, `normalizeMcp`, `validateHook` or `validateTeam`.
+    - Named references are checked against what the scope can see: a library agent sees only the library; a project agent sees the project and the library. A team's agents must exist.
+    - Files are written through a temporary file and a rename. An empty `agent.json` or house rules file is removed.
+    - The revision is a hash of the scope's content. A save carrying an older one fails with `REVISION_CONFLICT`, and `revision: null` creates.
+  - **Deleting and renaming:**
+    - Users of an entry are:
+      - for agents: teams naming them, and the project's `defaultAgent` and `delegation`;
+      - for skills, MCP servers and hooks: agents naming them in `agent.json`, plus roles in `role-skills.json` for skills;
+      - for teams: the project's `workflow.mode`.
+    - Delete and rename are refused (`IN_USE`) while there are users, unless removing an override leaves a lower layer of the same name.
+- **`src/core/hook-run.js`:** `runHook(hook, payload, { cwd, env, timeoutMs })` runs `/bin/sh -c` with the JSON payload on stdin, cuts output at 64 KiB, and sends SIGTERM at the timeout, then SIGKILL after 2 s. `samplePayload(event)` builds a test event. Step 5 reuses both.
+- **`src/client/mcp-probe.js`:** `probeMcp(server)` speaks MCP's `initialize`, `notifications/initialized` and `tools/list` (with paging):
+  - over stdio, as newline-delimited JSON-RPC;
+  - over streamable HTTP, answered as JSON or server-sent events, keeping `mcp-session-id` and ending with DELETE.
+- `src/client/library-test.js` (`testEntry`) runs an MCP server or a hook with `ALP_*` variables.
+- **CLI:**
+  - `alp agent|team|skill|mcp|hook` with `new`/`add`, `edit`, `show`, `cp`, `mv`, `rm` and `test` (for mcp and hook). `--project` alone means the current directory.
+  - `edit` of an entry that only a lower layer has creates the scope's override.
+  - Team options: `--member name=role`, `--member-model`, `--member-thinking`, `--delegate owner=a,b`, the `--supervisor*` options, `--no-supervisor` and `--rules FILE`. Changing `--main` drops the old main from the members and the graph.
+- **Plugin:** `plugins/paseo/shared/library.ts` defines `alp.library.list|get|save|delete|duplicate|rename|test`, and `server/library.ts` handles them with the core functions:
+  - the library is `$ALP_HOME`;
+  - the project is the nearest ALP project of the workspace directory, and the project scope is refused without one.
+- `npm test` now runs `node --test 'test/*.test.js'`. Node's default patterns also ran every file under `test/`, including the support scripts; the fake MCP server waited on stdin there, so the run hung.
+
+**Evidence.**
+- `test/library-edit.test.js` checks:
+  - saves, revisions and conflicts, with no temporary files left behind;
+  - that built-ins are never written, but can be copied and overridden;
+  - reference checks per scope;
+  - in-use refusals for skills, MCP servers, hooks and team agents;
+  - bad definitions never reaching the disk.
+- `test/library-tools.test.js` checks:
+  - `runHook`'s stdin, environment, exit code and timeout;
+  - `probeMcp` over stdio (paging, a crash with its stderr, a missing command) and over HTTP (JSON, then SSE, with the session id and the user's headers);
+  - every RPC through the contracts;
+  - the CLI from creating entries to removing them.

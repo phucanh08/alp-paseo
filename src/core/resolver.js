@@ -56,7 +56,8 @@ export async function agentSources(root, { library, templates } = {}) {
     }
   };
   if (library) await layer(path.join(library, 'agents'), 'library');
-  await layer(path.join(path.resolve(root), '.alp', 'agents'), 'project');
+  // Without a project, only the built-ins and the library apply.
+  if (root !== undefined) await layer(path.join(path.resolve(root), '.alp', 'agents'), 'project');
   return found;
 }
 
@@ -80,7 +81,7 @@ export const LIBRARY_KINDS = ['agents', ...Object.keys(KINDS)];
  * @returns {Promise<Array<{ name: string, source: 'builtin' | 'library' | 'project', path?: string, overrides?: 'builtin' | 'library', description?: string, usedBy?: string[] }>>}
  */
 export async function libraryEntries(kind, projectRoot, { library, templates } = {}) {
-  const root = path.resolve(projectRoot);
+  const root = projectRoot === undefined ? undefined : path.resolve(projectRoot);
   if (kind === 'agents') {
     const rows = [];
     for (const [name, source] of await agentSources(root, { library, templates })) {
@@ -105,7 +106,7 @@ export async function libraryEntries(kind, projectRoot, { library, templates } =
     }
   };
   if (library) await layer(path.join(library, kind), 'library');
-  await layer(path.join(root, '.alp', kind), 'project');
+  if (root !== undefined) await layer(path.join(root, '.alp', kind), 'project');
   // Who uses each entry: the agents naming it in agent.json, and for skills the roles given it.
   const users = new Map();
   const use = (name, agent) => users.set(name, [...new Set([...(users.get(name) ?? []), agent])]);
