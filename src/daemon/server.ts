@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { appendFile, chmod, mkdir, unlink } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, readFile, unlink } from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
 import { AlpRpcError, MAX_FRAME, PROTOCOL_VERSION } from '../client/index.js';
@@ -264,7 +264,19 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
       if (envelope.sessionId === root && envelope.event.type === 'item') items.set(envelope.event.item.id, envelope);
     }
     for (const item of items.values()) deliver(connection, item);
-    if (children) for (const envelope of log) if (envelope.sessionId !== root) deliver(connection, envelope);
+    if (children) for (const envelope of log) if (envelope.sessionId !== root && current(envelope)) deliver(connection, envelope);
+  }
+
+  /** Questions in a log are history; announceQuestions delivers the ones still waiting. */
+  function current(envelope: Envelope) {
+    return envelope.event.type !== 'question' && envelope.event.type !== 'question.resolved';
+  }
+
+  function announceQuestions(connection: Connection, root: string) {
+    for (const question of runtime.questions()) {
+      if (question.rootId !== root) continue;
+      deliver(connection, { sessionId: question.sessionId, epoch: `announce-${startedAt}`, seq: 0, ts: new Date().toISOString(), event: { type: 'question', question } });
+    }
   }
 
   /**
@@ -284,6 +296,7 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
       deliver(connection, envelope({ type: 'session.ready' }));
       if (session.activeTurnId) deliver(connection, envelope({ type: 'turn.started', turnId: session.activeTurnId, origin: 'user' }));
     }
+    announceQuestions(connection, root);
   }
 
   /** Reopens a closed root from its record: the native thread resumes, alpd replays the history. */
@@ -313,7 +326,43 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
   }
 
   const handlers: Record<string, (connection: Connection, params: any) => Promise<unknown> | unknown> = {
-    'daemon.status': () => ({ pid: process.pid, startedAt, version, protocolVersion: PROTOCOL_VERSION, sessions: runtime.list().length }),
+    'daemon.status': () => ({ pid: process.pid, startedAt, version, protocolVersion: PROTOCOL_VERSION, sessions: runtime.list().length, questions: runtime.questions().length }),
+
+    'session.status'(_connection, { sessionId }) {
+      if (typeof sessionId !== 'string') throw new RpcError(-32602, 'sessionId is required');
+      const status = runtime.status(sessionId);
+      if (!status) throw new RpcError(ERROR.notFound, `Session ${sessionId} is not live`);
+      return { status };
+    },
+
+    'session.message'(_connection, { sessionId, text }) {
+      runtime.message(sessionId, text);
+      return {};
+    },
+
+    /** The assignment log of a session's tree, from the run log. */
+    async 'session.log'(_connection, { sessionId }) {
+      const root = rootOf.get(sessionId) ?? records.get(sessionId)?.rootId ?? sessionId;
+      if (!runLogDir) return { rootId: root, entries: [] };
+      const text = await readFile(path.join(runLogDir, `${root.replace(/[^\w.-]/g, '_')}.jsonl`), 'utf8').catch(() => '');
+      const entries = text.split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+      return { rootId: root, entries };
+    },
+
+    'question.list'(_connection, { projectRoot } = {}) {
+      const questions = runtime.questions().filter(question => projectRoot === undefined || runtime.snapshot(question.rootId)?.projectRoot === projectRoot);
+      return { questions };
+    },
+
+    'question.answer'(_connection, { questionId, text, dismiss = false, reason }) {
+      if (typeof questionId !== 'string') throw new RpcError(-32602, 'questionId is required');
+      if (dismiss !== true && typeof text !== 'string') throw new RpcError(-32602, 'text or dismiss is required');
+      // A unique prefix is enough, as in the CLI.
+      const matches = runtime.questions().filter(question => question.id === questionId || question.id.startsWith(questionId));
+      if (matches.length !== 1) throw new RpcError(ERROR.notFound, matches.length ? `Question id ${questionId} is ambiguous` : `No question ${questionId} waits for an answer`);
+      runtime.answer(matches[0].id, dismiss === true ? { dismiss: true, reason } : { text });
+      return { questionId: matches[0].id };
+    },
 
     'daemon.shutdown': () => {
       setImmediate(() => onShutdown?.());
@@ -357,7 +406,8 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
       const found = known(sessionId);
       const root = rootOf.get(sessionId) ?? records.get(sessionId)?.rootId ?? sessionId;
       attach(connection, root);
-      if (replay) for (const envelope of await treeLog(root)) deliver(connection, envelope);
+      if (replay) for (const envelope of await treeLog(root)) if (current(envelope)) deliver(connection, envelope);
+      announceQuestions(connection, root);
       return { session: root === found.id ? found : summary(root) };
     },
 
