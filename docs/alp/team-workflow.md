@@ -788,13 +788,16 @@ effort. Invalid choices fail explicitly.
 Oracle runs on Fable (`claude:claude-fable-5-1`) or Astra (`codex:gpt-6-astra`); any
 other model, or none, is refused. Its effort defaults to `high`; `modelReason` is
 optional. For two independent opinions, the coordinator starts one oracle on each
-model with `wait: false` and compares their advice: oracles, like read-only or
+model and compares their advice: oracles, like read-only or
 worktree peers, run beside other running assignments. There is no automatic
 fallback model on failure. Oracle and reviewer are forced to read-only regardless of
 parent permissions.
 
-Every assignment has its own native runtime session and ALP instructions. By
-default the caller waits for the real handoff, or for the child's first question.
+Every assignment has its own native runtime session and ALP instructions. It runs in
+the background by default: `alp_delegate` returns its `assignmentId` at once, and the
+handoff and questions come to the caller as mail. With `wait: true`, for a result the
+caller's next step cannot do without, the caller waits for the real handoff, or for
+the child's first question.
 Child timelines identify parent session and tool call. Duplicate tool calls are
 deduplicated. Interrupt, inactivity, and parent shutdown close descendants; user
 steering reaches the parent and leaves its assignments running. The existing maximum
@@ -879,14 +882,16 @@ the requester relays. The host binds the sender to the calling session.
 
 | Tool | Who | Purpose |
 | --- | --- | --- |
-| `alp_delegate {…, wait: false, etaMinutes?}` | requester | Start an assignment and return its `assignmentId` immediately; `etaMinutes` asks for a check-in when it runs past that |
+| `alp_delegate {…, wait?, etaMinutes?}` | requester | Start an assignment in the background and return its `assignmentId` at once (`wait: true` waits for its result instead); `etaMinutes` asks for a check-in when it runs past that |
 | `alp_wait {assignments?, timeoutMs?}` | requester | Return as soon as mail arrives (result, question, note, stall report, check-in) or, for main, the user writes; on timeout, an empty list and a snapshot of running work. Default 5 minutes, maximum 15 |
 | `alp_send {to, kind, body, replyTo?}` | both | `to` is an assignment id or `"parent"`. Requesters send `answer` (with `replyTo`), `steer`, or `note`; children send `note` only |
 | `alp_ask {question}` | child | Ask the requester and wait for the answer; after 15 minutes it returns `unanswered` |
 
 Delivery, in order: a waiting `alp_wait` or `alp_delegate` call receives the mail;
 otherwise it is steered into the recipient's running turn; otherwise an idle
-recipient is woken with a new turn carrying the mail. Interrupt stops wakes until
+recipient is woken with a new turn carrying the mail. Notes from the recipient's own
+assignments never wake it: they ride with its next turn, which a result, a question,
+a check-in or its requester's mail starts. Interrupt stops wakes until
 the next user prompt, which then carries the held mail. At most 8 wakes run per
 user prompt, and wakes do not reset the per-turn delegation limit. Steered and wake
 batches are capped at 9,000 characters; bodies at 8,000.
@@ -902,7 +907,11 @@ does not count. Stall reports never wake or steer on their own.
 
 ### Main stays reachable
 
-Main talks with the user, so it never goes quiet while others work:
+Main talks with the user, so it never goes quiet while others work. Work runs in
+the background, as in a chat with Claude Code: agents delegate in the background
+by default, run long shell commands in the background when their tools allow it,
+and wait only when their next step needs the result. Main ends its turn while
+work runs, so you can keep talking with it.
 
 - **Your message ends main's wait.** When you write to main while it waits in
   `alp_delegate` or `alp_wait`, the wait returns at once with `userMessage: true`.

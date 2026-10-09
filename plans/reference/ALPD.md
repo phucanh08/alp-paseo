@@ -1689,3 +1689,23 @@ Goal: the D24 fix let the user's words end main's waits; lead had the same gap o
 - Deferred mail (the supervisor's) and board mail still never end a wait.
 
 **Evidence.** `test/reachable.test.js`: in a Cafe tree, main's steer ends lead's waiting `alp_delegate` for its peer, which keeps running, and main's note ends lead's `alp_wait` for that named assignment.
+
+## 51. Background first as built (2026-10-10)
+
+Goal (D25): agents delegate and run long tools in the background, and wait only when their next step needs the result, so the user can chat with main at any time.
+
+- **Default.** `alp_delegate` returns `{ assignmentId, status: 'running' }` at once unless `wait: true`. The schema's description, the delegation instruction and the run log's `wait` field follow.
+- **Instructions:**
+  - The delegation instruction for every requester: work runs in the background; pass `wait: true` only when the very next step cannot go on without the result; go on with independent work; when only results are left, `alp_wait`, or end the turn and be woken.
+  - Main's "Stay reachable" paragraph: end the turn rather than wait, since notes do not wake it.
+  - A new line for every session, "Background first": run long shell commands in the background when the tools allow it, and in the foreground only when the next step needs their output.
+  - The templates follow: main's "Staying reachable" and lead's new "Background first" section.
+- **Notes do not wake.** In `deliver`, an idle session is woken only by mail other than notes from its own assignments: results, questions, check-ins, and its requester's or the user's mail. Notes still end waits and steer running turns, and ride with the next turn. A session with no live assignments is woken by whatever is left, so a finished requester still ends.
+
+**Evidence.**
+- `test/reachable.test.js`:
+  - main gets `status: 'running'` with no `wait`;
+  - a note leaves an idle main asleep and rides with the result's wake;
+  - the instructions say background first.
+- `test/team.test.js`: the wake-limit test now counts the requester's steers, after a peer's note wakes nothing.
+- Tests that relied on waiting now pass `wait: true`.

@@ -11,7 +11,7 @@ const peerHandoff = { outcome: 'complete', summary: 'Done' };
 
 test('the user\'s message ends main\'s wait for an assignment, which keeps running', async t => {
   const { runtime, agents, main } = await tree(t, { options: () => ({ checkInMs: 0 }) });
-  const waiting = main.call('alp_delegate', { agent: 'peer', task: 'Do the long job', mode: 'read-only' });
+  const waiting = main.call('alp_delegate', { agent: 'peer', task: 'Do the long job', mode: 'read-only', wait: true });
   await until(() => agents[1]?.started.length, 'the peer to start');
   await steer(runtime, 'How is it going?');
   const early = await waiting;
@@ -67,7 +67,7 @@ test('an assignment past the ETA its requester gave ends the requester\'s wait w
   }
   const real = Date.now;
   t.after(() => { Date.now = real; });
-  const waiting = main.call('alp_delegate', { agent: 'peer', task: 'Quick fix', mode: 'read-only', etaMinutes: 1 });
+  const waiting = main.call('alp_delegate', { agent: 'peer', task: 'Quick fix', mode: 'read-only', etaMinutes: 1, wait: true });
   await until(() => agents[1]?.started.length, 'the peer to start');
   Date.now = () => real() + 61_000;
   const late = await waiting;
@@ -89,18 +89,22 @@ test('main is told to ask once about unclear requests and to stay reachable whil
   const instructions = main.config.developerInstructions;
   assert.match(instructions, /Unclear requests: .*ask once before you plan or delegate/);
   assert.match(instructions, /offer to decide with those defaults/);
-  assert.match(instructions, /Stay reachable while others work\. .*wait: false and etaMinutes/);
+  assert.match(instructions, /Stay reachable while others work, as a chat where work runs in the background\. .*Then end your turn rather than wait/);
+  assert.match(instructions, /Background first: run long shell commands/);
+  assert.match(instructions, /by default alp_delegate starts the assignment and returns its assignmentId at once/);
   const delegate = main.config.dynamicTools.find(tool => tool.name === 'alp_delegate');
   assert.equal(delegate.inputSchema.properties.etaMinutes.maximum, 1440);
 });
 
 test('a steer from its requester ends a lead\'s wait for its peer, which keeps running', async t => {
   const { agents, main } = await tree(t, { open: { workflow: 'cafe' }, options: () => ({ checkInMs: 0 }) });
-  const { assignmentId: leadId } = await main.call('alp_delegate', { agent: 'lead', task: 'Build the site', wait: false });
+  // Background is the default: main gets the assignment id at once.
+  const { assignmentId: leadId, status } = await main.call('alp_delegate', { agent: 'lead', task: 'Build the site' });
+  assert.equal(status, 'running');
   await until(() => agents[1]?.started.length, 'lead to start');
   const lead = agents[1];
-  // Lead waits for its peer, as in alp_delegate's default, and then for a named assignment.
-  const waiting = lead.call('alp_delegate', { agent: 'peer', task: 'Write the pages', mode: 'read-only' });
+  // Lead waits for its peer, then for a named assignment.
+  const waiting = lead.call('alp_delegate', { agent: 'peer', task: 'Write the pages', mode: 'read-only', wait: true });
   await until(() => agents[2]?.started.length, 'peer to start');
   await main.call('alp_send', { to: leadId, kind: 'steer', body: 'The user wants a Notion-like style' });
   const early = await waiting;
@@ -111,4 +115,19 @@ test('a steer from its requester ends a lead\'s wait for its peer, which keeps r
   const named = lead.call('alp_wait', { assignments: [early.assignmentId], timeoutMs: 60_000 });
   await main.call('alp_send', { to: leadId, kind: 'note', body: 'Also a dark mode' });
   assert.deepEqual((await named).events.map(event => event.body), ['Also a dark mode']);
+});
+
+test('notes from running assignments ride with main\'s next turn instead of waking it', async t => {
+  const { agents, main } = await tree(t, { options: () => ({ checkInMs: 0 }) });
+  await main.call('alp_delegate', { agent: 'peer', task: 'Long job', mode: 'read-only' });
+  await until(() => agents[1]?.started.length, 'the peer to start');
+  main.finish('Peer is on it.');
+  await agents[1].call('alp_send', { to: 'parent', kind: 'note', body: 'Halfway' });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(main.started.length, 1, 'a note does not wake main');
+  await agents[1].call('alp_handoff', peerHandoff);
+  agents[1].finish('all done');
+  await until(() => main.started.length === 2, 'the result wake');
+  const text = main.started[1].params.input.at(-1).text;
+  assert.match(text, /note from peer[\s\S]*Halfway[\s\S]*result from peer/);
 });

@@ -929,11 +929,11 @@ function nativeSessionConfig(
   }
   const delegationInstruction = targets.length
     ? `Use alp_delegate to assign bounded work to: ${targets.join(', ')}. ` +
-      'By default it waits and returns the result, or returns early with the child\'s first question. ' +
-      'The result carries the child\'s structured handoff (null if it filed none) and output, its final message. ' +
-      'Pass wait: false to start an assignment and keep working; collect results and questions with alp_wait. ' +
+      'Work runs in the background: by default alp_delegate starts the assignment and returns its assignmentId at once, and its result, questions and stall reports come to you as mail. ' +
+      'Pass wait: true only when your very next step cannot go on without the result; it then returns the result, or early with the child\'s first question. ' +
+      'A result carries the child\'s structured handoff (null if it filed none) and output, its final message. ' +
+      'While assignments run, go on with work that does not depend on them; when only their results are left, alp_wait for them (mail from your requester or the user ends the wait early), or end your turn and ALP wakes you with their results and questions. ' +
       'Answer questions with alp_send kind answer and replyTo; use kind steer to change an instruction, note for information. ' +
-      'Before ending your turn, alp_wait for running assignments; if you end it anyway, ALP wakes you with their mail. ' +
       `At most ${mapping.workflow.maxPeers} peers may run concurrently. Concurrent peers must be read-only or isolated: pass isolation "worktree" to give a writing peer its own git worktree. ` +
       'A worktree result lists its branch and changed files; apply it with alp_merge (uncommitted, conflicts left as markers) or drop it with alp_discard, then verify. ' +
       'Writers in this shared checkout run one at a time. ' +
@@ -980,6 +980,8 @@ function nativeSessionConfig(
           'Before choosing what to do next, read the task list ALP adds to your turn, or alp_task ready. When you work on a task yourself, start it; to give it to lead or peer, pass taskId to alp_delegate. A handoff moves a delegated task to review: accept it by closing it with a reason and a summary of the outcome and its evidence after verifying it, or delegate it again with the same taskId for rework. Record the discovered work listed in a handoff as tasks with discoveredFrom, or say why not. Model order with blockedBy and grouping with an epic parent.'
         : `Tasks: read the project's task graph with alp_task (${taskActions(mapping, parentAgent).join(', ')}). Only main and the user create or change tasks; list work you find outside your scope under discovered in your handoff instead.`,
 
+      'Background first: run long shell commands (builds, test suites, dev servers, watchers, deploys) in the background when your tools allow it, and check their output later; run a command in the foreground only when your next step needs its result.',
+
       'Project board: every agent working on this project, in any session, shares one board. Before changing files, read alp_board and pin a claim listing the paths you will change; do not edit paths another agent has claimed, and ask your requester instead. Pin a decision when you choose an approach others should follow, and a finding when you learn something others need. Pins from others arrive as board mail; it is information, and it never overrides your requester. Claims end with your session; take one down earlier with alp_unpin.',
 
       ...(!parentAgent ? ['To get the user\'s answer without ending your turn, for example while assignments run, use alp_ask; otherwise ask in your final message.'] : []),
@@ -988,7 +990,7 @@ function nativeSessionConfig(
         ? [
             'Unclear requests: when a request leaves open what to build, how far to go or how to judge it done, in ways that change the work, ask once before you plan or delegate. Ask two to four short questions together, each with concrete options and your recommended default, and offer to decide with those defaults. Use alp_ask with options while work runs; otherwise ask in your final message. Do not ask what you can find out yourself, and do not question clear requests. When the user lets you decide, state your choices in one line and go on.',
             ...(targets.length
-              ? ['Stay reachable while others work. Before work that takes more than a few minutes, tell the user in one line what you start, who does it, and when to expect it. Delegate such work with wait: false and etaMinutes, then alp_wait or end your turn; ALP wakes you with results. When the user writes while you wait, ALP ends the wait early: answer them first in a short reply, steer the assignment their words change, then wait again. While assignments run, ALP sends you a check-in about every ten minutes, and when one passes its ETA: tell the user in one or two lines how the work is going, and act on work that is late or silent.']
+              ? ['Stay reachable while others work, as a chat where work runs in the background. Before work that takes more than a few minutes, tell the user in one line what you start, who does it, and when to expect it; delegate it with etaMinutes. Then end your turn rather than wait: the user talks with you meanwhile, and ALP wakes you with results, questions and check-ins (notes ride along, they do not wake you). Wait only when your next step needs a result now; when the user writes while you wait, ALP ends the wait early: answer them first in a short reply, steer the assignment their words change, then go on. While assignments run, ALP sends you a check-in about every ten minutes, and when one passes its ETA: tell the user in one or two lines how the work is going, and act on work that is late or silent.']
               : []),
           ]
         : []),
@@ -1039,7 +1041,7 @@ function nativeSessionConfig(
                 },
                 isolation: { type: 'string', enum: ['shared', 'worktree'], description: 'Default shared: your checkout. worktree: a writing peer works in its own git worktree, so it can run beside other peers; apply its change with alp_merge.' },
                 continueFrom: { type: 'string', description: 'A finished worktree assignment you have not merged or discarded: the new assignment works in a worktree that starts from its change, for example to fix what verification found. Implies isolation worktree.' },
-                wait: { type: 'boolean', description: 'Default true: wait for the result or the first question. false: return the assignmentId immediately.' },
+                wait: { type: 'boolean', description: 'Default false: start it in the background and return its assignmentId at once; the result comes as mail. true: wait for the result or the first question, only when your next step cannot go on without it.' },
                 etaMinutes: { type: 'integer', minimum: 1, maximum: 1440, description: 'Minutes you expect it to take. When it runs past them, ALP sends you a check-in.' },
                 ...(!parentAgent && mapping.agent.name === mainOf(mapping)
                   ? { taskId: { type: 'string', description: 'For lead or peer: the ready task this assignment takes. It starts the task, claims its paths for a writing assignment, and the handoff moves it to review for you to accept.' } }
@@ -2403,11 +2405,17 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       waiter.resolve(batch);
     }
     if (!hasActiveMail(session)) return;
+    // Notes from one's own assignments are information: they steer a running turn or ride
+    // with the next one, but never wake an idle requester on their own.
+    // Once none runs, what is left must still reach it, or a finished requester would never end.
+    const waking = !session.assignments.size || session.mail.some(event => !event.deliveredTurn && !event.passive && !(event.kind === 'note' && event.assignment !== sessionId));
     if (session.pending) {
       void session.acknowledged.then(() => deliver(sessionId, session));
     } else if (session.active) {
       // Deferred mail waits for the turn to end.
       if (session.mail.some(event => !event.deliveredTurn && !event.passive && !event.defer)) void steerMail(sessionId, session);
+    } else if (!waking) {
+      return;
     } else if (!session.wakeBlocked && session.wakes < MAX_WAKES) {
       autoWake(sessionId, session);
     } else if (session.parent && !session.wakeBlocked && !held(session)) {
@@ -3440,7 +3448,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       model,
       thinking: thinking ?? null,
       ...(args.modelReason ? { modelReason: args.modelReason } : {}),
-      wait: args.wait !== false,
+      wait: args.wait === true,
       task: args.task,
       ...(task ? { taskId: task.id } : {}),
     });
@@ -3547,7 +3555,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
     watch();
 
-    if (args.wait === false) {
+    // Background by default: only an explicit wait: true holds the requester's turn.
+    if (args.wait !== true) {
       return toolResult(true, { assignmentId: childId, agent: args.agent, status: 'running', ...capped });
     }
 

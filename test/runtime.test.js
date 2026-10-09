@@ -87,7 +87,7 @@ test('delegation opens children inside the runtime and reports assignments and m
   const { root, runtime, runtimes, of } = await setup(t);
   await runtime.open('root', { cwd: root, persist: true });
   await runtime.prompt('root', prompt('first', 'Delegate'));
-  const lead = runtimes[0].call('alp_delegate', { agent: 'lead', task: 'Investigate' });
+  const lead = runtimes[0].call('alp_delegate', { agent: 'lead', wait: true, task: 'Investigate' });
   await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
   const [childOpened] = of('root', 'assignment');
   const childId = childOpened.assignment.id;
@@ -126,7 +126,7 @@ test('interrupt closes the subtree and a failed prompt is reported once', async 
   const { root, runtime, runtimes, of } = await setup(t);
   await runtime.open('root', { cwd: root });
   await runtime.prompt('root', prompt('first', 'Delegate'));
-  const lead = runtimes[0].call('alp_delegate', { agent: 'lead', task: 'Work' });
+  const lead = runtimes[0].call('alp_delegate', { agent: 'lead', wait: true, task: 'Work' });
   await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
   const childId = of('root', 'assignment')[0].assignment.id;
   await runtime.interrupt('root');
@@ -144,7 +144,7 @@ test('every ALP tool the runtime offers has a Claude tool schema with the same p
   const { root, runtime, runtimes } = await setup(t);
   await runtime.open('root', { cwd: root, mode: 'read-only' });
   await runtime.prompt('root', prompt('first', 'Delegate'));
-  void runtimes[0].call('alp_delegate', { agent: 'lead', task: 'Work' });
+  void runtimes[0].call('alp_delegate', { agent: 'lead', wait: true, task: 'Work' });
   await until(() => runtimes[1]?.calls.some(call => call.method === 'thread/start'));
   const offered = new Map();
   for (const harness of runtimes) {
