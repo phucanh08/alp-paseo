@@ -18,6 +18,7 @@ export type Task = {
   blockedBy: string[];
   discoveredFrom: string | null;
   related: string[];
+  gates: TaskGate[];
   assignee: { agent: string; session?: string; assignment?: string; since: string } | null;
   handoff: Record<string, unknown> | null;
   createdBy: string;
@@ -25,6 +26,20 @@ export type Task = {
   updatedAt: string;
   closed: { at: string; by: string; reason: CloseReason; summary?: string } | null;
   log: TaskLogEntry[];
+  compacted?: { at: string; by: string; chars: number };
+};
+
+export type GateKind = 'human' | 'timer' | 'gh:pr' | 'gh:run';
+export type TaskGate = {
+  id: string;
+  kind: GateKind;
+  note?: string;
+  until?: string;
+  repo?: string;
+  ref?: string;
+  at: string;
+  by: string;
+  resolved?: { at: string; by: string; note?: string };
 };
 
 export type TaskInput = {
@@ -41,13 +56,15 @@ export type TaskInput = {
 };
 
 export type TaskLinks = { blockedBy?: string[]; related?: string[]; parent?: string };
-export type TaskSummary = Pick<Task, 'id' | 'title' | 'type' | 'priority' | 'status'> & { labels?: string[]; parent?: string; blockedBy?: string[]; assignee?: string };
+export type TaskSummary = Pick<Task, 'id' | 'title' | 'type' | 'priority' | 'status'> & { labels?: string[]; parent?: string; blockedBy?: string[]; gates?: string[]; assignee?: string };
 type WriteOptions = { ifRev?: number };
 
 export const TASKS_DIR: string;
 export const TASK_TYPES: TaskType[];
 export const TASK_STATUSES: TaskStatus[];
 export const CLOSE_REASONS: CloseReason[];
+export const GATE_KINDS: GateKind[];
+export const MAX_GATES: number;
 export const TITLE_CHARS: number;
 export const DESCRIPTION_CHARS: number;
 export const NOTE_CHARS: number;
@@ -74,3 +91,10 @@ export function submitTask(projectRoot: string, id: string, submit: { assignment
 export function releaseTask(projectRoot: string, id: string, release: { assignment: string; handoff?: ({ outcome: string; summary: string } & Record<string, unknown>) | null; agent: string; reason: string }, by: string): Promise<Task>;
 export function taskDigest(tasks: Task[], errors?: Array<{ file: string; error: string }>): string;
 export function startRefusal(task: Task, tasks: Task[]): string | undefined;
+export function gateOpen(gate: TaskGate, now?: number): boolean;
+export function describeGate(gate: TaskGate): string;
+export function gatesOf(task: Task, tasks: Task[]): string[];
+export function addGate(projectRoot: string, id: string, gate: { kind: GateKind; note?: string; until?: string; ref?: string | number }, by: string): Promise<Task>;
+export function resolveGate(projectRoot: string, id: string, gateId: string, resolve: { by: string; note?: string; remove?: boolean }): Promise<Task>;
+export function checkGates(projectRoot: string, gh: (args: string[], options: { cwd: string }) => Promise<string>): Promise<{ cleared: Array<{ task: string; gate: string; detail: string }>; pending: Array<{ task: string; gate: string; detail: string }>; errors: Array<{ task: string; gate: string; error: string }> }>;
+export function compactTasks(projectRoot: string, options: { days?: number; dryRun?: boolean }, by: string): Promise<Array<{ id: string; before: number; after: number }>>;

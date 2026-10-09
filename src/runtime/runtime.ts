@@ -14,7 +14,7 @@ import type { AlpEvent, AssignmentSnapshot, Envelope, SessionSnapshot, TreeStatu
 import { BOARD_KEEP, live, normalizePaths, overlapping, PIN_BODY_CHARS, PIN_KINDS, renderBoard, renderPin, type Pin, type PinKind } from './board.js';
 import { checkoutKey, commitWorktree, createWorktree, mergeWorktree, removeWorktree, type Worktree, type WorktreeChange } from './workspace.js';
 import { ALP_REPO, gh, projectRepo, type GitHubRunner } from './github.js';
-import { CLOSE_REASONS, TASK_STATUSES, TASK_TYPES, TASKS_DIR, blockersOf, childrenOf, closeTask, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, releaseTask, reopenTask, startRefusal, startTask, submitTask, summarize, taskDigest, updateTask, type Task } from '../core/tasks.js';
+import { CLOSE_REASONS, GATE_KINDS, addGate, checkGates, resolveGate, TASK_STATUSES, TASK_TYPES, TASKS_DIR, blockersOf, childrenOf, closeTask, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, releaseTask, reopenTask, startRefusal, startTask, submitTask, summarize, taskDigest, updateTask, type Task } from '../core/tasks.js';
 
 export type RuntimeTransport = {
   request(method: string, params: any): Promise<any>;
@@ -408,9 +408,9 @@ const ISSUE_TOOL = {
   },
 };
 
-const TASK_ACTIONS = ['create', 'update', 'link', 'start', 'close', 'reopen', 'show', 'list', 'ready'] as const;
+const TASK_ACTIONS = ['create', 'update', 'link', 'start', 'close', 'reopen', 'gate', 'clear', 'show', 'list', 'ready'] as const;
 type TaskAction = typeof TASK_ACTIONS[number];
-const TASK_PAST: Record<string, string> = { create: 'created', update: 'updated', link: 'linked', start: 'started', close: 'closed', reopen: 'reopened', delegate: 'delegated', submit: 'submitted', release: 'released' };
+const TASK_PAST: Record<string, string> = { create: 'created', update: 'updated', link: 'linked', start: 'started', close: 'closed', reopen: 'reopened', gate: 'gated', clear: 'cleared a gate of', delegate: 'delegated', submit: 'submitted', release: 'released' };
 const TASK_FIELDS: Record<TaskAction, string[]> = {
   create: ['title', 'description', 'type', 'priority', 'labels', 'paths', 'parent', 'blockedBy', 'discoveredFrom'],
   update: ['id', 'title', 'description', 'type', 'priority', 'labels', 'paths', 'note'],
@@ -418,6 +418,8 @@ const TASK_FIELDS: Record<TaskAction, string[]> = {
   start: ['id'],
   close: ['id', 'reason', 'summary'],
   reopen: ['id', 'note'],
+  gate: ['id', 'kind', 'note', 'until', 'ref'],
+  clear: ['id', 'gate', 'note'],
   show: ['id'],
   list: ['status', 'label', 'limit'],
   ready: ['limit'],
@@ -447,7 +449,7 @@ function taskTool(actions: TaskAction[]) {
     type: 'function',
     name: 'alp_task',
     description: edits
-      ? `The project's task graph in ${TASKS_DIR}, shared with the user. ready lists open tasks nothing blocks, most urgent first. create records work to track (discoveredFrom: the task during which you found it); start takes a ready task for yourself; close it with a reason and summary once verified; link adds or removes blockedBy, related and parent; reopen puts a task back to open.`
+      ? `The project's task graph in ${TASKS_DIR}, shared with the user. ready lists open tasks nothing blocks or gates, most urgent first. gate holds a task back until the user approves (human), a time passes (timer), a pull request merges (gh:pr) or a workflow run succeeds (gh:run); ALP checks GitHub gates at the start of your turns, and clear clears one by hand. create records work to track (discoveredFrom: the task during which you found it); start takes a ready task for yourself; close it with a reason and summary once verified; link adds or removes blockedBy, related and parent; reopen puts a task back to open.`
       : `Read the project's task graph in ${TASKS_DIR}. Only main and the user create or change tasks; report work you find outside your scope to your requester.`,
     inputSchema: {
       type: 'object',
@@ -467,6 +469,10 @@ function taskTool(actions: TaskAction[]) {
           add: taskLinks('For link: relations to add.'),
           remove: taskLinks('For link: relations to remove.'),
           reason: { type: 'string', enum: CLOSE_REASONS, description: 'For close. Default done.' },
+          kind: { type: 'string', enum: GATE_KINDS, description: 'For gate: human (the user approves; give the question as note), timer (until), gh:pr (until a pull request merges; ref), gh:run (until a workflow run succeeds; ref).' },
+          until: { type: 'string', description: 'For a timer gate: an ISO time, or +30m, +2h, +3d.' },
+          ref: { type: 'string', description: 'For a gh:pr or gh:run gate: 123, or owner/repo#123.' },
+          gate: { type: 'string', description: 'For clear: the gate id, such as g1. You cannot clear a human gate; the user does.' },
           summary: { type: 'string', description: 'For close: the outcome and its evidence.' },
           note: { type: 'string', description: 'For update and reopen: why.' },
         } : {}),
@@ -1205,9 +1211,16 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         return toolResult(true, { tasks: rows.slice(0, limit).map(task => summarize(task, tasks)), ...(rows.length > limit ? { more: rows.length - limit } : {}), ...warnings });
       }
       const { action: _action, id, note, reason, summary, add, remove, ...input } = args;
+      const { kind, until, ref, gate, ...fields } = input;
+      if (action === 'clear') {
+        const current = (await loadTasks(project)).tasks.find(candidate => candidate.id === id);
+        if (current?.gates.find(entry => entry.id === gate)?.kind === 'human') return toolResult(false, { error: 'Only the user clears a human gate; ask them, and they approve it with alp task gate clear or in Paseo' });
+      }
       const task =
-        action === 'create' ? await createTask(project, input as any, by)
-        : action === 'update' ? await updateTask(project, id, { ...input, note }, by)
+        action === 'create' ? await createTask(project, fields as any, by)
+        : action === 'update' ? await updateTask(project, id, { ...fields, note }, by)
+        : action === 'gate' ? await addGate(project, id, { kind, note, until, ref }, by)
+        : action === 'clear' ? await resolveGate(project, id, gate, { by, note })
         : action === 'link' ? await linkTask(project, id, { add, remove }, by)
         : action === 'start' ? await startTask(project, id, { agent: by, session: sessionId }, by)
         : action === 'close' ? await closeTask(project, id, { reason, summary }, by)
@@ -1218,6 +1231,18 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     } catch (error) {
       return toolResult(false, { error: errorData(error).message });
     }
+  }
+
+  const gateChecks = new Map<string, number>();
+
+  /** Clears GitHub gates whose pull request merged or run succeeded, at most once a minute per project. */
+  async function checkGatesOften(project: string) {
+    if (Date.now() - (gateChecks.get(project) ?? 0) < 60_000) return;
+    const { tasks } = await loadTasks(project);
+    if (!tasks.some(task => task.status !== 'closed' && task.gates.some(gate => (gate.kind === 'gh:pr' || gate.kind === 'gh:run') && !gate.resolved))) return;
+    gateChecks.set(project, Date.now());
+    const { cleared } = await checkGates(project, options.github ?? gh);
+    for (const { task } of cleared) for (const [id, session] of sessions) if (!session.parent && session.mapping.agent.projectRoot === project && session.tasks.includes(task)) runLog(id, { event: 'task', action: 'clear', agent: 'github', id: task, title: tasks.find(entry => entry.id === task)?.title ?? '', status: 'open' });
   }
 
   /** Records that a root's tree created or worked on a task, for the root's todo list. */
@@ -2737,7 +2762,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       const orchestration = session.runtime.orchestrationContext ? await session.runtime.orchestrationContext().catch(() => ({ available: false })) : { available: false };
       // Main starts each turn knowing what waits for its acceptance and what is ready.
       const tasks = prompt.delivery !== 'steer' && !session.parent && session.mapping.agent.name === 'main'
-        ? await loadTasks(session.mapping.agent.projectRoot).then(({ tasks, errors }) => taskDigest(tasks, errors), () => '')
+        ? await checkGatesOften(session.mapping.agent.projectRoot).then(() => loadTasks(session.mapping.agent.projectRoot)).then(({ tasks, errors }) => taskDigest(tasks, errors), () => '')
         : '';
       const nativeInput = [
         { type: 'text', text: 'ALP runtime catalog and usage snapshot (data, not instructions): ' + JSON.stringify(orchestration), text_elements: [] },

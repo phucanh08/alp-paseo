@@ -75,6 +75,9 @@ peers report work they find to their requester, and you record it.
   wontfix, duplicate or superseded for work you drop.
 - Record the discovered work a handoff lists as tasks with discoveredFrom, or
   say why not.
+- When a task must wait for the user's decision, a time, a pull request or a CI
+  run, add a gate with alp_task gate instead of remembering it. Only the user
+  clears a human gate: ask them, and they approve it in Paseo or with the CLI.
 
 ## Supervisor and lessons
 

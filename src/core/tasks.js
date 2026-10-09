@@ -15,6 +15,8 @@ export const TASKS_DIR = path.join('.alp', 'tasks');
 export const TASK_TYPES = ['task', 'bug', 'feature', 'chore', 'epic'];
 export const TASK_STATUSES = ['open', 'in_progress', 'review', 'closed'];
 export const CLOSE_REASONS = ['done', 'wontfix', 'duplicate', 'superseded'];
+export const GATE_KINDS = ['human', 'timer', 'gh:pr', 'gh:run'];
+export const MAX_GATES = 10;
 export const TITLE_CHARS = 200;
 export const DESCRIPTION_CHARS = 8000;
 export const NOTE_CHARS = 2000;
@@ -63,7 +65,7 @@ export async function loadTasks(projectRoot) {
 function normalize(task) {
   return {
     description: '', type: 'task', priority: 2, labels: [], paths: [], parent: null, blockedBy: [],
-    discoveredFrom: null, related: [], assignee: null, handoff: null, closed: null, log: [], rev: 0,
+    discoveredFrom: null, related: [], gates: [], assignee: null, handoff: null, closed: null, log: [], rev: 0,
     ...task,
   };
 }
@@ -91,12 +93,31 @@ export function blockersOf(task, tasks, index = byId(tasks)) {
   return found;
 }
 
+/** Whether a gate still holds its task back: unresolved, and for a timer, before its time. */
+export const gateOpen = (gate, now = Date.now()) => !gate.resolved && !(gate.kind === 'timer' && Date.parse(gate.until) <= now);
+
+export function describeGate(gate) {
+  const what = gate.kind === 'human' ? gate.note : gate.kind === 'timer' ? `until ${gate.until}` : `${gate.repo ? `${gate.repo}#` : '#'}${gate.ref}`;
+  return `${gate.id} ${gate.kind}${what ? `: ${what}` : ''}`;
+}
+
+/** Open gates of a task and of its ancestors, as "<task> <gate>" labels. */
+export function gatesOf(task, tasks, index = byId(tasks), now = Date.now()) {
+  const found = [];
+  const seen = new Set();
+  for (let current = task; current && !seen.has(current.id); current = current.parent ? index.get(current.parent) : undefined) {
+    seen.add(current.id);
+    for (const gate of current.gates ?? []) if (gateOpen(gate, now)) found.push(current.id === task.id ? describeGate(gate) : `${current.id} ${describeGate(gate)}`);
+  }
+  return found;
+}
+
 const rank = (a, b) => a.priority - b.priority || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id);
 
 /** Tasks anyone can start now: open, not an epic, and blocked by nothing; most urgent first. */
 export function readyTasks(tasks) {
   const index = byId(tasks);
-  return tasks.filter(task => task.status === 'open' && task.type !== 'epic' && !blockersOf(task, tasks, index).length).sort(rank);
+  return tasks.filter(task => task.status === 'open' && task.type !== 'epic' && !blockersOf(task, tasks, index).length && !gatesOf(task, tasks, index).length).sort(rank);
 }
 
 export const childrenOf = (id, tasks) => tasks.filter(task => task.parent === id).sort(rank);
@@ -104,11 +125,13 @@ export const childrenOf = (id, tasks) => tasks.filter(task => task.parent === id
 /** A short row for lists and agent tool results. */
 export function summarize(task, tasks, index = byId(tasks)) {
   const blockers = task.status === 'closed' ? [] : blockersOf(task, tasks, index);
+  const gates = task.status === 'closed' ? [] : gatesOf(task, tasks, index);
   return {
     id: task.id, title: task.title, type: task.type, priority: task.priority, status: task.status,
     ...(task.labels.length ? { labels: task.labels } : {}),
     ...(task.parent ? { parent: task.parent } : {}),
     ...(blockers.length ? { blockedBy: blockers } : {}),
+    ...(gates.length ? { gates } : {}),
     ...(task.assignee ? { assignee: task.assignee.agent } : {}),
   };
 }
@@ -377,6 +400,8 @@ export function startRefusal(task, tasks) {
   if (task.status === 'closed') return `${task.id} is closed; reopen it first`;
   const blockers = blockersOf(task, tasks);
   if (blockers.length) return `${task.id} is blocked by ${blockers.join(', ')}`;
+  const gates = gatesOf(task, tasks);
+  if (gates.length) return `${task.id} waits on ${gates.join('; ')}`;
   return undefined;
 }
 
@@ -476,9 +501,12 @@ export function taskDigest(tasks, errors = []) {
   const working = tasks.filter(task => task.status === 'in_progress').sort(rank);
   const ready = readyTasks(tasks);
   const blocked = tasks.filter(task => task.status === 'open' && task.type !== 'epic' && blockersOf(task, tasks, index).length).length;
+  // Tasks only a gate holds back; a human gate waits for the user, the others clear by themselves.
+  const gated = tasks.filter(task => task.status === 'open' && task.type !== 'epic' && !blockersOf(task, tasks, index).length && gatesOf(task, tasks, index).length).sort(rank);
   const lines = [
     ...review.map(task => `- review: ${line(task)} ← ${task.handoff?.agent ?? task.assignee?.agent ?? 'unknown'}, handoff ${task.handoff?.outcome ?? 'none'}; accept with close, or send it back`),
     ...working.map(task => `- in progress: ${line(task)} ← ${task.assignee?.agent ?? 'unknown'}`),
+    ...gated.map(task => `- waiting on ${gatesOf(task, tasks, index).join('; ')}: ${line(task)}`),
     ...ready.slice(0, DIGEST_READY).map(task => `- ready: ${line(task)}`),
   ];
   const more = [
@@ -496,4 +524,131 @@ export function taskDigest(tasks, errors = []) {
   if (!lines.length) out.push('- nothing is ready, in progress or in review');
   if (more) out.push(more);
   return out.join('\n');
+}
+
+// --- gates ---------------------------------------------------------------------
+
+const DURATION = /^\+(\d+)([mhd])$/;
+const GH_REF = /^(?:([\w.-]+\/[\w.-]+)#)?(\d+)$/;
+
+/**
+ * Adds a gate that holds a task back until it clears: human (the user resolves it),
+ * timer (until a time: ISO, or +30m, +2h, +3d), gh:pr (a pull request is merged)
+ * or gh:run (a workflow run succeeds); refs are 123 or owner/repo#123.
+ */
+export function addGate(projectRoot, id, { kind, note, until, ref } = {}, by) {
+  return mutate(projectRoot, id, task => {
+    if (!GATE_KINDS.includes(kind)) fail('INVALID_TASK', `kind must be one of ${GATE_KINDS.join(', ')}`);
+    if (task.status === 'closed') fail('INVALID_TASK', `${id} is closed`);
+    if ((task.gates ?? []).filter(gate => gateOpen(gate)).length >= MAX_GATES) fail('INVALID_TASK', `A task has at most ${MAX_GATES} open gates`);
+    const gate = { id: `g${Math.max(0, ...(task.gates ?? []).map(entry => Number(entry.id.slice(1)) || 0)) + 1}`, kind };
+    if (kind === 'human') gate.note = checkText(note, 'note', NOTE_CHARS, { required: true });
+    else if (note !== undefined) gate.note = checkText(note, 'note', NOTE_CHARS);
+    if (kind === 'timer') {
+      const relative = typeof until === 'string' ? DURATION.exec(until.trim()) : null;
+      const time = relative ? Date.now() + Number(relative[1]) * { m: 60_000, h: 3_600_000, d: 86_400_000 }[relative[2]] : Date.parse(until);
+      if (!Number.isFinite(time)) fail('INVALID_TASK', 'A timer gate needs until: an ISO time, or +30m, +2h, +3d');
+      gate.until = new Date(time).toISOString();
+    }
+    if (kind === 'gh:pr' || kind === 'gh:run') {
+      const match = typeof ref === 'string' || typeof ref === 'number' ? GH_REF.exec(String(ref).trim()) : null;
+      if (!match) fail('INVALID_TASK', `A ${kind} gate needs ref: a number, or owner/repo#number`);
+      if (match[1]) gate.repo = match[1];
+      gate.ref = match[2];
+    }
+    gate.at = now();
+    gate.by = by;
+    task.gates = [...(task.gates ?? []), gate];
+    addLog(task, by, 'gated', { gate: describeGate(gate) });
+  });
+}
+
+/** Clears a gate by hand, or removes it with `remove`. Only the user clears a human gate; the caller enforces who `by` is. */
+export function resolveGate(projectRoot, id, gateId, { by, note, remove = false } = {}) {
+  return mutate(projectRoot, id, task => {
+    const gate = (task.gates ?? []).find(entry => entry.id === gateId) ?? fail('INVALID_TASK', `${id} has no gate ${gateId}`);
+    if (remove) {
+      task.gates = task.gates.filter(entry => entry !== gate);
+      addLog(task, by, 'ungated', { gate: describeGate(gate) });
+      return;
+    }
+    if (!gateOpen(gate)) fail('INVALID_TASK', `Gate ${gateId} of ${id} is already clear`);
+    const text = checkText(note, 'note', NOTE_CHARS);
+    task.gates = task.gates.map(entry => entry === gate ? { ...entry, resolved: { at: now(), by, ...(text ? { note: text } : {}) } } : entry);
+    addLog(task, by, 'gate cleared', { gate: describeGate(gate), ...(text ? { note: text } : {}) });
+  });
+}
+
+/**
+ * Asks GitHub about the open gh:pr and gh:run gates of tasks that are not closed,
+ * and clears those whose pull request merged or whose run succeeded.
+ * `gh(args, { cwd })` runs the GitHub CLI and returns its standard output.
+ */
+export async function checkGates(projectRoot, gh) {
+  const { tasks } = await loadTasks(projectRoot);
+  const cleared = [];
+  const pending = [];
+  const errors = [];
+  for (const task of tasks.filter(entry => entry.status !== 'closed')) {
+    for (const gate of task.gates.filter(entry => (entry.kind === 'gh:pr' || entry.kind === 'gh:run') && gateOpen(entry))) {
+      const args = gate.kind === 'gh:pr'
+        ? ['pr', 'view', gate.ref, '--json', 'state', ...(gate.repo ? ['-R', gate.repo] : [])]
+        : ['run', 'view', gate.ref, '--json', 'status,conclusion', ...(gate.repo ? ['-R', gate.repo] : [])];
+      try {
+        const state = JSON.parse(await gh(args, { cwd: path.resolve(projectRoot) }));
+        const done = gate.kind === 'gh:pr' ? state.state === 'MERGED' : state.status === 'completed' && state.conclusion === 'success';
+        const detail = gate.kind === 'gh:pr' ? String(state.state).toLowerCase() : `${state.status}${state.conclusion ? ` ${state.conclusion}` : ''}`;
+        if (done) {
+          await resolveGate(projectRoot, task.id, gate.id, { by: 'github', note: detail }).catch(error => { if (error.code !== 'INVALID_TASK') throw error; });
+          cleared.push({ task: task.id, gate: gate.id, detail });
+        } else {
+          pending.push({ task: task.id, gate: gate.id, detail });
+        }
+      } catch (error) {
+        errors.push({ task: task.id, gate: gate.id, error: error.message });
+      }
+    }
+  }
+  return { cleared, pending, errors };
+}
+
+// --- compaction ----------------------------------------------------------------
+
+const COMPACT_TEXT = 300;
+const clipText = (text, limit) => text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+
+/**
+ * Shrinks tasks closed more than `days` ago, like beads' compaction: keeps the
+ * title, relations, labels, paths and how it closed; clips the description and the
+ * handoff summary, drops the handoff's lists and the log between creation and close.
+ * Returns what changed, or would change with dryRun.
+ */
+export async function compactTasks(projectRoot, { days = 30, dryRun = false } = {}, by) {
+  if (!Number.isFinite(days) || days < 0) fail('INVALID_TASK', 'days must be a number of days, 0 or more');
+  return locked(projectRoot, async () => {
+    const { tasks } = await loadTasks(projectRoot);
+    const cutoff = Date.now() - days * 86_400_000;
+    const compacted = [];
+    for (const task of tasks) {
+      if (task.status !== 'closed' || task.compacted || !(Date.parse(task.closed?.at ?? task.updatedAt) <= cutoff)) continue;
+      const before = JSON.stringify(task).length;
+      const created = task.log.find(entry => entry.event === 'created');
+      const closed = [...task.log].reverse().find(entry => entry.event === 'closed');
+      const next = {
+        ...task,
+        description: clipText(task.description, COMPACT_TEXT),
+        handoff: task.handoff ? { outcome: task.handoff.outcome, summary: clipText(String(task.handoff.summary ?? ''), COMPACT_TEXT), agent: task.handoff.agent, at: task.handoff.at } : null,
+        gates: task.gates.map(({ id, kind, resolved }) => ({ id, kind, ...(resolved ? { resolved: { at: resolved.at, by: resolved.by } } : {}) })),
+        log: [created, closed].filter(Boolean),
+        rev: task.rev + 1,
+        updatedAt: now(),
+      };
+      next.compacted = { at: now(), by, chars: before };
+      const after = JSON.stringify(next).length;
+      if (after >= before) continue;
+      compacted.push({ id: task.id, before, after });
+      if (!dryRun) await save(projectRoot, next);
+    }
+    return compacted;
+  });
 }

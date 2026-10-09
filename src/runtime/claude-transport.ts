@@ -4,7 +4,7 @@ import { optionalRead, claudeUsage } from './runtime-context.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { PIN_KINDS } from './board.js';
-import { CLOSE_REASONS, TASK_STATUSES, TASK_TYPES } from '../core/tasks.js';
+import { CLOSE_REASONS, GATE_KINDS, TASK_STATUSES, TASK_TYPES } from '../core/tasks.js';
 
 // Keep the Claude SDK behind the runtime boundary. Paseo inspects static
 // imports while compiling plugin entrypoints, including their declaration
@@ -62,7 +62,7 @@ export const toolShapes: Record<string, Record<string, z.ZodType>> = {
     labels: z.array(z.string().min(1).max(50)).max(10).optional(),
   },
   alp_task: {
-    action: z.enum(['create', 'update', 'link', 'start', 'close', 'reopen', 'show', 'list', 'ready']),
+    action: z.enum(['create', 'update', 'link', 'start', 'close', 'reopen', 'gate', 'clear', 'show', 'list', 'ready']),
     id: z.string().min(1).optional(),
     title: z.string().min(1).max(200).optional(),
     description: z.string().max(8000).optional(),
@@ -76,6 +76,10 @@ export const toolShapes: Record<string, Record<string, z.ZodType>> = {
     add: taskLinks,
     remove: taskLinks,
     reason: z.enum(CLOSE_REASONS as [string, ...string[]]).optional(),
+    kind: z.enum(GATE_KINDS as [string, ...string[]]).optional(),
+    until: z.string().min(1).optional(),
+    ref: z.string().min(1).optional(),
+    gate: z.string().min(1).optional(),
     summary: z.string().min(1).max(2000).optional(),
     note: z.string().min(1).max(2000).optional(),
     status: z.enum(TASK_STATUSES as [string, ...string[]]).optional(),

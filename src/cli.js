@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +9,7 @@ import { parseArgs } from 'node:util';
 import { initProject } from './core/init.js';
 import { upgradeProject } from './core/upgrade.js';
 import { seedLibrary } from './core/library.js';
-import { blockersOf, childrenOf, closeTask, createTask, linkTask, listTasks, loadTasks, readyTasks, reopenTask, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
+import { addGate, blockersOf, checkGates, childrenOf, closeTask, compactTasks, createTask, describeGate, gateOpen, gatesOf, linkTask, listTasks, loadTasks, readyTasks, reopenTask, resolveGate, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
 import { alpHome, connect, ensureDaemon, lockAlive, readLock } from './client/index.js';
 
 const USAGE = `Usage:
@@ -24,12 +25,16 @@ const USAGE = `Usage:
   alp log <session> [--json]
   alp board [--project DIR] [--json]
   alp tasks [ready] [--all] [--status S] [--label L] [--project DIR] [--json]
+  alp tasks gates [--json]                 open gates; checks GitHub ones
+  alp tasks compact [--days 30] [--dry-run]
   alp task add <title> [-d text] [-p 0-4] [-t task|bug|feature|chore|epic] [--parent ID] [--after ID]... [-l label]... [--path P]... [--from ID]
   alp task show <id> [--json]
   alp task edit <id> [--title T] [-d text] [-p N] [-t type] [-l label]... [--path P]... [-m note]
   alp task close <id> [--reason done|wontfix|duplicate|superseded] [-m summary]
   alp task reopen <id> [-m note]
   alp task dep <add|rm> <id> [--after ID]... [--parent ID] [--related ID]...
+  alp task gate add <id> --human "question" | --timer +2h|ISO | --pr N|owner/repo#N | --run N|owner/repo#N
+  alp task gate <clear|rm> <id> <gate> [-m note]
   alp interrupt <session>`;
 
 const DAEMON_ENTRY = fileURLToPath(new URL('../dist/alpd.js', import.meta.url));
@@ -466,7 +471,7 @@ async function board(args) {
   }
 }
 
-const TASK_PAST = { create: 'created', update: 'updated', link: 'linked', start: 'started', close: 'closed', reopen: 'reopened', delegate: 'delegated', submit: 'submitted', release: 'released' };
+const TASK_PAST = { create: 'created', update: 'updated', link: 'linked', start: 'started', close: 'closed', reopen: 'reopened', delegate: 'delegated', submit: 'submitted', release: 'released', gate: 'gated', clear: 'cleared a gate of' };
 const STATUS_MARK = { open: '○', in_progress: '◐', review: '◑', closed: '●' };
 
 /** The ALP project a task command works on: --project, or the current directory. */
@@ -481,6 +486,7 @@ function taskRow(task, tasks) {
   const row = summarize(task, tasks);
   const extra = [
     row.blockedBy ? `blocked by ${row.blockedBy.join(', ')}` : '',
+    row.gates ? `waits on ${row.gates.join('; ')}` : '',
     row.assignee ? `@${row.assignee}` : '',
     row.labels ? row.labels.map(label => `#${label}`).join(' ') : '',
   ].filter(Boolean).join('  ');
@@ -493,6 +499,7 @@ function warnUnreadable(errors) {
 
 /** The project's tasks: open, in progress and in review by default; ready lists what nothing blocks. */
 async function tasksCommand(args) {
+  if (args[0] === 'gates' || args[0] === 'compact') return taskMaintenance([args[0]], args.slice(1));
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
     all: { type: 'boolean' }, status: { type: 'string' }, label: { type: 'string' }, project: { type: 'string' }, json: { type: 'boolean' },
   } });
@@ -506,6 +513,46 @@ async function tasksCommand(args) {
   for (const task of rows) console.log(taskRow(task, tasks));
 }
 
+/** The GitHub CLI, for gh:pr and gh:run gates. */
+const gh = (args, { cwd }) => new Promise((resolve, reject) => {
+  const child = spawn(process.env.ALP_GH_BIN ?? 'gh', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  child.on('error', error => reject(error.code === 'ENOENT' ? new Error('gh is not installed or not on PATH') : error));
+  child.on('close', code => code === 0 ? resolve(stdout) : reject(new Error(stderr.trim() || `gh exited with ${code}`)));
+});
+
+/** alp tasks gates: clears GitHub gates that are done and lists the open ones. alp tasks compact: shrinks old closed tasks. */
+async function taskMaintenance([command], args) {
+  const { values, positionals: rest } = parseArgs({ args, allowPositionals: true, options: {
+    project: { type: 'string' }, json: { type: 'boolean' }, days: { type: 'string' }, 'dry-run': { type: 'boolean' },
+  } });
+  if (rest.length) throw new UsageError();
+  const root = await taskProject(values.project);
+  if (command === 'compact') {
+    const days = values.days === undefined ? 30 : Number(values.days);
+    const changed = await compactTasks(root, { days, dryRun: values['dry-run'] }, 'user');
+    if (values.json) { console.log(JSON.stringify(changed)); return; }
+    if (!changed.length) { console.log(`No task closed more than ${days} days ago is left to compact`); return; }
+    for (const { id, before, after } of changed) console.log(`${id}  ${before} → ${after} characters`);
+    console.log(`${values['dry-run'] ? 'Would compact' : 'Compacted'} ${changed.length} closed ${changed.length === 1 ? 'task' : 'tasks'}`);
+    return;
+  }
+  const checked = await checkGates(root, gh);
+  const { tasks } = await loadTasks(root);
+  const open = tasks.filter(task => task.status !== 'closed').flatMap(task => task.gates.filter(gate => gateOpen(gate)).map(gate => ({ task, gate })));
+  if (values.json) { console.log(JSON.stringify({ ...checked, open: open.map(({ task, gate }) => ({ task: task.id, ...gate })) })); return; }
+  for (const { task, gate, detail } of checked.cleared) console.log(`✓ ${task} ${gate} cleared: ${detail}`);
+  for (const { task, gate, error } of checked.errors) console.error(`alp: could not check ${task} ${gate}: ${error}`);
+  if (!open.length) { console.log('No open gates'); return; }
+  for (const { task, gate } of open) {
+    const state = checked.pending.find(entry => entry.task === task.id && entry.gate === gate.id)?.detail;
+    console.log(`⏸ ${task.id} ${describeGate(gate)}${state ? ` (${state})` : ''}  ${task.title}`);
+  }
+}
+
 const repeated = { type: 'string', multiple: true };
 
 async function taskCommand([action, ...args]) {
@@ -513,6 +560,7 @@ async function taskCommand([action, ...args]) {
     description: { type: 'string', short: 'd' }, priority: { type: 'string', short: 'p' }, type: { type: 'string', short: 't' },
     label: { ...repeated, short: 'l' }, path: repeated, parent: { type: 'string' }, after: repeated, related: repeated, from: { type: 'string' },
     title: { type: 'string' }, message: { type: 'string', short: 'm' }, reason: { type: 'string' }, project: { type: 'string' }, json: { type: 'boolean' },
+    human: { type: 'string' }, timer: { type: 'string' }, pr: { type: 'string' }, run: { type: 'string' },
   } });
   const root = await taskProject(values.project);
   const fields = {
@@ -550,12 +598,24 @@ async function taskCommand([action, ...args]) {
     if (!['add', 'rm'].includes(change) || !id || rest.length || !(values.after || values.parent || values.related)) throw new UsageError();
     const links = { ...(values.after ? { blockedBy: values.after } : {}), ...(values.parent ? { parent: values.parent } : {}), ...(values.related ? { related: values.related } : {}) };
     task = await linkTask(root, id, change === 'add' ? { add: links } : { remove: links }, 'user');
+  } else if (action === 'gate') {
+    const [change, id, gate, ...rest] = positionals;
+    const kinds = ['human', 'timer', 'pr', 'run'].filter(kind => values[kind] !== undefined);
+    if (change === 'add' && id && !gate && kinds.length === 1) {
+      const kind = kinds[0];
+      task = await addGate(root, id, kind === 'human' ? { kind, note: values.human } : kind === 'timer' ? { kind, until: values.timer } : { kind: `gh:${kind}`, ref: values[kind] }, 'user');
+    } else if ((change === 'clear' || change === 'rm') && id && gate && !rest.length && !kinds.length) {
+      task = await resolveGate(root, id, gate, { by: 'user', note: values.message, remove: change === 'rm' });
+    } else {
+      throw new UsageError();
+    }
   } else {
     throw new UsageError();
   }
   if (values.json) { console.log(JSON.stringify(task)); return; }
   const { tasks } = await loadTasks(root);
   console.log(`${{ add: 'Created', close: 'Closed', reopen: 'Reopened' }[action] ?? 'Updated'} ${path.join(TASKS_DIR, `${task.id}.json`)}`);
+  if (action === 'gate') for (const gate of task.gates.filter(entry => gateOpen(entry))) console.log(`  ⏸ ${describeGate(gate)}`);
   console.log(taskRow(task, tasks));
 }
 
@@ -571,6 +631,10 @@ function printTask(task, tasks) {
     task.related.length && `related ${task.related.join(', ')}`,
   ].filter(Boolean);
   if (relations.length) console.log(`  ${relations.join('; ')}`);
+  for (const gate of task.gates) console.log(`  ${gateOpen(gate) ? '⏸' : '✓'} gate ${describeGate(gate)}${gate.resolved ? ` (cleared by ${gate.resolved.by}${gate.resolved.note ? `: ${gate.resolved.note}` : ''})` : ''}`);
+  const inherited = gatesOf(task, tasks).filter(label => label.startsWith('t-'));
+  if (task.status !== 'closed' && inherited.length) console.log(`  waits on its parent's gates: ${inherited.join('; ')}`);
+  if (task.compacted) console.log(`  compacted ${task.compacted.at.slice(0, 10)} from ${task.compacted.chars} characters`);
   if (task.labels.length) console.log(`  labels: ${task.labels.join(', ')}`);
   if (task.paths.length) console.log(`  paths: ${task.paths.join(', ')}`);
   for (const child of childrenOf(task.id, tasks)) console.log(`  ${taskRow(child, tasks)}`);
