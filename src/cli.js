@@ -133,6 +133,10 @@ function printer(json) {
         const detail = item.detail.type === 'shell' ? item.detail.command : item.name === 'alp_delegate' ? `delegate → ${item.detail.input?.agent}` : item.name;
         line(sessionId, `  ${item.status === 'failed' ? '✗' : '✓'} ${detail}`);
       }
+      if (item.kind === 'todo') {
+        line(sessionId, '  tasks:');
+        for (const entry of item.items) line(sessionId, `    ${entry.status === 'completed' ? '☑' : entry.status === 'in_progress' ? '◐' : '☐'} ${entry.text}`);
+      }
     } else if (event.type === 'mail') {
       line(sessionId, `  ✉ ${event.mail.kind} from ${event.mail.from}`);
     } else if (event.type === 'question') {
@@ -364,7 +368,7 @@ function renderStatus(status, root) {
   for (const question of status.questions) lines.push(`  ? ${question.id} ${question.agent} asks (${ago(question.askedAt)}): ${question.body.split('\n')[0]}`);
   for (const worktree of status.worktrees) lines.push(`  ⎇ unmerged ${worktree.branch} from ${worktree.agent}: ${worktree.files.length} files${worktree.stat ? ` (${worktree.stat.trim()})` : ''}`);
   for (const lease of status.leases) lines.push(`  ⚿ ${lease.agent} holds the write lease on ${lease.checkout}`);
-  for (const claim of status.claims ?? []) lines.push(`  ⚑ ${claim.agent} claims ${claim.paths.join(', ')}: ${claim.body.split('\n')[0].slice(0, 100)}`);
+  for (const claim of status.claims ?? []) lines.push(`  ⚑ ${claim.agent} claims ${claim.paths.join(', ')}${claim.task ? ` for ${claim.task}` : ''}: ${claim.body.split('\n')[0].slice(0, 100)}`);
   return lines.join('\n');
 }
 
@@ -424,7 +428,10 @@ async function log(args) {
         text = `✉ ${entry.kind} ${entry.from} → ${entry.to === rootId ? 'main' : agents.get(entry.to) ?? entry.to}${entry.body ? `: ${entry.body.split('\n')[0].slice(0, 120)}` : ''}`;
         break;
       case 'board.pin':
-        text = `${entry.kind === 'claim' ? '⚑' : entry.kind === 'decision' ? '◆' : '•'} ${entry.agent} pins ${entry.kind} ${entry.pinId}${entry.paths ? ` [${entry.paths.join(', ')}]` : ''}: ${entry.body.split('\n')[0].slice(0, 120)}`;
+        text = `${entry.kind === 'claim' ? '⚑' : entry.kind === 'decision' ? '◆' : '•'} ${entry.agent} pins ${entry.kind} ${entry.pinId}${entry.task ? ` for ${entry.task}` : ''}${entry.paths ? ` [${entry.paths.join(', ')}]` : ''}: ${entry.body.split('\n')[0].slice(0, 120)}`;
+        break;
+      case 'task':
+        text = `☐ ${entry.agent} ${TASK_PAST[entry.action] ?? entry.action} ${entry.id} "${entry.title}" → ${entry.status}${entry.detail ? `: ${entry.detail.split('\n')[0].slice(0, 120)}` : ''}`;
         break;
       case 'board.unpin':
         text = `⚐ ${entry.pinId} by ${entry.agent} ${entry.reason === 'session_ended' ? 'released when its session ended' : 'taken down'}`;
@@ -459,6 +466,7 @@ async function board(args) {
   }
 }
 
+const TASK_PAST = { create: 'created', update: 'updated', link: 'linked', start: 'started', close: 'closed', reopen: 'reopened', delegate: 'delegated', submit: 'submitted', release: 'released' };
 const STATUS_MARK = { open: '○', in_progress: '◐', review: '◑', closed: '●' };
 
 /** The ALP project a task command works on: --project, or the current directory. */

@@ -154,8 +154,8 @@ test('every ALP tool the runtime offers has a Claude tool schema with the same p
   for (const [name, properties] of offered) {
     assert.ok(claudeToolShapes[name], `${name} has no Claude schema`);
     const shape = Object.keys(claudeToolShapes[name]).sort();
-    // alp_task offers each role a subset of its fields; the Claude transport narrows the shape to match.
-    if (name === 'alp_task') assert.ok(properties.every(property => shape.includes(property)), 'alp_task has a field Claude lacks');
+    // alp_task and alp_delegate offer each role a subset of their fields; the Claude transport narrows the shape to match.
+    if (name === 'alp_task' || name === 'alp_delegate') assert.ok(properties.every(property => shape.includes(property)), `${name} has a field Claude lacks`);
     else assert.deepEqual(shape, properties, `${name} properties differ for Claude`);
   }
 });

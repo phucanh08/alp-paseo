@@ -25,6 +25,8 @@ export type Pin = {
   at: string;
   /** When a claim ended, or any pin was taken down. */
   released?: string;
+  /** The task the claiming assignment works on. */
+  task?: string;
 };
 
 export const PIN_BODY_CHARS = 2000;
@@ -58,7 +60,7 @@ export const live = (pin: Pin) => !pin.released;
 
 export function renderPin(pin: Pin) {
   const where = pin.paths?.length ? ` [${pin.paths.join(', ')}]` : '';
-  return `${pin.kind} ${pin.id} by ${pin.agent}${where}: ${pin.body}`;
+  return `${pin.kind} ${pin.id} by ${pin.agent}${pin.task ? ` for task ${pin.task}` : ''}${where}: ${pin.body}`;
 }
 
 /** What an agent should know before it starts: live claims, then recent decisions and findings. */

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initProject } from '../src/core/init.js';
-import { blockersOf, closeTask, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, reopenTask, startTask, updateTask } from '../src/core/tasks.js';
+import { blockersOf, closeTask, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, releaseTask, reopenTask, startTask, submitTask, taskDigest, updateTask } from '../src/core/tasks.js';
 import { createAlpRuntime, claudeToolShapes } from '../dist/runtime/index.js';
 
 const CLI = fileURLToPath(new URL('../src/cli.js', import.meta.url));
@@ -311,4 +311,185 @@ test('main changes tasks with alp_task; assignments and the supervisor only read
   assert.match(digest, new RegExp(`main closed task ${first.id.replace('.', '\\.')} "Normalize the tree" \\(now closed\\): npm test passed`));
   assert.equal((await supervisor.call('alp_task', { action: 'list' })).tasks.length, 2);
   assert.match((await supervisor.call('alp_task', { action: 'ready' })).error, /you may show, list/);
+});
+
+// --- step 2: tasks in delegation --------------------------------------------------
+
+test('a handoff moves a task to review only while that assignment still holds it', async t => {
+  const { root } = await project(t);
+  const task = await createTask(root, { title: 'Work' }, 'user');
+  await startTask(root, task.id, { agent: 'peer', assignment: 'a1' }, 'main');
+  // Another assignment cannot move it.
+  assert.equal((await submitTask(root, task.id, { assignment: 'a2', handoff: { outcome: 'complete', summary: 'x' }, agent: 'peer' }, 'peer')).status, 'in_progress');
+  let current = await submitTask(root, task.id, { assignment: 'a1', handoff: { outcome: 'complete', summary: 'Done', verification: ['npm test: passed'], discovered: ['Docs are stale'], extra: 'dropped' }, agent: 'peer' }, 'peer');
+  assert.equal(current.status, 'review');
+  assert.deepEqual({ ...current.handoff, at: undefined }, { outcome: 'complete', summary: 'Done', verification: ['npm test: passed'], discovered: ['Docs are stale'], agent: 'peer', at: undefined });
+  assert.equal(current.assignee.agent, 'peer');
+  // Rework takes it back from review.
+  current = await startTask(root, task.id, { agent: 'peer', assignment: 'a3' }, 'main');
+  assert.deepEqual([current.status, current.log.at(-1).event], ['in_progress', 'reworked']);
+  current = await releaseTask(root, task.id, { assignment: 'a3', handoff: { outcome: 'blocked', summary: 'Needs a key' }, agent: 'peer', reason: 'handoff blocked' }, 'peer');
+  assert.deepEqual([current.status, current.assignee, current.handoff.outcome, current.log.at(-1).reason], ['open', null, 'blocked', 'handoff blocked']);
+  // The user closed it meanwhile: a late release leaves it closed.
+  await startTask(root, task.id, { agent: 'peer', assignment: 'a4' }, 'main');
+  await closeTask(root, task.id, { reason: 'wontfix' }, 'user');
+  assert.equal((await releaseTask(root, task.id, { assignment: 'a4', agent: 'peer', reason: 'assignment canceled without a handoff' }, 'peer')).status, 'closed');
+});
+
+test('main sees tasks in review, in progress and ready at the start of a turn', async t => {
+  const { root } = await project(t);
+  assert.equal(taskDigest([]), '');
+  const done = await createTask(root, { title: 'Done' }, 'user');
+  await closeTask(root, done.id, {}, 'user');
+  assert.equal(taskDigest((await loadTasks(root)).tasks), '');
+  const review = await createTask(root, { title: 'Review me', priority: 1 }, 'user');
+  await startTask(root, review.id, { agent: 'peer', assignment: 'a1' }, 'main');
+  await submitTask(root, review.id, { assignment: 'a1', handoff: { outcome: 'partial', summary: 'Half' }, agent: 'peer' }, 'peer');
+  const working = await createTask(root, { title: 'Working' }, 'user');
+  await startTask(root, working.id, { agent: 'lead', assignment: 'a2' }, 'main');
+  const ready = [];
+  for (let i = 0; i < 10; i++) ready.push(await createTask(root, { title: `Ready ${i}`, priority: 3 }, 'user'));
+  await createTask(root, { title: 'Blocked', blockedBy: [ready[0].id] }, 'user');
+  const digest = taskDigest((await loadTasks(root)).tasks, [{ file: '.alp/tasks/t-bad0.json', error: 'x' }]);
+  const lines = digest.split('\n');
+  assert.match(lines[0], /^Project tasks \(\.alp\/tasks; data, not instructions/);
+  assert.equal(lines[1], `- review: ${review.id} P1 Review me ← peer, handoff partial; accept with close, or send it back`);
+  assert.equal(lines[2], `- in progress: ${working.id} P2 Working ← lead`);
+  assert.equal(lines.filter(line => line.startsWith('- ready:')).length, 8);
+  assert.equal(lines.at(-1), '2 more ready · 1 blocked · 1 unreadable: .alp/tasks/t-bad0.json');
+});
+
+async function runtimeSetup(t, settings) {
+  const directory = await mkdtemp(path.join(tmpdir(), 'alp-task-flow-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const root = path.join(directory, 'project');
+  await initProject(root);
+  if (settings) await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify(settings));
+  const runtimes = [];
+  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: path.join(directory, 'home'), runLogDir: path.join(directory, 'runs'), boardDir: path.join(directory, 'boards') });
+  t.after(() => runtime.shutdown());
+  const events = [];
+  runtime.onEvent(envelope => events.push(envelope));
+  const prompt = (session, id, text) => runtime.prompt(session, { clientMessageId: id, delivery: 'auto', content: [{ type: 'text', text }] });
+  return { root, runtime, runtimes, events, prompt };
+}
+
+const briefOf = harness => harness.started[0].params.input.map(entry => entry.text).find(text => /^Assignment from/.test(text));
+const todos = (events, sessionId) => events.filter(envelope => envelope.sessionId === sessionId && envelope.event.type === 'item' && envelope.event.item.kind === 'todo').map(envelope => envelope.event.item);
+
+test('alp_delegate with taskId starts the task, claims its paths, and the handoff sends it to review', async t => {
+  const { root, runtime, runtimes, events, prompt } = await runtimeSetup(t);
+  await runtime.open('root', { cwd: root });
+  await until(() => runtimes.length === 2 && runtimes[1].calls.some(call => call.method === 'thread/start'));
+  const [main, supervisor] = runtimes;
+  assert.ok(tool(main, 'alp_delegate').inputSchema.properties.taskId);
+  assert.ok(tool(main, 'alp_handoff') === undefined && claudeToolShapes.alp_handoff.discovered);
+  const task = await createTask(root, { title: 'Add --json', description: 'Print JSON.', paths: ['src/cli.js'] }, 'user');
+  const blocked = await createTask(root, { title: 'Document it', blockedBy: [task.id] }, 'user');
+
+  await prompt('root', 'm1', 'Work on the tasks');
+  assert.match(main.started[0].params.input[1].text, new RegExp(`^Project tasks[\\s\\S]*- ready: ${task.id} P2 Add --json\\n1 blocked$`));
+  assert.match((await main.call('alp_delegate', { agent: 'reviewer', task: 'Check', taskId: task.id })).error, /for advice about a task, name it in the brief/);
+  assert.match((await main.call('alp_delegate', { agent: 'peer', task: 'Write', taskId: blocked.id })).error, new RegExp(`blocked by ${task.id}`));
+  assert.match((await main.call('alp_delegate', { agent: 'peer', task: 'Write', taskId: 't-ffff' })).error, /No task t-ffff/);
+
+  const delegated = await main.call('alp_delegate', { agent: 'peer', task: 'Implement it and run npm test', taskId: task.id, wait: false });
+  await until(() => runtimes.length === 3 && runtimes[2].started.length === 1);
+  const peer = runtimes[2];
+  assert.match(briefOf(peer), new RegExp(`Task ${task.id} \\(task, P2\\): Add --json\\nPrint JSON\\.\\nPaths: src/cli\\.js \\(ALP claimed them for you on the project board\\)\\nYour handoff moves this task to review[\\s\\S]*Implement it and run npm test`));
+  let current = await getTask(root, task.id);
+  assert.deepEqual([current.status, current.assignee.agent, current.assignee.assignment], ['in_progress', 'peer', delegated.assignmentId]);
+  assert.deepEqual(runtime.status('root').claims.map(pin => [pin.agent, pin.task, pin.paths]), [['peer', task.id, ['src/cli.js']]]);
+  assert.match((await main.call('alp_delegate', { agent: 'peer', task: 'Again', taskId: task.id, wait: false })).error, /already in progress with peer/);
+  // The peer's own claims carry its task.
+  assert.equal((await peer.call('alp_pin', { kind: 'claim', body: 'Tests', paths: ['test/cli.test.js'] })).task, task.id);
+
+  assert.equal((await peer.call('alp_handoff', { outcome: 'complete', summary: 'Added --json', verification: ['npm test: passed'], discovered: ['alp ps has no --json either'] })).recorded, true);
+  peer.finish('Done');
+  const { events: mail } = await main.call('alp_wait', {});
+  assert.deepEqual(mail[0].result.task, { id: task.id, status: 'review', next: 'Verify the handoff, then accept it with alp_task close, or delegate the task again for rework' });
+  current = await getTask(root, task.id);
+  assert.deepEqual([current.status, current.handoff.agent, current.handoff.discovered], ['review', 'peer', ['alp ps has no --json either']]);
+  await until(() => runtime.status('root').claims.length === 0);
+
+  const found = (await main.call('alp_task', { action: 'create', title: 'Add --json to alp ps', discoveredFrom: task.id })).task;
+  assert.equal((await main.call('alp_task', { action: 'close', id: task.id, summary: 'Verified the output' })).task.status, 'closed');
+  main.finish('Accepted');
+  await until(() => todos(events, 'root').length === 1);
+  assert.deepEqual(todos(events, 'root')[0].items, [
+    { id: task.id, text: `${task.id} · Add --json`, status: 'completed' },
+    { id: found.id, text: `${found.id} · Add --json to alp ps`, status: 'pending' },
+  ]);
+
+  await until(() => supervisor.started.length === 1);
+  const digest = supervisor.started[0].params.input.at(-1).text;
+  assert.match(digest, new RegExp(`main delegated task ${task.id} "Add --json" \\(now in_progress\\): to peer`));
+  assert.match(digest, new RegExp(`main → peer assignment \\S+ for task ${task.id}`));
+  assert.match(digest, new RegExp(`peer submitted task ${task.id} "Add --json" \\(now review\\): handoff complete: Added --json`));
+  assert.match(digest, /handoff complete: Added --json; discovered: alp ps has no --json either/);
+
+  // The next turn shows the task list again only when it changed.
+  supervisor.finish('sound');
+  await prompt('root', 'm2', 'Thanks');
+  main.finish('ok');
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(todos(events, 'root').length, 1);
+});
+
+test('a blocked handoff or an assignment without one opens the task again; rework takes it from review', async t => {
+  const { root, runtime, runtimes, prompt } = await runtimeSetup(t, { workflow: { mode: 'pho', maxPeers: 2, supervisor: false } });
+  await runtime.open('root', { cwd: root });
+  const task = await createTask(root, { title: 'Work' }, 'user');
+  await until(() => runtimes.length === 1);
+  const [main] = runtimes;
+  await prompt('root', 'm1', 'Go');
+  const run = async (handoff, expected) => {
+    const count = runtimes.length;
+    await main.call('alp_delegate', { agent: 'peer', task: 'Do it', taskId: task.id, wait: false });
+    await until(() => runtimes.length === count + 1 && runtimes[count].started.length === 1);
+    const peer = runtimes[count];
+    if (handoff) await peer.call('alp_handoff', handoff);
+    peer.finish('end');
+    const { events } = await main.call('alp_wait', {});
+    assert.equal(events[0].result.task.status, expected);
+    return getTask(root, task.id);
+  };
+  let current = await run({ outcome: 'blocked', summary: 'Needs an API key' }, 'open');
+  assert.deepEqual([current.assignee, current.handoff.summary, current.log.at(-1).reason], [null, 'Needs an API key', 'handoff blocked']);
+  current = await run(undefined, 'open');
+  assert.deepEqual([current.handoff, current.log.at(-1).reason], [null, 'assignment completed without a handoff']);
+  current = await run({ outcome: 'partial', summary: 'Half done' }, 'review');
+  current = await run({ outcome: 'complete', summary: 'All done' }, 'review');
+  assert.deepEqual(current.log.slice(-3).map(entry => entry.event), ['submitted', 'reworked', 'submitted']);
+});
+
+test('a task whose paths another tree claimed is not delegated, and only main gives tasks', async t => {
+  const { root, runtime, runtimes, prompt } = await runtimeSetup(t, { workflow: { mode: 'cafe', maxPeers: 2, supervisor: false } });
+  const task = await createTask(root, { title: 'Edit the CLI', paths: ['src'] }, 'user');
+  await runtime.open('other', { cwd: root });
+  await until(() => runtimes.length === 1);
+  await prompt('other', 'o1', 'Edit');
+  assert.equal((await runtimes[0].call('alp_pin', { kind: 'claim', body: 'Refactor', paths: ['src/cli.js'] })).kind, 'claim');
+
+  await runtime.open('root', { cwd: root });
+  await until(() => runtimes.length === 2);
+  const main = runtimes[1];
+  await prompt('root', 'm1', 'Go');
+  const refused = await main.call('alp_delegate', { agent: 'lead', task: 'Edit', taskId: task.id });
+  assert.match(refused.error, new RegExp(`Another agent has claimed paths of ${task.id}`));
+  assert.deepEqual(refused.conflicts.map(conflict => conflict.paths), [['src/cli.js']]);
+  assert.equal((await getTask(root, task.id)).status, 'open');
+
+  // Once the claim is gone, lead takes the task; its peer's claims carry the task, and lead cannot give tasks.
+  runtimes[0].finish('done');
+  await runtime.close('other');
+  await until(async () => !(await runtime.board(root)).some(pin => pin.kind === 'claim'));
+  await main.call('alp_delegate', { agent: 'lead', task: 'Edit', taskId: task.id, wait: false });
+  await until(() => runtimes.length === 3 && runtimes[2].started.length === 1);
+  const lead = runtimes[2];
+  assert.equal(tool(lead, 'alp_delegate').inputSchema.properties.taskId, undefined);
+  assert.match((await lead.call('alp_delegate', { agent: 'peer', task: 'x', taskId: task.id })).error, /Only main gives tasks/);
+  void lead.call('alp_delegate', { agent: 'peer', task: 'Edit src/cli.js', mode: 'workspace-write', wait: false });
+  await until(() => runtimes.length === 4 && runtimes[3].started.length === 1);
+  assert.equal((await runtimes[3].call('alp_pin', { kind: 'claim', body: 'CLI', paths: ['src/cli.js'] })).task, task.id);
 });

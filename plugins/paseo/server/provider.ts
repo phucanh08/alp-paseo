@@ -93,6 +93,7 @@ const sessionConfig = (session: SessionSnapshot, thinking: string) => ({
 function timelineItem(item: TimelineItem): ProviderTimelineItem {
   if (item.kind === 'user_message') return { type: 'user_message', id: item.id, text: item.text, ...(item.clientMessageId ? { clientMessageId: item.clientMessageId } : {}) };
   if (item.kind === 'assistant_message') return { type: 'assistant_message', id: item.id, text: item.text };
+  if (item.kind === 'todo') return { type: 'todo', id: item.id, items: item.items.map(entry => ({ id: entry.id, text: entry.text, status: entry.status, completed: entry.status === 'completed' })) };
   return {
     type: 'tool_call',
     id: item.id,

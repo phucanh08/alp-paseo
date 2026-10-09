@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createProvider, mapSession, default as contribute } from '../plugins/paseo/server/dist/index.js';
 import { ProviderEventSchema, PROVIDER_CAPABILITIES } from '@getpaseo/plugin/server/provider';
 import { connect, readLock } from '../src/client/index.js';
+import { createTask } from '../src/core/tasks.js';
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'alp-paseo-'));
@@ -23,7 +24,7 @@ function fakeRuntime() {
   return {
     calls: [], closed: false, fail: undefined,
     initialize: async () => {},
-    onNotification(fn) { notification = fn; }, onFailure(fn) { this.fail = fn; },
+    onNotification(fn) { notification = fn; }, onFailure(fn) { this.fail = fn; }, onRequest(fn) { this.serverRequest = fn; },
     notify(method, params) { notification(method, params); },
     async close() { this.closed = true; },
     async request(method, params) {
@@ -276,4 +277,19 @@ test('a profile session shows Phở and Cafe, and main starts its supervisor as 
   assert.deepEqual(start.dynamicTools.map(tool => tool.name), ['alp_send', 'alp_board', 'alp_task']);
   assert.match(start.developerInstructions, /Supervisor — process reviewer for main/);
   assert.ok(runtimes[0].calls.find(c => c.method === 'thread/start').params.dynamicTools.some(tool => tool.name === 'alp_lesson'));
+});
+
+test('tasks main worked on appear in Paseo as a todo list when its turn ends', async t => {
+  const root = await fixture(t);
+  await mkdir(path.join(root, '.alp'), { recursive: true });
+  const task = await createTask(root, { title: 'Add --json' }, 'user');
+  const { conn, events, runtimes } = await connection(t, root);
+  await conn.send(prompt('m1'));
+  const turnId = events.find(e => e.type === 'session.turn').turnId;
+  const started = JSON.parse((await runtimes[0].serverRequest('item/tool/call', { threadId: 'native-thread', turnId, callId: 'c1', namespace: null, tool: 'alp_task', arguments: { action: 'start', id: task.id } })).contentItems[0].text);
+  assert.equal(started.task.status, 'in_progress');
+  runtimes[0].notify('turn/completed', { threadId: 'native-thread', turn: { id: turnId, status: 'completed' } });
+  for (let i = 0; i < 100 && !events.some(e => e.type === 'timeline.item' && e.item.type === 'todo'); i++) await new Promise(resolve => setTimeout(resolve, 5));
+  const todo = events.find(e => e.type === 'timeline.item' && e.item.type === 'todo');
+  assert.deepEqual(todo.item.items, [{ id: task.id, text: `${task.id} · Add --json`, status: 'in_progress', completed: false }]);
 });
