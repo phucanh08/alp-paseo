@@ -70,7 +70,9 @@ test('plugin registers ALP with public SDK contract', async t => {
   assert.equal(events[0].catalog.models.filter(model => model.id.startsWith('claude:')).length, 17);
   assert.ok(events[0].catalog.models.find(model => model.id === 'codex:gpt-6.1-sol').thinkingOptions.some(option => option.id === 'ultra'));
   assert.ok(events[0].catalog.models.find(model => model.id === 'claude:claude-opus-5-5').thinkingOptions.some(option => option.id === 'ultracode'));
-  assert.equal(conn.capabilities.includes('permission'), false);
+  // Permission prompts carry questions agents ask the user; per-tool approval stays unsupported.
+  assert.equal(conn.capabilities.includes('permission'), true);
+  assert.equal(conn.capabilities.includes('permission.tool_policy'), false);
   await conn.close();
 });
 test('opening the first session in an empty repository installs the ALP starter', async t => {

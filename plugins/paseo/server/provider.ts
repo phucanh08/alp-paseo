@@ -31,6 +31,7 @@ const supported = [
   'session.subsession',
   'session.configure',
   'session.list',
+  'permission',
 ] as const;
 
 /**
@@ -111,6 +112,9 @@ export function createProvider(options: Options = {}): ProviderRegistration {
 
       const { client, shutdown } = await openBackend(options);
       const delegation = capabilities.includes('session.subsession');
+      /** Questions to the user appear as Paseo question prompts on the root agent; without them, answer with the CLI. */
+      const asksUser = capabilities.includes('permission');
+      const questionRoots = new Map<string, string>();
       /** Roots this connection opened; children belong to their root. */
       const roots = new Set<string>();
       const listeners = new Set<(event: ProviderEvent) => void>();
@@ -195,6 +199,33 @@ export function createProvider(options: Options = {}): ProviderRegistration {
           case 'item':
             emit({ type: 'timeline.item', sessionId, item: timelineItem(event.item) });
             return;
+          case 'question': {
+            const { question } = event;
+            if (!asksUser) return;
+            const root = toPaseo(question.rootId);
+            questionRoots.set(question.id, root);
+            emit({
+              type: 'session.permission',
+              sessionId: root,
+              request: {
+                id: question.id,
+                name: 'alp_ask',
+                kind: 'question',
+                title: `${question.agent} asks you`,
+                description: question.body,
+                input: { questions: [{ id: '0', header: 'Answer', question: question.body, options: (question.options ?? []).map(label => ({ label })), isOther: true, allowOther: true }] },
+                metadata: { agent: question.agent, alpSessionId: question.sessionId },
+              },
+            });
+            return;
+          }
+          case 'question.resolved': {
+            const root = questionRoots.get(event.questionId);
+            if (!root) return;
+            questionRoots.delete(event.questionId);
+            emit({ type: 'session.permission_resolved', sessionId: root, permissionId: event.questionId });
+            return;
+          }
           // Mail and assignments reach Paseo through the agents' own timelines.
           case 'mail':
           case 'assignment':
@@ -274,6 +305,20 @@ export function createProvider(options: Options = {}): ProviderRegistration {
           throw new Error(
             `Unsupported operation '${input.type}'`,
           );
+        }
+
+        // The answer to a question an agent asked the user.
+        if (input.type === 'session.permission') {
+          const { response } = input;
+          if (response.behavior === 'allow') {
+            const answers = (response.updatedInput as { answers?: Record<string, unknown> } | undefined)?.answers ?? {};
+            const text = [answers.Answer, ...Object.values(answers)].find((value): value is string => typeof value === 'string' && !!value.trim());
+            if (!text) throw new Error('Type an answer before submitting');
+            await client.request('question.answer', { questionId: input.permissionId, text });
+          } else {
+            await client.request('question.answer', { questionId: input.permissionId, dismiss: true, ...(response.message ? { reason: response.message } : {}) });
+          }
+          return;
         }
 
         if (input.type === 'session.prompt') {
