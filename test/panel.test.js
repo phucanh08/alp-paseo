@@ -142,6 +142,11 @@ test('the plugin server lists, adds, closes, reopens and approves tasks as the u
   assert.equal((await getTask(root, reviewed.id)).closed.summary, 'Looks good');
   assert.equal((await call('alp.tasks.change', { directory: root, id: reviewed.id, action: 'reopen' })).status, 'open');
   await assert.rejects(call('alp.tasks.change', { directory: root, id: 't-ffff', action: 'close' }), /No task t-ffff/);
+  // Closing an epic shows the first line of its report.
+  const epic = await createTask(root, { title: 'Release', type: 'epic' }, 'user');
+  const step = await createTask(root, { title: 'Tag', parent: epic.id }, 'user');
+  assert.equal((await call('alp.tasks.change', { directory: root, id: step.id, action: 'close' })).landed, undefined);
+  assert.equal((await call('alp.tasks.change', { directory: root, id: epic.id, action: 'close' })).landed, `Landed epic ${epic.id} "Release": 1/1 tasks closed, took 1m.`);
 
   const outside = await call('alp.tasks.list', { directory });
   assert.deepEqual(outside, { projectRoot: null, tasks: [], unreadable: [] });

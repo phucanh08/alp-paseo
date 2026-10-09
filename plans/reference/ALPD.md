@@ -972,3 +972,42 @@ Goal (D20, step 3): the user can stop ALP's work and continue it later, and a us
   - `alp pause --now` parked the peer. `alp pause status` and `alp ps` listed it, and main received the parked mail.
   - `alp resume` started a turn on the peer, which continued, filed its handoff, and main reported the result.
   - A real usage limit could not be triggered on demand. The tests cover it with the error shapes from Codex 0.160.1's schema and the Claude SDK's types.
+
+## 30. Epic landed as built (2026-10-09)
+
+Goal (D20, step 4): when the work under an epic is done, main closes the epic, and the user hears what it came to without asking. Gas Town reports a convoy as landed; ALP has no convoys, so the epic, or any task with children, plays that part.
+
+**Ready to close.**
+- `landedParents(tasks)` lists open tasks that have children, all of them closed.
+- `taskDigest` puts them first in main's task list: `- ready to close: t-x P2 Title; all N children are closed. Close it with a summary; ALP reports it to the user`.
+- When `alp_task close` closes the last open child of a parent that is still open, its result carries `next`, which tells main to close the parent with a summary.
+
+**Report.**
+- `epicReport(id, tasks)` walks every task below the epic, at any depth. It counts:
+  - the leaves, and how many of them closed;
+  - the time from the epic's creation to its close, or to now while it is open;
+  - `reworked` entries, and `released` or `orphaned` entries, as handed back;
+  - the leaves' verification: passed, failed, skipped, or none;
+  - leaves closed `unverified`.
+- Its `text` starts with `Landed epic …` once the epic is closed (`Progress of epic …` before that), then the close summary, then one line per task, indented by depth: `✓` done, `✗` closed another way, `○` not closed.
+- A task without children has no report.
+
+**Telling the user.**
+- When `alp_task close` closes a task that has children, the result carries `report`, and the runtime:
+  - sends the report as an `info` notice to the open roots of that project only. `notice(level, text, project?)` now takes a project;
+  - logs `epic.landed` with the counts. The supervisor's journal and `alp log` (`◆`) show it.
+- The user's CLI writes the files directly: `alp task close` prints the report after closing a task with children, and `alp task report <epic> [--json]` prints it at any time.
+- The Paseo Tasks panel's `alp.tasks.change` returns the report's first line as `landed`, and the panel shows it as the toast.
+
+**Evidence.**
+- `test/epic.test.js` covers:
+  - the ready-to-close line;
+  - a report over nested children, with rework, verification passed and failed, an unverified close, and a `wontfix` child, open and then landed;
+  - a close returning `next` for the last child, then `report`, with the notice reaching only the epic's project and `epic.landed` logged;
+  - `alp task report` and the epic's close output in the CLI.
+- `test/panel.test.js` covers `landed` from the panel's close.
+- Live on 2026-10-09, with a Codex main and peers in alpd and an isolated `ALP_HOME`:
+  - main created an epic with two children, delegated each to a peer, and checked and closed them;
+  - after the last close, main closed the epic on its own;
+  - `alp run` showed `ℹ Landed epic t-30f4 "Greeting files": 2/2 tasks closed, took 2m.` with the per-task lines;
+  - `alp log` showed the notice and `◆ main closed t-30f4 …`.

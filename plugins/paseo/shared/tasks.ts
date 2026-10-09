@@ -56,7 +56,8 @@ export const tasksChange = defineRpc({
     gate: z.string().optional(),
     note: z.string().max(2000).optional(),
   }),
-  output: z.object({ id: z.string(), status: z.string() }),
+  /** landed: the first line of the report when the close landed an epic. */
+  output: z.object({ id: z.string(), status: z.string(), landed: z.string().optional() }),
 });
 
 export type BoardSection = { key: string; title: string; tasks: TaskRow[] };

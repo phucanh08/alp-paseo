@@ -1,6 +1,6 @@
 import { access } from 'node:fs/promises';
 import path from 'node:path';
-import { closeTask, createTask, gatesOf, loadTasks, readyTasks, reopenTask, resolveGate, summarize } from '../../../src/core/tasks.js';
+import { closeTask, createTask, epicReport, gatesOf, loadTasks, readyTasks, reopenTask, resolveGate, summarize } from '../../../src/core/tasks.js';
 import type { PluginServerContext } from './compat.js';
 import { tasksAdd, tasksChange, tasksList, type TaskRow } from '../shared/tasks.js';
 
@@ -57,6 +57,9 @@ export function registerTaskRpc(server: PluginServerContext) {
       action === 'close' ? await closeTask(root, id, { reason: 'done', ...(note ? { summary: note } : {}) }, 'user')
       : action === 'reopen' ? await reopenTask(root, id, { ...(note ? { note } : {}) }, 'user')
       : await resolveGate(root, id, gate ?? '', { by: 'user', ...(note ? { note } : {}) });
-    return { id: task.id, status: task.status };
+    if (action !== 'close') return { id: task.id, status: task.status };
+    const { tasks } = await loadTasks(root);
+    const landed = tasks.some(entry => entry.parent === task.id) ? epicReport(task.id, tasks).text.split('\n')[0] : undefined;
+    return { id: task.id, status: task.status, ...(landed ? { landed } : {}) };
   });
 }
