@@ -27,6 +27,9 @@ const isFile = file => stat(file).then(info => info.isFile(), () => false);
 /** Global bin directories that a GUI app's PATH may lack. */
 const BIN_DIRECTORIES = [path.join(os.homedir(), '.npm-global', 'bin'), path.join(os.homedir(), '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
 
+/** The npm package that ships the `alp` command and alpd. */
+const CLI_PACKAGE = '@anhlp/alp';
+
 /**
  * Finds alpd.js for a client that cannot locate it beside itself, such as the Paseo
  * plugin, which Paseo re-bundles: the first existing candidate, then where alpd last
@@ -44,7 +47,7 @@ export async function findDaemonEntry({ home = alpHome(), env = process.env, can
     const root = path.resolve(path.dirname(cli), '..');
     const name = await readFile(path.join(root, 'package.json'), 'utf8').then(text => JSON.parse(text).name, () => undefined);
     const entry = path.join(root, 'dist', 'alpd.js');
-    if (name === 'alp-cli' && await isFile(entry)) return entry;
+    if (name === CLI_PACKAGE && await isFile(entry)) return entry;
   }
   return undefined;
 }

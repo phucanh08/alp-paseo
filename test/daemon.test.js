@@ -172,7 +172,7 @@ test('finds alpd through the ALP CLI on PATH', async t => {
   await mkdir(path.join(root, 'src'), { recursive: true });
   await mkdir(path.join(root, 'dist'));
   await mkdir(path.join(directory, 'bin'));
-  await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'alp-cli' }));
+  await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: '@anhlp/alp' }));
   await writeFile(path.join(root, 'src', 'cli.js'), '');
   await writeFile(path.join(root, 'dist', 'alpd.js'), '');
   await symlink(path.join(root, 'src', 'cli.js'), path.join(directory, 'bin', 'alp'));

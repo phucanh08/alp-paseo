@@ -7,7 +7,7 @@ Provider-neutral filesystem agent resolution with a server-side Paseo provider. 
 Requires Node.js 20+ and an authenticated Codex or Claude Code executable on PATH.
 
 ```sh
-npm install -g alp-cli
+npm install -g @anhlp/alp
 alp daemon start
 ```
 

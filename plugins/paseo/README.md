@@ -15,12 +15,12 @@ each in its own worktree, and their changes are merged back with `alp_merge`.
 Requires Paseo 0.11.1, Node.js 20+, and an authenticated native Codex or
 Claude Code executable on PATH.
 
-ALP sessions run in `alpd`, a per-user daemon from the `alp-cli` package; Paseo
+ALP sessions run in `alpd`, a per-user daemon from the `@anhlp/alp` package; Paseo
 only views them. Install the CLI and start the daemon once, so it records where
 it is installed:
 
 ```sh
-npm install -g alp-cli
+npm install -g @anhlp/alp
 alp daemon start
 ```
 
