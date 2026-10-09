@@ -31,9 +31,28 @@ type GitResult = { code: number; stdout: string; stderr: string };
 /** Commits made for ALP never run the project's hooks and need no user identity. */
 const IDENTITY = ['-c', 'user.name=ALP', '-c', 'user.email=alp@localhost', '-c', 'commit.gpgsign=false'];
 
+/**
+ * Variables git sets for its hooks and aliases, which would point ALP's git
+ * commands at another repository, index or configuration (ALPD §32).
+ */
+const GIT_CONTEXT = [
+  'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_PREFIX', 'GIT_NAMESPACE', 'GIT_IMPLICIT_WORK_TREE', 'GIT_GRAFT_FILE', 'GIT_REPLACE_REF_BASE', 'GIT_NO_REPLACE_OBJECTS',
+  'GIT_SHALLOW_FILE', 'GIT_CONFIG', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT',
+];
+
+/** The environment ALP runs git in: the caller's, without git's own context, and never prompting. */
+export function gitEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const clean: NodeJS.ProcessEnv = { ...env, GIT_TERMINAL_PROMPT: '0' };
+  for (const key of Object.keys(clean)) {
+    if (GIT_CONTEXT.includes(key) || /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) delete clean[key];
+  }
+  return clean;
+}
+
 function git(cwd: string, args: string[], input?: string): Promise<GitResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', args, { cwd, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+    const child = spawn('git', args, { cwd, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], windowsHide: true, env: gitEnvironment() });
     let stdout = '';
     let stderr = '';
     child.stdout!.on('data', chunk => { stdout += chunk; });
@@ -57,7 +76,7 @@ async function checked(cwd: string, args: string[], input?: string) {
 /** A file's content at a revision, or undefined where it does not exist. */
 function blob(cwd: string, revision: string, file: string): Promise<Buffer | undefined> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', ['cat-file', 'blob', `${revision}:${file}`], { cwd, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    const child = spawn('git', ['cat-file', 'blob', `${revision}:${file}`], { cwd, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, env: gitEnvironment() });
     const chunks: Buffer[] = [];
     child.stdout.on('data', chunk => chunks.push(chunk));
     child.once('error', reject);

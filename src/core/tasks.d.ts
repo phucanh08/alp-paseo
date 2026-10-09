@@ -19,7 +19,7 @@ export type Task = {
   discoveredFrom: string | null;
   related: string[];
   gates: TaskGate[];
-  assignee: { agent: string; session?: string; assignment?: string; pid?: number; epoch?: string; since: string } | null;
+  assignee: { agent: string; session?: string; assignment?: string; pid?: number; pidStartedAt?: number; epoch?: string; since: string } | null;
   handoff: Record<string, unknown> | null;
   /** The last run of the project's verify commands for this task. */
   verified: TaskVerification | null;
@@ -92,15 +92,15 @@ export function listTasks(tasks: Task[], filter?: { status?: TaskStatus; label?:
 export function createTask(projectRoot: string, input: TaskInput & { title: string }, by: string): Promise<Task>;
 export function updateTask(projectRoot: string, id: string, input: TaskInput & { note?: string }, by: string, options?: WriteOptions): Promise<Task>;
 export function linkTask(projectRoot: string, id: string, change: { add?: TaskLinks; remove?: TaskLinks }, by: string, options?: WriteOptions): Promise<Task>;
-export function startTask(projectRoot: string, id: string, assignee: { agent: string; session?: string; assignment?: string; pid?: number; epoch?: string }, by: string, options?: WriteOptions): Promise<Task>;
+export function startTask(projectRoot: string, id: string, assignee: { agent: string; session?: string; assignment?: string; pid?: number; pidStartedAt?: number; epoch?: string }, by: string, options?: WriteOptions): Promise<Task>;
 export function closeTask(projectRoot: string, id: string, close: { reason?: CloseReason; summary?: string; unverified?: string }, by: string, options?: WriteOptions): Promise<Task>;
 export function verificationFailed(task: Task): boolean;
 export function recordVerification(projectRoot: string, id: string, verification: { passed: boolean; where?: string; commands?: Array<{ step: string; command: string; exitCode: number; ms: number; output?: string; timedOut?: boolean }>; skipped?: string }, by: string): Promise<Task>;
 export function reopenTask(projectRoot: string, id: string, reopen: { note?: string }, by: string, options?: WriteOptions): Promise<Task>;
 export function submitTask(projectRoot: string, id: string, submit: { assignment: string; handoff: { outcome: string; summary: string } & Record<string, unknown>; agent: string }, by: string): Promise<Task>;
-export function releaseOrphans(projectRoot: string, isOrphan: (assignee: { agent: string; assignment: string; pid?: number; epoch?: string }) => boolean, describe: (assignee: { agent: string; assignment: string }) => Promise<string | undefined>, by: string): Promise<Task[]>;
+export function releaseOrphans(projectRoot: string, isOrphan: (assignee: { agent: string; assignment: string; pid?: number; pidStartedAt?: number; epoch?: string }) => boolean, describe: (assignee: { agent: string; assignment: string }) => Promise<string | undefined>, by: string): Promise<Task[]>;
 export function orphanedEntry(task: Task): { at: string; by: string; event: 'orphaned'; agent: string; assignment: string; note?: string } | undefined;
-export function retakeTask(projectRoot: string, id: string, assignee: { assignment: string; pid?: number; epoch?: string }, by: string): Promise<Task>;
+export function retakeTask(projectRoot: string, id: string, assignee: { assignment: string; pid?: number; pidStartedAt?: number; epoch?: string }, by: string): Promise<Task>;
 export function releaseTask(projectRoot: string, id: string, release: { assignment: string; handoff?: ({ outcome: string; summary: string } & Record<string, unknown>) | null; agent: string; reason: string }, by: string): Promise<Task>;
 export function taskDigest(tasks: Task[], errors?: Array<{ file: string; error: string }>): string;
 export function startRefusal(task: Task, tasks: Task[]): string | undefined;

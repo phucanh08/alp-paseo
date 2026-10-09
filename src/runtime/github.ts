@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { gitEnvironment } from './workspace.js';
 
 /** Where agents send feedback about ALP itself: its process, tools and agent instructions. */
 export const ALP_REPO = 'phucanh08/alp-paseo';
@@ -8,7 +9,7 @@ export type GitHubRunner = (args: string[], options: { cwd: string; input?: stri
 
 function run(command: string, args: string[], { cwd, input }: { cwd: string; input?: string }) {
   return new Promise<string>((resolve, reject) => {
-    const child = spawn(command, args, { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(command, args, { cwd, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: gitEnvironment() });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk; });
