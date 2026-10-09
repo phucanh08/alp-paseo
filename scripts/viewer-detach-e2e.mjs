@@ -14,7 +14,7 @@ import { alpHome, connect, readLock } from '../src/client/index.js';
 const paseoHome = process.env.ALP_TEST_PASEO_HOME;
 const runLogDir = process.env.ALP_RUN_LOG_DIR;
 assert.ok(paseoHome && process.env.ALP_HOME && runLogDir, 'Set ALP_TEST_PASEO_HOME, ALP_HOME and ALP_RUN_LOG_DIR');
-const provider = process.env.ALP_TEST_PROVIDER ?? 'alp/codex:gpt-6.1-sol';
+const provider = process.env.ALP_TEST_PROVIDER ?? 'alp/cafe';
 const until = async (check, timeoutMs, label) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) { const value = await check(); if (value) return value; await new Promise(resolve => setTimeout(resolve, 1000)); }
@@ -30,7 +30,7 @@ await writeFile(path.join(root, '.alp/agents/lead/AGENT.md'), 'For this integrat
 const driver = new DaemonClient({ url: process.env.ALP_TEST_PASEO_URL ?? 'ws://127.0.0.1:16767/ws', clientId: `alp-detach-${Date.now()}` });
 const client = createPaseoApi(driver);
 await driver.connect();
-const agent = await client.agents.create({ cwd: root, title: 'ALP viewer detach check', config: { provider, options: { workflow: 'supervised' }, modeId: 'read-only', thinkingOptionId: 'low' } });
+const agent = await client.agents.create({ cwd: root, title: 'ALP viewer detach check', config: { provider, options: { workflow: 'cafe' }, modeId: 'read-only', thinkingOptionId: 'low' } });
 console.log(JSON.stringify({ project: root, agent: agent.id }));
 void agent.run('Integration check: use alp_delegate exactly once to assign lead this task: "Run the peer verification assignment from your instructions and return its complete tool result." Do not read files or use shell commands. Return the complete lead tool result.', { timeoutMs: 600_000 }).catch(() => {});
 

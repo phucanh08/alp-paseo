@@ -17,7 +17,7 @@ const model = process.env.ALP_TEST_MODEL ?? 'codex:gpt-5.6-sol';
 const word = `ORCHID-${randomUUID().slice(0, 8)}`;
 const root = path.resolve('.alp-test', `human-${mode}-${Date.now()}`);
 await initProject(root);
-await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify({ defaultAgent: 'main', workflow: { mode: 'smart', maxPeers: 2 } }));
+await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify({ defaultAgent: 'main', workflow: { mode: 'pho', maxPeers: 2 } }));
 await writeFile(path.join(root, '.alp/agents/peer/AGENT.md'), 'For this integration assignment: run the shell command `sleep 25` once. Then call alp_handoff with outcome complete and, as summary, the code word the user gave you, or NONE if the user gave none. End with the same as your final message. Use no other tools.');
 const prompt = mode === 'relay'
   ? 'Integration check: call alp_delegate exactly once with agent peer, mode read-only and task "Follow your instructions for this integration assignment." Do not use other tools. When the result arrives, reply with the code word the peer returns, verbatim.'
@@ -96,14 +96,14 @@ async function cli() {
 async function paseo() {
   const { createPaseoApi } = await import('@getpaseo/client');
   const { DaemonClient } = await import('@getpaseo/client/internal/daemon-client');
-  const provider = process.env.ALP_TEST_PROVIDER ?? `alp/${model}`;
+  const provider = process.env.ALP_TEST_PROVIDER ?? 'alp/pho';
   const driver = new DaemonClient({ url: process.env.ALP_TEST_PASEO_URL ?? 'ws://127.0.0.1:16767/ws', clientId: `alp-human-${Date.now()}` });
   const client = createPaseoApi(driver);
   let agent;
   const requests = [];
   try {
     await driver.connect();
-    agent = await client.agents.create({ cwd: root, title: 'ALP human channel smoke test', config: { provider, modeId: 'read-only', thinkingOptionId: 'low', options: { workflow: 'smart' } } });
+    agent = await client.agents.create({ cwd: root, title: 'ALP human channel smoke test', config: { provider, modeId: 'read-only', thinkingOptionId: 'low', options: { workflow: 'pho' } } });
     // run() stops when the agent needs attention; the user answers in Paseo's question prompt on the root agent.
     let result = await agent.run(prompt, { timeoutMs: 420_000 });
     for (let round = 0; result.status === 'permission' && round < 20; round++) {

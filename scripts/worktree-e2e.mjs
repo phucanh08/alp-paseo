@@ -16,7 +16,7 @@ const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' 
 
 const root = path.resolve('.alp-test', `worktree-${Date.now()}`);
 await initProject(root);
-await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify({ defaultAgent: 'main', workflow: { mode: 'smart', maxPeers: 2 } }));
+await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify({ defaultAgent: 'main', workflow: { mode: 'pho', maxPeers: 2 } }));
 await writeFile(path.join(root, '.alp/agents/peer/AGENT.md'), 'For this integration assignment, create exactly the one file named in your task, in your working directory, with exactly the content given, using a single shell command. Do not change any other file and do not use git. Then call alp_handoff with outcome complete and the file path in scope.');
 git(root, 'init', '--quiet', '-b', 'main');
 git(root, 'add', '-A');

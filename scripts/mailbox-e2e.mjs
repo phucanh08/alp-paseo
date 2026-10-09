@@ -11,7 +11,7 @@ import { DaemonClient } from '@getpaseo/client/internal/daemon-client';
 import { initProject } from '../src/core/init.js';
 
 const scenario = process.argv[2] ?? 'ask';
-const provider = process.env.ALP_TEST_PROVIDER ?? 'alp/codex:gpt-6.1-sol';
+const provider = process.env.ALP_TEST_PROVIDER ?? 'alp/pho';
 const runtime = provider.includes('/claude:') ? 'claude' : 'codex';
 const runLogDir = process.env.ALP_RUN_LOG_DIR || path.join(homedir(), '.alp', 'runs');
 assert.ok(['ask', 'wake', 'steer', 'long'].includes(scenario));
@@ -46,7 +46,7 @@ let agent;
 try {
   await driver.connect();
   agent = await client.agents.create({ cwd: root, title: `ALP mailbox ${scenario} smoke test`, config: {
-    provider, modeId: 'read-only', thinkingOptionId: 'low', options: { workflow: 'smart' },
+    provider, modeId: 'read-only', thinkingOptionId: 'low', options: { workflow: 'pho' },
   } });
   console.log(JSON.stringify({ scenario, runtime, project: root, agent: agent.id }));
   const result = await agent.run(prompts[scenario], { timeoutMs: scenario === 'long' ? (4 * waitSeconds + 600) * 1000 : 420_000 });
