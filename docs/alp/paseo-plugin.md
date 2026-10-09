@@ -65,14 +65,14 @@ Installation commands above target the selected user's daemon. Implementation ve
 |---|---|
 | `cwd` | Must be an existing absolute directory; used as ALP root and process/thread cwd. An empty repository is initialized from the bundled starter on first open |
 | Agent | `providerOptions.agent` → restored agent identity → configured `defaultAgent` → `main` |
-| Runtime | A `codex:` or `claude:` picker prefix → persisted runtime → `runtime.provider` → `codex` |
+| Runtime | Persisted runtime → a `codex:`/`claude:` prefix on the model → `runtime.provider` → `codex`. Main with neither `runtime.provider` nor `runtime.model` runs on Claude (its profile model) |
 | Instructions | `ALP.md`, selected `AGENT.md`, lazy skill path index, then host system instructions become runtime developer instructions |
 | Skills | Paths only until runtime needs the skill; bodies are not injected by discovery |
 | Environment | Session env overrides plugin process env; parent thread and Paseo control environment entries are removed; each session gets a separate process |
 | MCP | Agent-local and host servers are combined; collisions fail. stdio and HTTP supported; SSE rejected. Headers map to Codex `http_headers` |
-| Model | Picker/session model → ALP runtime model → runtime default (`gpt-5.6-sol` or `sonnet`); arbitrary native model names pass through |
-| Thinking | Explicit session choice → ALP reasoning → `medium`; `none`, `low`, `medium`, `high`, `xhigh`, `max` |
-| Mode | `read-only` by default; `workspace-write` also supported. Permissions can change while idle; advisors remain read-only and children cannot exceed parent permissions |
+| Model | The picker lists two profiles, `pho` (Phở) and `cafe` (Cafe); the selection picks the profile, not a model (`providerOptions.workflow` and `settings.workflow` are still accepted, including the old names `smart`/`supervised`). The session model is `runtime.model` → main's profile model `claude:claude-opus-5-5` → runtime default (`gpt-5.6-sol` or `sonnet`). A root's config shows its profile; a child's shows its own model. Changing the profile or model of an open session fails |
+| Thinking | Not chosen in Paseo: `runtime.reasoning` → `high` for main's profile model (and oracle) → `medium` |
+| Mode | `full-access` by default in Paseo (main's default elsewhere too); `read-only` and `workspace-write` also supported. `full-access` runs Claude with `bypassPermissions` and Codex with the `danger-full-access` sandbox. Permissions can change while idle; oracle, reviewer and supervisor remain read-only and children cannot exceed parent permissions |
 | Approval | `never`; interactive approval and per-tool policy are not advertised and are rejected |
 | Persistence | Paseo stores a version 2 handle naming the alpd session, its agent and project root; alpd keeps the native thread, workflow snapshot and timeline, and resumes them on reopen. Version 1 handles (native thread in Paseo) are adopted on open. Roots started outside Paseo, for example with `alp run`, appear in Paseo's import list with their children |
 | Refresh | Close then resume; reread ALP files and current launch config. Cross-project or cross-agent resume fails |
@@ -80,7 +80,7 @@ Installation commands above target the selected user's daemon. Implementation ve
 | Steering/cancel | Codex `turn/steer` and `turn/interrupt`; terminal events are deduplicated |
 | Close | Graceful stdin shutdown, bounded forced shutdown fallback for the owned process |
 
-After first-session initialization, ALP configuration files are read-only to the plugin. A model operating in `workspace-write` may edit project files as requested; the no-corruption lifecycle check uses `read-only` mode.
+After first-session initialization, ALP configuration files are read-only to the plugin. A model operating in `workspace-write` may edit project files as requested; the no-corruption lifecycle check runs against a fake native runtime, so no model edits files.
 
 ## Prototype limits
 
