@@ -9,6 +9,8 @@ export type AlpError = { message: string };
 export type TimelineItem =
   | { kind: 'user_message'; id: string; text: string; clientMessageId?: string }
   | { kind: 'assistant_message'; id: string; text: string }
+  /** Something about ALP as a whole the user should see, such as a usage limit or a pause (ALPD §29). */
+  | { kind: 'notice'; id: string; level: 'info' | 'warning' | 'error'; text: string }
   /** The tasks a root's tree created or worked on (plans/reference/ALPD.md §21). */
   | { kind: 'todo'; id: string; items: Array<{ id: string; text: string; status: 'pending' | 'in_progress' | 'completed' }> }
   | {
@@ -41,6 +43,8 @@ export type SessionSnapshot = {
   activeTurnId?: string;
   /** A turn, an assignment, a child, or undelivered mail keeps the session working. */
   busy: boolean;
+  /** Why a usage limit or a pause parked this assignment (ALPD §29). */
+  parked?: string;
 };
 
 export type AssignmentSnapshot = {

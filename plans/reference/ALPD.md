@@ -920,3 +920,55 @@ Goal (D20, step 2): a change is checked by the project's own commands, which alp
   - Main delegated `continueFrom` twice with the same task, and the third merge passed and applied.
   - The task log shows two failed and one passed verification before main closed it.
   - No branches, worktrees or processes were left.
+
+## 29. Pause and usage limits as built (2026-10-09)
+
+Goal (D20, step 3): the user can stop ALP's work and continue it later, and a usage limit stops work without failing it. Gas Town has `gt estop`, `scheduler pause` and quota tracking; ALP does not rotate accounts.
+
+**State.**
+- `paused = { all?, runtimes: { codex?, claude? } }`. Each `Pause` is `{ since, by, reason, resetsAt? }`.
+- It is kept in `RuntimeOptions.pauseFile` (alpd: `$ALP_HOME/state/pause.json`), read at start and written atomically.
+- `pauseOf(kind)` is `all ?? runtimes[kind]`. `held(session)` means the session is parked, or its runtime is paused.
+
+**Effects.**
+- `runDelegation` refuses a child whose runtime is paused. The child's runtime is the prefix of `model`, or else the requester's. The refusal names another runtime that is not paused.
+- `autoWake` sets `wakeHeld` instead of starting a turn for a held session. The wake-limit failure does not fire for held sessions. The watchdog skips held assignments and restarts their silence.
+- `pauseRuntime(scope, pause, now)`: with `now`, every running assignment turn on the scope gets `parkReason` and a `turn/interrupt`.
+- `terminal` parks a session whose turn ended (not completed) while `parkReason` was set, instead of settling it:
+  - `parked = { reason, since }`, and a `session.updated` event with `parked`;
+  - the requester gets an assignment snapshot with status `parked`, and passive mail explaining it;
+  - the run log records `assignment.parked`.
+- `resumeRuntime(scope, by)` clears the pause and sends a notice. It continues parked sessions with a resume prompt (`assignment.resumed`), and delivers the mail of `wakeHeld` sessions.
+- The API is `AlpRuntime.pause/resume/pauses`, over the RPCs `daemon.pause`, `daemon.resume` and `daemon.pauses`. The CLI has `alp pause [codex|claude] [--now] [-m]`, `alp pause status` and `alp resume [runtime]`. `alp ps` prints pauses, and shows parked sessions.
+
+**Limits.**
+- In `notification`, a `turn/completed` that failed with `codexErrorInfo` `usageLimitExceeded` or `rateLimitExceeded` parks the turn if it was an assignment's. It then calls `limitReached`, which:
+  - pauses the runtime as `alpd`, unless it already is;
+  - sets `resetsAt` from the error. If the error has none, it uses the latest `account/rateLimits/updated` report or the runtime's usage context: the latest reset of a window used to 100%;
+  - sends an error notice to every open root.
+- `ClaudeTransport` handles `rate_limit_event`:
+  - it remembers the event, and forwards it as `account/rateLimits/updated { claude }`;
+  - it marks the turn limited on an assistant message with `error: 'rate_limit'`;
+  - it reports the turn's result as failed with `codexErrorInfo: 'usageLimitExceeded'` and `resetsAt` when the turn was limited, or when the result failed after a rejection with no overage allowed (`claudeLimited`).
+- `usageReport` warns once per runtime and reset time: at a Codex window of 90–99%, or a Claude `allowed_warning`.
+- `autoResume` (alpd: `limits.autoResume` in `$ALP_HOME/settings.json`) schedules a resume a minute after `resetsAt`, for pauses by `alpd` only. Persisted limit pauses are rescheduled at start.
+
+**Notices.**
+- A new `TimelineItem` kind, `notice { level, text }`, is emitted on every open root and logged as `notice`.
+- Paseo shows it as a `notification` item. `alp run` and `alp attach` print it with `‼`, `!` or `ℹ`, and `alp log` prints notices, parks and resumes.
+
+**Evidence.**
+- `test/pause.test.js` covers:
+  - a Codex limit parking an assignment with its task kept, and the pause stored with `resetsAt` from the usage report;
+  - the notice, the requester's mail, and the watchdog not failing it;
+  - Codex delegation refused while Claude delegation runs;
+  - resume continuing the assignment to a handoff;
+  - `pause --now` parking a running assignment, with mail held and resume continuing it, and the parked snapshot;
+  - a pause without `--now` letting the turn finish and holding main's wake until resume;
+  - Claude limit and overage handling in the transport;
+  - warnings once per window;
+  - a persisted pause, and `autoResume`.
+- Live on 2026-10-09, with a Codex main and peer in alpd and an isolated `ALP_HOME`:
+  - `alp pause --now` parked the peer. `alp pause status` and `alp ps` listed it, and main received the parked mail.
+  - `alp resume` started a turn on the peer, which continued, filed its handoff, and main reported the result.
+  - A real usage limit could not be triggered on demand. The tests cover it with the error shapes from Codex 0.160.1's schema and the Claude SDK's types.

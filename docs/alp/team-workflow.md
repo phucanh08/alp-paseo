@@ -262,6 +262,58 @@ Live, a Codex main merged a peer's change that the project's check rejected. It
 fixed the change twice with `continueFrom`, the third merge passed, and only
 then did it close the task.
 
+## Pause and usage limits
+
+The user can hold ALP's work without losing it:
+
+```sh
+alp pause                      # everything: no new assignments, no wakes; running turns finish
+alp pause codex --now -m "Lunch"   # one runtime; --now also parks its running assignments
+alp pause status               # pauses and parked assignments (alp ps shows them too)
+alp resume [codex|claude]      # lift a pause; parked assignments continue where they stopped
+```
+
+While a runtime is paused:
+- `alp_delegate` to an agent on it is refused. The refusal says why, when a
+  limit resets, and which other runtime still takes work, for example "pass a
+  model of claude:".
+- Sessions on it are not woken by mail; the mail waits for resume.
+- The stall watchdog ignores their assignments.
+- User prompts still reach main.
+
+**Parking.** `--now` interrupts the running turns of assignments on the paused
+runtime. A parked assignment stays open:
+- its native thread, its task and its claims stay as they were;
+- its requester gets a mail saying it is parked and why, and `alp ps` shows it
+  as `parked`.
+
+On resume, ALP starts a new turn on each parked assignment telling it to
+continue where it left off.
+
+**Usage limits.** ALP pauses a runtime by itself when a turn fails on a usage
+limit:
+- On Codex, that is `codexErrorInfo` `usageLimitExceeded` or
+  `rateLimitExceeded`.
+- On Claude, it is a `rate_limit` error or a rejected `rate_limit_event`. A
+  failure while overage is still allowed does not count.
+
+When that happens:
+- If the turn was an assignment's, the assignment is parked rather than failed,
+  so its task is not released.
+- Every open root shows a notice: the runtime, when the limit resets (from the
+  runtime's usage report), and that the other runtime keeps working.
+- Paseo shows it as a notification, and `alp run` and `alp attach` print it.
+- When a runtime reports a usage window at 90% or more, the user gets one
+  warning per window.
+
+**Resuming after a limit.** The user resumes, by default. Set
+`"limits": { "autoResume": true }` in `$ALP_HOME/settings.json` to let alpd
+resume a runtime a minute after its limit resets.
+
+Pauses are kept in `$ALP_HOME/state/pause.json`, so they survive a restart.
+Parked assignments do not survive one, because their sessions end with alpd.
+Their tasks go back to open as described under Tasks in delegation.
+
 ## Talking to the user
 
 The user talks with main. Main asks the user with `alp_ask` (for a root session
