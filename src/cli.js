@@ -18,6 +18,7 @@ import { ago, duration, renderLog, renderPs } from './client/render.js';
 import { installedProgram, installService, serviceFor, uninstallService } from './client/service.js';
 import { holdDaemon, startDaemon } from './client/supervise.js';
 import { discoverAgents, libraryEntries } from './core/resolver.js';
+import { listTeams, resolveTeam } from './core/teams.js';
 import { parse as toml } from 'smol-toml';
 import { addGate, blockersOf, checkGates, childrenOf, closeTask, compactTasks, createTask, describeGate, gateOpen, epicReport, gatesOf, getTask, isTaskId, linkTask, recordVerification, listTasks, loadTasks, readyTasks, reopenTask, resolveGate, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
 import { alpHome, connect, lockAlive, readLock } from './client/index.js';
@@ -27,7 +28,7 @@ const USAGE = `Usage:
   alp daemon <start|stop|status|restart>
   alp daemon <install|uninstall>         run alpd as a login service that restarts after a crash
   alp doctor [--project DIR] [--fix] [--json]   check this machine and project; --fix repairs what is safe to
-  alp run [--agent A] [--profile pho|cafe] [--model M] [--mode read-only|workspace-write|full-access] [--thinking T] [--project DIR] [--json] <prompt>
+  alp run [--agent A] [--team pho|cafe|ID] [--model M] [--mode read-only|workspace-write|full-access] [--thinking T] [--project DIR] [--json] <prompt>
   alp ps [--all]
   alp top [session] [--once]
   alp attach <session> [--json]
@@ -37,6 +38,7 @@ const USAGE = `Usage:
   alp log <session> [--json]
   alp board [--project DIR] [--json]
   alp <agents|skills|mcp|hooks> [--project DIR] [--json]   the library: built-in, ~/.alp and project entries
+  alp teams [--project DIR] [--json]         teams sessions run in: members, delegation, house rules
   alp permissions [--project DIR] [--json]   each agent's permission profile
   alp permissions check <agent> "<command>"  what that agent's profile says about a command
   alp tasks [ready] [--all] [--status S] [--label L] [--project DIR] [--json]
@@ -321,16 +323,17 @@ function follow(client, rootId, print, { untilIdle, interactive = false }) {
 
 async function run(args) {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
-    agent: { type: 'string' }, profile: { type: 'string' }, workflow: { type: 'string' }, model: { type: 'string' }, mode: { type: 'string' },
+    agent: { type: 'string' }, team: { type: 'string' }, profile: { type: 'string' }, workflow: { type: 'string' }, model: { type: 'string' }, mode: { type: 'string' },
     thinking: { type: 'string' }, project: { type: 'string' }, json: { type: 'boolean' },
   } });
   const text = positionals.join(' ').trim();
   if (!text) throw new UsageError();
-  // --workflow is the option's name before profiles.
-  if (values.profile && values.workflow && values.profile !== values.workflow) throw new UsageError();
+  // --profile and --workflow are the option's names before teams.
+  const teams = [values.team, values.profile, values.workflow].filter(Boolean);
+  if (new Set(teams).size > 1) throw new UsageError();
   const client = await connect(await start(), { name: 'alp-cli', version: '1' });
   try {
-    const spec = { cwd: path.resolve(values.project ?? process.cwd()), persist: true, agent: values.agent, workflow: values.profile ?? values.workflow, model: values.model, mode: values.mode, thinking: values.thinking };
+    const spec = { cwd: path.resolve(values.project ?? process.cwd()), persist: true, agent: values.agent, workflow: teams[0], model: values.model, mode: values.mode, thinking: values.thinking };
     const sessionId = `cli-${randomUUID()}`;
     const done = follow(client, sessionId, printer(values.json), { untilIdle: true, interactive: !values.json && process.stdin.isTTY });
     await client.request('session.create', { sessionId, spec });
@@ -546,6 +549,26 @@ async function libraryCommand(kind, args) {
       row.description ?? '',
     ].filter(Boolean);
     console.log(`${row.name.padEnd(width)}  ${where.padEnd(8)}${notes.length ? `  ${notes.join('; ')}` : ''}`);
+  }
+}
+
+/** alp teams: each team with where it comes from, its main, members and delegation. */
+async function teamsCommand(args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { project: { type: 'string' }, json: { type: 'boolean' } } });
+  if (positionals.length) throw new UsageError();
+  const root = path.resolve(values.project ?? process.cwd());
+  const options = { library: alpHome() };
+  const rows = [];
+  for (const row of await listTeams(root, options)) rows.push(row.error ? row : { ...row, team: await resolveTeam(root, row.id, options) });
+  if (values.json) { console.log(JSON.stringify(rows.map(({ team, ...row }) => ({ ...row, ...(team ? { main: team.main, members: team.members, delegation: team.delegation, maxPeers: team.maxPeers, supervisor: team.supervisor } : {}) })))); return; }
+  for (const { team, ...row } of rows) {
+    const where = row.source === 'builtin' ? 'built-in' : row.source;
+    console.log(`${row.id}  ${row.label ?? ''}  ${where}${row.overrides ? `, overrides the ${row.overrides === 'builtin' ? 'built-in' : row.overrides} one` : ''}`);
+    if (row.error) { console.log(`  error: ${row.error}`); continue; }
+    const member = (name, { role, model, thinking }) => `${name}${role ? ` (${role})` : ' (main)'}${model ? ` on ${model}${thinking ? `, ${thinking}` : ''}` : ''}`;
+    console.log(`  members: ${Object.entries(team.members).map(([name, value]) => member(name, value)).join(', ')}`);
+    console.log(`  delegation: ${Object.entries(team.delegation).map(([owner, targets]) => `${owner} → ${targets.join(', ')}`).join('; ') || 'none'}`);
+    console.log(`  supervisor: ${team.supervisor ? member(team.supervisor.agent, { role: 'watches main', model: team.supervisor.model, thinking: team.supervisor.thinking }) : 'none'}${team.maxPeers ? `; at most ${team.maxPeers} peers` : ''}`);
   }
 }
 
@@ -909,7 +932,7 @@ async function interrupt(args) {
   console.log('Interrupted');
 }
 
-const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, doctor, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, agents: args => libraryCommand('agents', args), skills: args => libraryCommand('skills', args), mcp: args => libraryCommand('mcp', args), hooks: args => libraryCommand('hooks', args), verify, recall, pause, resume, interrupt };
+const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, doctor, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, agents: args => libraryCommand('agents', args), skills: args => libraryCommand('skills', args), mcp: args => libraryCommand('mcp', args), hooks: args => libraryCommand('hooks', args), teams: teamsCommand, verify, recall, pause, resume, interrupt };
 const [command, ...args] = process.argv.slice(2);
 try {
   if (!Object.hasOwn(commands, command)) throw new UsageError();

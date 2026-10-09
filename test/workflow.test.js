@@ -15,7 +15,7 @@ async function setup(t) {
   return { root, config };
 }
 
-test('the Paseo model picker selects a profile, independent of permissions and frozen on resume', async t => {
+test('the Paseo model picker selects a team, independent of permissions and frozen on resume', async t => {
   const { root, config } = await setup(t);
   assert.equal((await mapSession(config)).workflow.mode, 'pho');
   const mapping = await mapSession({ ...config, model: 'cafe', mode: 'workspace-write' });
@@ -24,11 +24,11 @@ test('the Paseo model picker selects a profile, independent of permissions and f
   // Older clients send the workflow setting or provider option, under the old names too.
   assert.equal((await mapSession({ ...config, settings: { workflow: 'supervised' } })).workflow.mode, 'cafe');
   assert.equal((await mapSession({ ...config, providerOptions: { workflow: 'smart' } })).workflow.mode, 'pho');
-  await assert.rejects(mapSession({ ...config, model: 'pho', settings: { workflow: 'cafe' } }), /Conflicting profile/);
+  await assert.rejects(mapSession({ ...config, model: 'pho', settings: { workflow: 'cafe' } }), /Conflicting team/);
   const persistence = { version: 1, data: { agent: 'main', cwd: root, threadId: 'saved', workflow: { mode: 'supervised', maxPeers: 2 } } };
   assert.equal((await mapSession(config, persistence)).workflow.mode, 'cafe');
-  await assert.rejects(mapSession({ ...config, model: 'pho' }, persistence), /Cannot change profile/);
-  await assert.rejects(mapSession({ ...config, settings: { workflow: 'magic' } }), /Profile must be/);
+  await assert.rejects(mapSession({ ...config, model: 'pho' }, persistence), /Cannot change team/);
+  await assert.rejects(mapSession({ ...config, settings: { workflow: 'magic' } }), /Team 'magic' not found; teams: pho, cafe/);
   for (const maxPeers of [0, -1, 1.5, '3']) {
     await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify({ workflow: { mode: 'pho', maxPeers } }));
     await assert.rejects(mapSession(config), /maxPeers/);

@@ -31,7 +31,7 @@ test('clean project gets only ALP.md and settings; the built-in agents resolve f
   await seedLibrary(library);
   assert.deepEqual((await initProject(root)).created, ['ALP.md', '.alp/settings.json']);
   assert.deepEqual(await entries(root), ['ALP.md', '.alp/', '.alp/settings.json'].sort());
-  assert.deepEqual(JSON.parse(await readFile(path.join(root, '.alp/settings.json'), 'utf8')), { defaultAgent: 'main', workflow: { mode: 'pho', maxPeers: 2 } });
+  assert.deepEqual(JSON.parse(await readFile(path.join(root, '.alp/settings.json'), 'utf8')), { defaultAgent: 'main', workflow: { mode: 'pho' } });
   assert.deepEqual(await discoverAgents(root), ['lead', 'main', 'oracle', 'peer', 'reviewer', 'supervisor']);
   for (const agent of ['main', 'lead', 'peer']) {
     const resolved = await resolveAgent(root, { agent, library });

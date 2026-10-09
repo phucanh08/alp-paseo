@@ -1,7 +1,11 @@
-# Phở and Cafe profiles
+# Phở and Cafe teams
 
-ALP has six filesystem-defined agents: main, lead, peer, oracle, reviewer, and
-supervisor. The profile is separate from the permission mode.
+ALP has six built-in agents: main, lead, peer, oracle, reviewer, and supervisor.
+Phở and Cafe are its two built-in teams. A team says who its main is, which
+members may delegate to whom, what main and the supervisor run on, and the house
+rules every member follows. You can make your own teams; see
+[agent library](agent-library.md#teams). The team is separate from the permission
+mode; "profile" is the teams' older name.
 
 | Profile | Technical coordinator | Execution | Separate supervisor of lead | Process supervisor |
 | --- | --- | --- | --- | --- |
@@ -19,19 +23,23 @@ Reviewer reviews one diff for logic changes and risky changes; trivial formattin
 or typo changes can skip review. These call decisions are agent instructions, not
 an automatic mandatory review gate.
 
-## Select a profile
+## Select a team
 
-In Paseo, the model picker lists only the two profiles, Phở and Cafe, and the
-session's config shows no Workflow setting. With `alp run`, pass `--profile pho`
-or `--profile cafe` (`--workflow` is the old name of the option). New project
-`.alp/settings.json`:
+In Paseo, the model picker lists the teams: Phở and Cafe, then your library's, then
+the project's. The session's config shows no Workflow setting. With `alp run`, pass
+`--team pho` or `--team cafe`, or the id of your own team (`--profile` and
+`--workflow` are the option's older names). `alp teams` lists the teams a project
+can use. New project `.alp/settings.json`:
 
 ```json
 {
   "defaultAgent": "main",
-  "workflow": { "mode": "pho", "maxPeers": 2 }
+  "workflow": { "mode": "pho" }
 }
 ```
+
+`workflow.mode` names the team new sessions use. `workflow.maxPeers` overrides the
+team's peer limit for this project.
 
 `workflow.mode` also accepts `smart` and `supervised`, the profiles' names before
 0.4; `alp upgrade` renames them. Set `workflow.supervisor` to `false` to start no
@@ -53,9 +61,11 @@ session is refused.
 
 ## Models and permissions
 
-Main runs on `claude:claude-opus-5-5` with `high` effort, unless `.alp/settings.json`
-sets `runtime.provider` or `runtime.model`, or the caller passes a model
-(`alp run --model`). Paseo never passes a model or effort. Main's mode defaults to
+In Phở and Cafe, main runs on `claude:claude-opus-5-5` with `high` effort, as their
+`team.json` says, unless `.alp/settings.json` sets `runtime.provider` or
+`runtime.model`, or the caller passes a model (`alp run --model`). The order is:
+the caller, then settings' `runtime`, then the team's choice for that member, then
+the agent's own `agent.json`. Paseo never passes a model or effort. Main's mode defaults to
 `full-access`: Claude runs with `bypassPermissions`, Codex with the
 `danger-full-access` sandbox, so it runs any command, with network access, inside
 or outside the project, without asking. The caller can choose `read-only` or

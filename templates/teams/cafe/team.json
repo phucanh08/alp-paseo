@@ -1,0 +1,15 @@
+{
+  "label": "Cafe",
+  "description": "Main supervises lead, who implements or delegates to peer; a supervisor reviews the process.",
+  "main": "main",
+  "members": {
+    "main": { "model": "claude:claude-opus-5-5", "thinking": "high" },
+    "lead": { "role": "lead" },
+    "peer": { "role": "peer" },
+    "oracle": { "role": "advisor" },
+    "reviewer": { "role": "reviewer" }
+  },
+  "delegation": { "main": ["lead", "oracle", "reviewer"], "lead": ["peer", "oracle", "reviewer"] },
+  "maxPeers": 2,
+  "supervisor": { "agent": "supervisor", "model": "claude:claude-sonnet-4-6", "thinking": "medium" }
+}
