@@ -155,10 +155,43 @@ Only the user and main create or change tasks:
 
 Main uses `alp_task` and its instructions tell it to create tasks only for work
 that outlives the turn, that the user asks to track, or that it finds outside the
-scope; lead and peers list such work under risks in their handoff. The runtime
-enforces the table: other roles get `alp_task` with only their actions, and a
-refused action says who can change tasks. The supervisor's digest shows every
-task main created, started, linked, closed or reopened.
+scope; lead and peers list such work under `discovered` in their handoff. The
+runtime enforces the table: other roles get `alp_task` with only their actions,
+and a refused action says who can change tasks.
+
+### Tasks in delegation
+
+Main gives a task to lead or peer by passing `taskId` to `alp_delegate`:
+
+1. ALP refuses the delegation, with nothing changed, when the task is not ready,
+   is already in progress (naming who holds it), or lists paths that an agent
+   outside main's line of delegation has claimed. Advisors take no `taskId`;
+   main names the task in their brief instead.
+2. It starts the task for the assignment under the task lock, so two
+   delegations of one task cannot both succeed.
+3. A writing assignment's claim on the task's `paths` is pinned for it. Its
+   brief starts with the task: title, description, paths, and how the handoff
+   ends it. Every claim pinned by the assignment, or by lead's peers working on
+   it, carries the task id.
+4. When the assignment ends, a `complete` or `partial` handoff moves the task to
+   `review` and keeps the handoff on the task. A `blocked` or `reconsider`
+   handoff, or an assignment that ended without one, opens it again with the
+   reason. The result main receives says where the task went.
+5. Main accepts a task in review by closing it, after verifying it with the
+   usual review rules, or delegates it again with the same `taskId` for rework.
+   It records each `discovered` item as a task with `discoveredFrom`, or says why
+   not.
+
+At the start of each of its turns, main gets a short list of tasks waiting in
+review, tasks in progress, and the most urgent ready tasks, with counts of the
+rest. The supervisor's digest shows every task main created, started, delegated,
+linked, closed or reopened, every task an assignment submitted or released, and
+the discovered work of each handoff. It asks about tasks closed without real
+verification, discovered work dropped silently, and tasks left in review.
+
+When a root's turn ends, its timeline shows the tasks the tree created or worked
+on as a todo list, if the list changed. Paseo renders it as a task list, and
+`alp run` prints it.
 
 The user works with tasks from the CLI, which writes the files directly and
 needs no running daemon:
