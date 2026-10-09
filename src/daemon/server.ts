@@ -354,6 +354,12 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
       return { questions };
     },
 
+    /** The project board: live claims, decisions and findings (ALPD §18). */
+    async 'board.list'(_connection, { projectRoot } = {}) {
+      if (typeof projectRoot !== 'string' || !path.isAbsolute(projectRoot)) throw new RpcError(-32602, 'An absolute projectRoot is required');
+      return { pins: await runtime.board(projectRoot) };
+    },
+
     'question.answer'(_connection, { questionId, text, dismiss = false, reason }) {
       if (typeof questionId !== 'string') throw new RpcError(-32602, 'questionId is required');
       if (dismiss !== true && typeof text !== 'string') throw new RpcError(-32602, 'text or dismiss is required');

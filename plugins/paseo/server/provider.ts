@@ -226,9 +226,11 @@ export function createProvider(options: Options = {}): ProviderRegistration {
             emit({ type: 'session.permission_resolved', sessionId: root, permissionId: event.questionId });
             return;
           }
-          // Mail and assignments reach Paseo through the agents' own timelines.
+          // Mail and assignments reach Paseo through the agents' own timelines; the board through alp board.
           case 'mail':
           case 'assignment':
+          case 'pin':
+          case 'unpin':
             return;
         }
       }

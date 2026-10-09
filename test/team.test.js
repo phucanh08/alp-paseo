@@ -70,7 +70,7 @@ test('real provider boundary routes main -> lead -> peer, isolates instructions 
   const peerResult = runtimes[1].tool('peer');
   await until(() => runtimes[2]?.calls.some(c => c.method === 'turn/start'));
   const peerConfig = runtimes[2].calls.find(c => c.method === 'thread/start').params;
-  assert.deepEqual(peerConfig.dynamicTools.map(tool => tool.name), ['alp_send', 'alp_handoff', 'alp_ask']);
+  assert.deepEqual(peerConfig.dynamicTools.map(tool => tool.name), ['alp_send', 'alp_handoff', 'alp_ask', 'alp_pin', 'alp_board', 'alp_unpin']);
   assert.match(peerConfig.developerInstructions, /assignment from lead\. You do not talk to the user: lead does, through main\. If a decision is genuinely theirs, ask with alp_ask[\s\S]*Before ending your turn, call alp_handoff/);
   assert.match(peerConfig.developerInstructions, /Peer — independent bounded contributor/);
   assert.doesNotMatch(peerConfig.developerInstructions, /# Main —/);
@@ -253,7 +253,7 @@ test('oracle requires explicit premium selection and advisors are forced read-on
   const advice = runtimes[0].tool('oracle', 'Advice', { model: 'codex:premium-test', thinking: 'high', modelReason: 'Runtime catalog describes highest capability', mode: 'workspace-write' }, 'oracle');
   await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
   const cfg = runtimes[1].calls.find(c => c.method === 'thread/start').params;
-  assert.equal(cfg.model, 'premium-test'); assert.equal(cfg.sandbox, 'read-only'); assert.deepEqual(cfg.dynamicTools.map(tool => tool.name), ['alp_send', 'alp_handoff', 'alp_ask']);
+  assert.equal(cfg.model, 'premium-test'); assert.equal(cfg.sandbox, 'read-only'); assert.deepEqual(cfg.dynamicTools.map(tool => tool.name), ['alp_send', 'alp_handoff', 'alp_ask', 'alp_pin', 'alp_board', 'alp_unpin']);
   runtimes[1].finish(); await advice;
   const review = runtimes[0].tool('reviewer', 'Review diff', {}, 'review');
   await until(() => runtimes[2]?.calls.some(c => c.method === 'turn/start'));

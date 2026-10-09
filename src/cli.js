@@ -20,6 +20,7 @@ const USAGE = `Usage:
   alp questions [--json]
   alp answer <question> <text> | alp answer <question> --dismiss [--reason R]
   alp log <session> [--json]
+  alp board [--project DIR] [--json]
   alp interrupt <session>`;
 
 const DAEMON_ENTRY = fileURLToPath(new URL('../dist/alpd.js', import.meta.url));
@@ -341,6 +342,7 @@ function renderStatus(status, root) {
   for (const question of status.questions) lines.push(`  ? ${question.id} ${question.agent} asks (${ago(question.askedAt)}): ${question.body.split('\n')[0]}`);
   for (const worktree of status.worktrees) lines.push(`  ⎇ unmerged ${worktree.branch} from ${worktree.agent}: ${worktree.files.length} files${worktree.stat ? ` (${worktree.stat.trim()})` : ''}`);
   for (const lease of status.leases) lines.push(`  ⚿ ${lease.agent} holds the write lease on ${lease.checkout}`);
+  for (const claim of status.claims ?? []) lines.push(`  ⚑ ${claim.agent} claims ${claim.paths.join(', ')}: ${claim.body.split('\n')[0].slice(0, 100)}`);
   return lines.join('\n');
 }
 
@@ -395,7 +397,15 @@ async function log(args) {
         text = `${entry.agent} ${entry.status} after ${duration(entry.durationMs ?? 0)}${entry.handoff ? `, handoff ${entry.handoff.outcome}: ${entry.handoff.summary.split('\n')[0].slice(0, 120)}` : ''}${entry.error ? `: ${entry.error}` : ''}${entry.reconciled ? ' (after a restart)' : ''}`;
         break;
       case 'mail':
+        // Board pins are logged once, as board.pin, not per reader.
+        if (entry.kind === 'board') continue;
         text = `✉ ${entry.kind} ${entry.from} → ${entry.to === rootId ? 'main' : agents.get(entry.to) ?? entry.to}${entry.body ? `: ${entry.body.split('\n')[0].slice(0, 120)}` : ''}`;
+        break;
+      case 'board.pin':
+        text = `${entry.kind === 'claim' ? '⚑' : entry.kind === 'decision' ? '◆' : '•'} ${entry.agent} pins ${entry.kind} ${entry.pinId}${entry.paths ? ` [${entry.paths.join(', ')}]` : ''}: ${entry.body.split('\n')[0].slice(0, 120)}`;
+        break;
+      case 'board.unpin':
+        text = `⚐ ${entry.pinId} by ${entry.agent} ${entry.reason === 'session_ended' ? 'released when its session ended' : 'taken down'}`;
         break;
       case 'human.question':
         text = `? ${entry.agent} asks the user [${entry.questionId}]: ${entry.body.split('\n')[0].slice(0, 120)}`;
@@ -410,6 +420,23 @@ async function log(args) {
   }
 }
 
+/** The project board every agent on the project shares: live claims, then decisions and findings. */
+async function board(args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { project: { type: 'string' }, json: { type: 'boolean' } } });
+  if (positionals.length) throw new UsageError();
+  const projectRoot = path.resolve(values.project ?? process.cwd());
+  const client = await running();
+  const { pins } = await client.request('board.list', { projectRoot }).finally(() => client.close());
+  if (values.json) { console.log(JSON.stringify(pins)); return; }
+  if (!pins.length) { console.log(`The board for ${projectRoot} is empty`); return; }
+  console.log(`Project board  ${projectRoot}`);
+  for (const pin of pins) {
+    const mark = pin.kind === 'claim' ? '⚑' : pin.kind === 'decision' ? '◆' : '•';
+    console.log(`${mark} ${pin.kind.padEnd(8)} ${pin.id}  ${pin.agent}  ${ago(pin.at)} ago${pin.paths ? `  [${pin.paths.join(', ')}]` : ''}`);
+    console.log(`  ${pin.body.replace(/\n/g, '\n  ')}`);
+  }
+}
+
 async function interrupt(args) {
   if (args.length !== 1) throw new UsageError();
   const client = await running();
@@ -417,7 +444,7 @@ async function interrupt(args) {
   console.log('Interrupted');
 }
 
-const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, top, attach, send, questions, answer, log, interrupt };
+const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, top, attach, send, questions, answer, log, board, interrupt };
 const [command, ...args] = process.argv.slice(2);
 try {
   if (!Object.hasOwn(commands, command)) throw new UsageError();

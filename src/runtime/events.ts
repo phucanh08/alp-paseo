@@ -1,5 +1,6 @@
 import type { RuntimeKind } from './resolve.js';
 import type { MailEvent } from './mailbox.js';
+import type { Pin } from './board.js';
 
 /** Provider-neutral session events (plans/reference/ALPD.md §4). Viewers project them; the runtime never imports a viewer. */
 
@@ -74,6 +75,8 @@ export type TreeStatus = {
   /** Finished worktree assignments waiting for alp_merge or alp_discard. */
   worktrees: Array<{ assignmentId: string; requester: string; agent: string; branch: string; files: string[]; stat: string }>;
   leases: Array<{ checkout: string; assignmentId: string; agent: string }>;
+  /** Live claims on the project board held by this tree's sessions. */
+  claims: Pin[];
 };
 
 export type AlpEvent =
@@ -90,7 +93,10 @@ export type AlpEvent =
   | { type: 'mail'; mail: Omit<MailEvent, 'passive' | 'deliveredTurn'> }
   | { type: 'assignment'; assignment: AssignmentSnapshot }
   | { type: 'question'; question: UserQuestion }
-  | { type: 'question.resolved'; questionId: string; outcome: 'answered' | 'dismissed' | 'timeout' | 'canceled'; answer?: string };
+  | { type: 'question.resolved'; questionId: string; outcome: 'answered' | 'dismissed' | 'timeout' | 'canceled'; answer?: string }
+  /** Emitted on the session that pinned it (plans/reference/ALPD.md §18). */
+  | { type: 'pin'; pin: Pin }
+  | { type: 'unpin'; pinId: string; reason: 'unpinned' | 'session_ended' };
 
 export type Envelope = {
   sessionId: string;

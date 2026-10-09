@@ -11,3 +11,5 @@ export { MAIL_BATCH_CHARS, MAIL_BODY_CHARS, publicEvent, renderMail, takeBatch, 
 export type { MailEvent, MailKind } from './mailbox.js';
 export { reclaimWorktrees } from './workspace.js';
 export type { Worktree, WorktreeChange } from './workspace.js';
+export { PIN_KINDS, renderBoard, renderPin } from './board.js';
+export type { Pin, PinKind } from './board.js';

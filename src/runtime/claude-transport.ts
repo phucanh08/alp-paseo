@@ -3,6 +3,7 @@ import path from 'node:path';
 import { optionalRead, claudeUsage } from './runtime-context.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { PIN_KINDS } from './board.js';
 
 // Keep the Claude SDK behind the runtime boundary. Paseo inspects static
 // imports while compiling plugin entrypoints, including their declaration
@@ -37,6 +38,18 @@ export const toolShapes: Record<string, Record<string, z.ZodType>> = {
   },
   alp_discard: {
     assignmentId: z.string().min(1),
+  },
+  alp_pin: {
+    kind: z.enum(PIN_KINDS),
+    body: z.string().min(1),
+    paths: z.array(z.string().min(1)).optional(),
+  },
+  alp_board: {
+    kinds: z.array(z.enum(PIN_KINDS)).optional(),
+    limit: z.number().int().positive().optional(),
+  },
+  alp_unpin: {
+    pinId: z.string().min(1),
   },
   alp_wait: {
     assignments: z.array(z.string().min(1)).max(32).optional(),
