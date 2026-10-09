@@ -52,6 +52,7 @@ your-project/
   ALP.md
   .alp/
     settings.json
+    tasks/            # one JSON file per task; commit it with the project
     agents/
       main/AGENT.md
       lead/AGENT.md
@@ -100,12 +101,16 @@ node src/cli.js questions             # questions agents asked you
 node src/cli.js answer <question> "Your answer"   # or: --dismiss [--reason R]
 node src/cli.js log <session>         # delegations, mail, handoffs, worktrees, pins and questions of a tree
 node src/cli.js board [--project DIR] # the project board: claims, decisions and findings
+node src/cli.js tasks [ready]         # the project's tasks; ready: what nothing blocks
+node src/cli.js task add "Title" -p 1 --after t-91c2   # also: show | edit | close | reopen | dep
 node src/cli.js interrupt <session>
 ```
 
 You talk with main. Main can ask you a question with `alp_ask` without ending its turn; `run`, `attach` and `send` show it and, in a terminal, read the answer, and `alp answer` answers from anywhere by question id or a unique prefix. In Paseo the question appears as a question prompt. Other agents do not talk to you unless you write to them first with `alp send <agent session>`; ALP then tells the agent that assigned them, and they may ask you questions too.
 
 Agents on one project share a board, even when they belong to different trees. Each one claims the paths it is about to change, and an overlapping claim from another tree is refused. Agents also pin decisions and findings, which reach other agents that are working and start every new assignment. `alp board` shows the board.
+
+Each project keeps its tasks in `.alp/tasks`, one JSON file per task, modelled on [beads](https://github.com/gastownhall/beads): types, priorities 0–4, `blockedBy`, epic parents, and a ready list of open tasks that nothing blocks. Only you and main create or change tasks: you with `alp task`, main with its `alp_task` tool. Other agents read them and report work they find to their requester. The CLI writes the files directly, so it works without alpd.
 
 `ALP_HOME` selects the daemon's directory (default `~/.alp`); `ALP_RUN_LOG_DIR` overrides where assignment logs go (default `$ALP_HOME/runs`). alpd records sessions, their timelines, and prompt receipts under `$ALP_HOME/state`, project boards under `$ALP_HOME/boards`, and its own location in `$ALP_HOME/alpd.json`. After a restart, or a crash, a root can be resumed with `send` or imported into Paseo; work that was running is marked `daemon_restarted`. The Paseo plugin starts the same daemon automatically.
 

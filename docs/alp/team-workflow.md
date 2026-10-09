@@ -125,6 +125,61 @@ assignment starts with a digest of the board. Claims end with their session, or
 earlier with `alp_unpin`; decisions and findings stay. `alp board` prints the
 board of the current project.
 
+## Tasks
+
+A project's tasks live in `.alp/tasks`, one JSON file per task, and are committed
+with the project like source. The model follows
+[beads](https://github.com/gastownhall/beads): a short hash id (`t-a3f8`, and
+`t-a3f8.1`, `t-a3f8.2` for children), a type (`task`, `bug`, `feature`, `chore`,
+`epic`), a priority from 0 (urgent) to 4 (backlog), labels, the paths the work
+changes, and relations. Relations live on the dependent task: `blockedBy` lists
+tasks that must close first, `parent` groups a task under an epic or larger task,
+`discoveredFrom` names the task during which the work was found, and `related`
+links loosely. So adding a child or a blocker never edits the other task's file,
+and two branches that touch different tasks merge without conflicts.
+
+A task is `open`, `in_progress`, `review` or `closed`. Blocked is not stored: a
+task is **ready** when it is open, not an epic, every `blockedBy` task is closed,
+and the same holds for its parent and the parent's ancestors. Ready tasks sort by
+priority, then age. A link that would make a cycle is refused with the chain, and
+a task cannot wait on its own parent or ancestor. Only a ready task can start;
+an epic closes as `done` only once its children are closed.
+
+Only the user and main create or change tasks:
+
+| | User (CLI) | main | lead, peer | oracle, reviewer | supervisor |
+|---|---|---|---|---|---|
+| create, update, link, close, reopen | yes | yes | no | no | no |
+| start | — | yes | no | no | no |
+| read | all | show, list, ready | show, ready | show | show, list |
+
+Main uses `alp_task` and its instructions tell it to create tasks only for work
+that outlives the turn, that the user asks to track, or that it finds outside the
+scope; lead and peers list such work under risks in their handoff. The runtime
+enforces the table: other roles get `alp_task` with only their actions, and a
+refused action says who can change tasks. The supervisor's digest shows every
+task main created, started, linked, closed or reopened.
+
+The user works with tasks from the CLI, which writes the files directly and
+needs no running daemon:
+
+```sh
+alp tasks                        # open, in progress and in review
+alp tasks ready                  # what nothing blocks, most urgent first
+alp task add "Add --json" -p 1 -t feature --parent t-77e0 --after t-91c2 -l cli
+alp task show t-77e0.2
+alp task dep add t-c40d --after t-77e0.2      # rm removes; also --parent, --related
+alp task close t-77e0.2 -m "Merged in #12"    # --reason wontfix | duplicate | superseded
+alp task reopen t-77e0.2 -m "Fails on Windows"
+```
+
+Every writer holds the lock directory `.alp/tasks/.lock` while it reads, checks
+and writes one task; a lock older than ten seconds is cleared. Each write bumps
+the task's `rev` and replaces the file through a temporary file, and a writer
+that passes the `rev` it read is refused if the task changed since. A file that
+does not parse is reported by name and skipped. `.alp/tasks/.gitignore` keeps the
+lock and temporary files out of git.
+
 ## Observing a tree
 
 `alp top` shows every live tree, refreshed every second: each agent's state

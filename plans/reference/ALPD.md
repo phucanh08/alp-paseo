@@ -479,3 +479,55 @@ Goal: two fixed profiles the user picks from, a main that learns from its proces
 **Issues (D17).** Root main gets `alp_issue { action: search | create | comment, target: project | alp, … }`. `project` resolves `owner/name` from the `origin` remote (GitHub HTTPS or SSH URLs only); `alp` is `phucanh08/alp-paseo`. `search` runs `gh issue list --state all --limit 10 --search … --json number,title,state,url` without asking. `create` and `comment` ask with the repository, action, title, labels and body, then run `gh issue create` or `gh issue comment` with the body on standard input and a footer naming ALP and the user's approval, and log `issue` with the URL. `RuntimeOptions.github` replaces the `gh` runner (tests); `ALP_GH_BIN` selects the executable. Lessons, skills and issues also appear in the supervisor's digest.
 
 **Evidence.** `test/supervisor.test.js` covers the supervisor's start and config, the digest, busy until the review, deferred notes, no review of an answering turn, lessons in both scopes and in later sessions, a digest waiting behind a running review, the settings that disable it, skills scoped to chosen roles and saved only after approval (rejection with feedback, dismissal, unknown roles, lessons moved, later sessions listing it), and issues searched, created and commented only after approval, refused to assignments and to non-GitHub remotes. `test/skills.test.js` covers seeding, user assignments, project overrides, updates that keep edited and deleted files, and upgrade archiving. `test/workflow.test.js` and `test/paseo.test.js` cover profiles, old names, model defaults, full access, and the supervisor child in Paseo. `test/team.test.js` covers two oracles in parallel; `test/supervisor.test.js` also covers a project that gets only the supervisor's files. On 2026-10-09 `alp run` with real Claude models, in an isolated `ALP_HOME`, showed main on `claude-opus-5-5` with full access and its supervisor on `claude-sonnet-4-6`. In Cafe, main edited a file itself at the user's request. The supervisor asked why the logic change had no reviewer. Main was woken, recorded a user-scope lesson, ran reviewer, and that turn was not reviewed again. The first live run exposed that `alp run` checked for an idle tree only when main's turn ended, so it waited forever after the review; it now checks again whenever any turn in the tree ends. The Paseo-driven scripts (`scripts/workflow-e2e.mjs` and others) were updated for the profiles but not rerun.
+
+## 20. Tasks as built, step 1 (2026-10-09)
+
+Goal: the project's task graph, with an ordered set of work that is ready and an atomic start, shared by the user and main (D18).
+
+**Storage.** `src/core/tasks.js` (shipped with the CLI, bundled into alpd) owns `.alp/tasks`. A task file holds `id, rev, title, description, type, priority, status, labels, paths, parent, blockedBy, discoveredFrom, related, assignee, handoff, createdBy, createdAt, updatedAt, closed, log` (the newest 50 events). Each write runs as follows:
+- Writes in one process queue per directory.
+- The writer then takes the lock directory `.alp/tasks/.lock`. A lock older than 10 s is cleared. The writer gives up after 5 s with `TASKS_LOCKED`.
+- Under the lock, it re-reads every task, checks the change, bumps `rev`, and writes `<id>.json` through a temporary file and a rename. A change that leaves the task unchanged writes nothing.
+- An optional `ifRev` refuses the write with `TASK_CHANGED`.
+
+The first write creates the directory and `.alp/tasks/.gitignore` (`.lock`, `*.tmp`). `loadTasks` returns `{ tasks, errors }`: it skips files that do not parse, whose id differs from their name, or whose status is unknown, and fills missing fields with defaults.
+
+**Ids.** A top-level id is `t-` plus the first 4 hex digits of sha256(title, time, random), growing to 12 digits on a collision. A task created with a parent gets `<parent>.<n>`, the next free number.
+
+**Graph.**
+- `blockersOf` lists the unclosed `blockedBy` of the task and of each ancestor; tasks that are missing block nothing.
+- `readyTasks` lists open non-epic tasks with no blockers, sorted by priority, then creation time.
+- `linkTask` applies removals, then additions (`blockedBy`, `related`, `parent`). It refuses an edge that would close a cycle over `blockedBy` and parent edges, naming the chain. It also refuses blockers that are the task's parent or an ancestor, a second parent, and a closed parent.
+
+**Lifecycle.**
+- `startTask` takes an open, ready task, or one in `review` back for rework, and sets `assignee`. It refuses epics, tasks in progress (naming the holder), closed tasks, and blocked tasks (naming the blockers). The check and the write happen under one lock.
+- `closeTask` takes a reason (`done`, `wontfix`, `duplicate` or `superseded`) and an optional summary, and clears `assignee`. `done` is refused while children are open.
+- `reopenTask` puts any task that is not open back to open. It is refused while the parent is closed.
+- `updateTask` changes fields, adds an optional note to the log, and refuses turning a task that is not open into an epic.
+
+**Tool.** `alp_task { action, … }` is offered per role:
+- Root main: `create`, `update`, `link`, `start`, `close`, `reopen`, `show`, `list`, `ready`.
+- Lead, peer and custom agents: `show`, `ready`.
+- Oracle and reviewer: `show`.
+- The supervisor: `show`, `list`.
+
+A role's schema lists only its actions and fields, and the Claude transport narrows its zod shape to that definition. The runtime checks the role again and refuses fields an action does not take. A change is logged as `task` with the action, id, title, new status and summary or note, and appears in the supervisor's digest. Main's instructions say when to create, start and close tasks. Other agents' instructions say to report work they find in their handoff. The templates say the same.
+
+**CLI.** `alp tasks [ready] [--all] [--status S] [--label L] [--json]`, and `alp task add|show|edit|close|reopen|dep add|dep rm` with `--project DIR`. The CLI writes the files directly as `user` and needs no daemon. It requires an `.alp` directory and reports unreadable files on stderr.
+
+**Not yet (step 2).**
+- `alp_delegate { taskId }`.
+- Handoff moving a task to `review`, and an ended assignment reopening it.
+- Board claims that carry the task id, and claims from a task's `paths`.
+- The ready list in main's turn context, with supervisor checks.
+- Paseo `todo` items.
+
+**Evidence.** `test/tasks.test.js` covers:
+- Ids and children, validation, `.gitignore`, and no leftover files.
+- The ready list, blocked epics, list order and filters.
+- Cycles, self references and ancestor blockers, and one call that removes and adds.
+- Two starts at once with exactly one winning, `ifRev`, the close, reopen and epic rules, and unreadable files.
+- A stale lock.
+- The CLI, end to end.
+- Five CLI processes adding children of one epic at once, which get distinct ids.
+- `alp_task` for main, a peer and the supervisor, including the digest lines. On 2026-10-09 there was a live `alp run --profile pho` with real Claude models, in an isolated `ALP_HOME`, on three tasks the user added with the CLI. Main ran `alp_task ready` and picked the P1 task. It started the task, claimed `greet.js` and wrote it. It verified the file with node, and reviewer accepted it. Main then closed the task with a summary of the evidence. That left the task's blocked follow-up ready. The supervisor judged the turn sound.
