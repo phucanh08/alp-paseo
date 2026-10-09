@@ -66,13 +66,22 @@ async function setup(t, options = {}) {
   return { root, runtime, runtimes, envelopes, of, log };
 }
 
-test('an assignment asks the user; the tree shows it waiting, and the answer resumes it', async t => {
+test('only main talks to the user until the user writes to an assignment; its requester is told', async t => {
   const { runtime, runtimes, of, log } = await setup(t);
   const main = runtimes[0];
   const delegated = await main.call('alp_delegate', { agent: 'peer', task: 'Pick a database', wait: false });
   assert.equal(delegated.status, 'running');
   await until(() => runtimes.length === 2);
   const peer = runtimes[1];
+  assert.match((await peer.call('alp_ask', { question: 'Postgres or SQLite?', to: 'user' })).error, /Only main talks to the user; ask main/);
+  assert.deepEqual(runtime.questions(), []);
+
+  // The user writes down to the peer: main hears of it, and the peer may now ask the user.
+  runtime.message(delegated.assignmentId, 'Prefer something embedded');
+  const told = () => of('mail').filter(envelope => envelope.sessionId === 'root').map(envelope => envelope.event.mail);
+  await until(() => told().length === 1);
+  assert.deepEqual({ ...told()[0], id: undefined }, { id: undefined, kind: 'note', from: 'peer', assignment: delegated.assignmentId, body: '[ALP, on behalf of peer] The user wrote to me directly: "Prefer something embedded"' });
+
   const asked = peer.call('alp_ask', { question: 'Postgres or SQLite?', to: 'user', options: ['Postgres', 'SQLite'] });
   await until(() => of('question').length === 1);
   const [{ sessionId, event: { question } }] = of('question');
@@ -90,6 +99,8 @@ test('an assignment asks the user; the tree shows it waiting, and the answer res
 
   runtime.answer(question.id, { text: 'SQLite' });
   assert.deepEqual(await asked, { status: 'answered', from: 'user', answer: 'SQLite' });
+  await until(() => told().length === 2);
+  assert.equal(told()[1].body, '[ALP, on behalf of peer] I asked the user: "Postgres or SQLite?"\nThe user answered: "SQLite"');
   assert.deepEqual(of('question.resolved').map(envelope => envelope.event), [{ type: 'question.resolved', questionId: question.id, outcome: 'answered', answer: 'SQLite' }]);
   assert.deepEqual(runtime.questions(), []);
   assert.throws(() => runtime.answer(question.id, { text: 'again' }), /No question/);
@@ -126,12 +137,12 @@ test('ask arguments are checked: a root has no requester, options are for the us
   await until(() => runtimes.length === 2);
   const peer = runtimes[1];
   assert.match((await peer.call('alp_ask', { question: 'A or B?', options: ['A'] })).error, /options are up to 10 short answers, for questions to the user/);
-  void peer.call('alp_ask', { question: 'First?', to: 'user' });
-  await until(() => runtime.questions().length === 1);
+  void peer.call('alp_ask', { question: 'First?' });
+  await until(() => runtime.status('root').assignments[0]?.status === 'waiting_parent');
   assert.match((await peer.call('alp_ask', { question: 'Second?' })).error, /already waiting/);
 });
 
-test('the user can mail an assignment directly; it arrives as a user instruction in the running turn', async t => {
+test('the user can mail an assignment directly; it arrives as a user instruction that names the requester', async t => {
   const { runtime, runtimes } = await setup(t);
   const delegated = await runtimes[0].call('alp_delegate', { agent: 'peer', task: 'Work', wait: false });
   await until(() => runtimes.length === 2);
@@ -139,6 +150,7 @@ test('the user can mail an assignment directly; it arrives as a user instruction
   await until(() => runtimes[1].calls.some(call => call.method === 'turn/steer'));
   const steer = runtimes[1].calls.find(call => call.method === 'turn/steer');
   assert.match(steer.params.input[0].text, /Mail sent by "user" is the user writing to you directly/);
+  assert.match(steer.params.input[0].text, /ALP has told main about it[\s\S]*your handoff must say what the user asked/);
   assert.match(steer.params.input[0].text, /note from user[\s\S]*Use SQLite, not Postgres/);
   assert.throws(() => runtime.message('nope', 'Hi'), /not open/);
 });
@@ -180,7 +192,7 @@ test('alpd lists and answers questions by id prefix, reports tree status and the
   await assert.rejects(client.request('session.status', { sessionId: 'nope' }), error => error.code === 1001);
 });
 
-test('Paseo shows a question to the user on the root agent and returns the answer, or the dismissal', async t => {
+test('Paseo shows main\'s question to the user as a question prompt and returns the answer, or the dismissal', async t => {
   const { root } = await project(t);
   const runtimes = [];
   const provider = createProvider({ transport: fakeTransport(runtimes) });
@@ -191,22 +203,19 @@ test('Paseo shows a question to the user on the root agent and returns the answe
   await connection.send({ type: 'session.open', requestId: 'open', sessionId: 'paseo-root', history: 'skip', config: { cwd: root, env: {}, mcpServers: {}, settings: {}, persist: true, mode: 'workspace-write' } });
   await connection.send({ type: 'session.prompt', sessionId: 'paseo-root', prompt: { clientMessageId: 'first', delivery: 'auto', input: { type: 'message', content: [{ type: 'text', text: 'Go' }] } } });
   await connection.send({ type: 'session.prompt', sessionId: 'paseo-root', prompt: { clientMessageId: 'second', delivery: 'auto', input: { type: 'message', content: [{ type: 'text', text: 'Go' }] } } });
-  const delegated = await runtimes[0].call('alp_delegate', { agent: 'peer', task: 'Work', wait: false });
-  await until(() => runtimes.length === 2);
-
-  const answered = runtimes[1].call('alp_ask', { question: 'Tabs or spaces?', to: 'user', options: ['Tabs', 'Spaces'] });
+  const answered = runtimes[0].call('alp_ask', { question: 'Tabs or spaces?', options: ['Tabs', 'Spaces'] });
   await until(() => events.some(event => event.type === 'session.permission'));
   const permission = events.find(event => event.type === 'session.permission');
-  assert.equal(permission.sessionId, 'paseo-root', 'questions from any agent appear on the root agent');
+  assert.equal(permission.sessionId, 'paseo-root');
   assert.equal(permission.request.kind, 'question');
-  assert.equal(permission.request.title, 'peer asks you');
+  assert.equal(permission.request.title, 'main asks you');
   assert.deepEqual(permission.request.input.questions[0].options, [{ label: 'Tabs' }, { label: 'Spaces' }]);
-  assert.equal(permission.request.metadata.alpSessionId, delegated.assignmentId);
+  assert.equal(permission.request.metadata.alpSessionId, 'paseo-root');
   await connection.send({ type: 'session.permission', sessionId: 'paseo-root', permissionId: permission.request.id, response: { behavior: 'allow', updatedInput: { answers: { Answer: 'Spaces' } } } });
   assert.deepEqual(await answered, { status: 'answered', from: 'user', answer: 'Spaces' });
   await until(() => events.some(event => event.type === 'session.permission_resolved' && event.permissionId === permission.request.id));
 
-  const dismissed = runtimes[1].call('alp_ask', { question: 'Again?', to: 'user' });
+  const dismissed = runtimes[0].call('alp_ask', { question: 'Again?' });
   await until(() => events.filter(event => event.type === 'session.permission').length === 2);
   const second = events.filter(event => event.type === 'session.permission')[1];
   await connection.send({ type: 'session.permission', sessionId: 'paseo-root', permissionId: second.request.id, response: { behavior: 'deny', message: 'Decide yourself' } });

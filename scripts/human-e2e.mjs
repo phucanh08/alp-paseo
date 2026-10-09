@@ -1,6 +1,8 @@
-// Opt-in: real model calls. A peer asks the user for a code word with alp_ask to: "user";
-// the answer comes from the alp CLI (mode cli, no Paseo) or from Paseo's question prompt
-// (mode paseo), and has to reach main's final message.
+// Opt-in: real model calls. Only main talks to the user unless the user writes down first.
+// cli / paseo: main asks the user for a code word with alp_ask; the answer comes from the alp
+// CLI (no Paseo) or from Paseo's question prompt and has to reach main's final message.
+// relay: the user writes the code word to a running peer with alp send; ALP tells main, and
+// the peer acts on it.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -10,14 +12,16 @@ import path from 'node:path';
 import { initProject } from '../src/core/init.js';
 
 const mode = process.argv[2] ?? 'cli';
-assert.ok(['cli', 'paseo'].includes(mode), 'usage: human-e2e.mjs cli|paseo');
+assert.ok(['cli', 'paseo', 'relay'].includes(mode), 'usage: human-e2e.mjs cli|paseo|relay');
 const model = process.env.ALP_TEST_MODEL ?? 'codex:gpt-5.6-sol';
 const word = `ORCHID-${randomUUID().slice(0, 8)}`;
 const root = path.resolve('.alp-test', `human-${mode}-${Date.now()}`);
 await initProject(root);
 await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify({ defaultAgent: 'main', workflow: { mode: 'smart', maxPeers: 2 } }));
-await writeFile(path.join(root, '.alp/agents/peer/AGENT.md'), 'For this integration assignment: call alp_ask exactly once with to "user" and question "What is the code word?". Then call alp_handoff with outcome complete and the answer verbatim as summary, and end with the answer as your final message. Do not use any other tool.');
-const prompt = 'Integration check: call alp_delegate exactly once with agent peer, mode read-only and task "Ask the user for the code word, as your instructions say, and return it." Do not ask the user yourself and do not use other tools. Reply with the code word the peer returns, verbatim.';
+await writeFile(path.join(root, '.alp/agents/peer/AGENT.md'), 'For this integration assignment: run the shell command `sleep 25` once. Then call alp_handoff with outcome complete and, as summary, the code word the user gave you, or NONE if the user gave none. End with the same as your final message. Use no other tools.');
+const prompt = mode === 'relay'
+  ? 'Integration check: call alp_delegate exactly once with agent peer, mode read-only and task "Follow your instructions for this integration assignment." Do not use other tools. When the result arrives, reply with the code word the peer returns, verbatim.'
+  : 'Integration check: call alp_ask exactly once with question "What is the code word?"; it asks the user. Do not use any other tool. Reply with the answer, verbatim.';
 
 async function cli() {
   const home = await mkdtemp(path.join(tmpdir(), 'alp-human-e2e-'));
@@ -39,6 +43,10 @@ async function cli() {
           const envelope = JSON.parse(buffer.slice(0, index));
           buffer = buffer.slice(index + 1);
           seen.push(envelope);
+          if (mode === 'relay' && envelope.event.type === 'session.opened' && envelope.event.session.parentId) {
+            // The user writes down to the running peer from another terminal.
+            setTimeout(() => { evidence.sent = alp('send', envelope.sessionId, `The code word is ${word}`); }, 4000);
+          }
           if (envelope.event.type !== 'question') continue;
           // Another terminal sees the question, the dashboard shows who waits, and the user answers by id prefix.
           const { question } = envelope.event;
@@ -54,16 +62,31 @@ async function cli() {
     evidence.final = envelopes.filter(e => e.sessionId === main && e.event.type === 'item' && e.event.item.kind === 'assistant_message').at(-1)?.event.item.text ?? '';
     evidence.resolved = envelopes.find(e => e.event.type === 'question.resolved')?.event;
     evidence.log = alp('log', main).stdout;
-    await writeFile('.alp-test/human-cli-e2e.json', JSON.stringify({ ...evidence, envelopes }, null, 2));
+    const file = `.alp-test/human-${mode}-e2e.json`;
+    await writeFile(file, JSON.stringify({ ...evidence, envelopes }, null, 2));
+    if (mode === 'relay') {
+      const peer = envelopes.find(e => e.event.type === 'session.opened' && e.event.session.parentId)?.sessionId;
+      evidence.peerFinal = envelopes.filter(e => e.sessionId === peer && e.event.type === 'item' && e.event.item.kind === 'assistant_message').at(-1)?.event.item.text ?? '';
+      evidence.told = envelopes.filter(e => e.sessionId === main && e.event.type === 'mail' && e.event.mail.from === 'peer' && e.event.mail.kind === 'note').map(e => e.event.mail.body);
+      console.log(JSON.stringify({ ...evidence, sent: evidence.sent?.stderr.trim(), log: evidence.log.split('\n') }));
+      assert.equal(evidence.sent?.status, 0, evidence.sent?.stderr);
+      assert.match(evidence.sent.stderr, /Sent to peer as mail from the user/);
+      assert.ok(evidence.told.some(body => body.includes(`The user wrote to me directly: "The code word is ${word}"`)), 'ALP told main that the user wrote to peer');
+      assert.ok(evidence.peerFinal.includes(word), 'the peer acted on the user\'s mail');
+      assert.ok(evidence.final.includes(word), 'the word reaches main');
+      assert.equal(envelopes.filter(e => e.event.type === 'question').length, 0, 'nobody asked the user');
+      console.log(JSON.stringify({ passed: true, evidence: file }));
+      return;
+    }
     console.log(JSON.stringify({ ...evidence, top: evidence.top.split('\n'), answer: evidence.answer.stdout.trim(), log: evidence.log.split('\n') }));
-    assert.equal(evidence.question?.agent, 'peer');
+    assert.equal(evidence.question?.agent, 'main');
     assert.ok(evidence.listed.some(question => question.id === evidence.question.id), 'alp questions lists it');
-    assert.match(evidence.top, /peer\s+waiting_user/);
+    assert.match(evidence.top, /main\s+waiting_user/);
     assert.equal(evidence.answer.status, 0, evidence.answer.stderr);
     assert.deepEqual({ outcome: evidence.resolved?.outcome, answer: evidence.resolved?.answer }, { outcome: 'answered', answer: word });
     assert.ok(evidence.final.includes(word), 'the answer reaches main');
-    assert.match(evidence.log, /peer asks the user/);
-    console.log(JSON.stringify({ passed: true, evidence: '.alp-test/human-cli-e2e.json' }));
+    assert.match(evidence.log, /main asks the user/);
+    console.log(JSON.stringify({ passed: true, evidence: file }));
   } finally {
     alp('daemon', 'stop');
     await rm(home, { recursive: true, force: true });
@@ -107,7 +130,7 @@ async function paseo() {
     console.log(JSON.stringify(evidence));
     assert.equal(requests.length, 1, 'one question prompt in Paseo');
     assert.equal(requests[0].kind, 'question');
-    assert.equal(requests[0].title, 'peer asks you');
+    assert.equal(requests[0].title, 'main asks you');
     assert.ok(final.includes(word), 'the answer reaches main');
     console.log(JSON.stringify({ passed: true, evidence: '.alp-test/human-paseo-e2e.json' }));
   } finally {
@@ -117,4 +140,4 @@ async function paseo() {
   }
 }
 
-await (mode === 'cli' ? cli() : paseo());
+await (mode === 'paseo' ? paseo() : cli());

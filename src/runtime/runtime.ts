@@ -140,6 +140,8 @@ type Session = {
 
   /** Requesting agent for a child assignment; enables alp_handoff and alp_ask. */
   parentAgent?: string;
+  /** The user wrote to this assignment, so it may ask the user too. */
+  userOpened?: boolean;
   handoff?: Handoff;
 };
 
@@ -259,12 +261,12 @@ const DISCARD_TOOL = {
 const ASK_TOOL = {
   type: 'function',
   name: 'alp_ask',
-  description: 'Ask a question and wait for the answer: your requester (default), or the user for a decision only they can make. Returns unanswered after the ask timeout.',
+  description: 'Ask a question and wait for the answer: your requester, or the user. Only main talks to the user, unless the user has written to you. Returns unanswered after the ask timeout.',
   inputSchema: {
     type: 'object',
     properties: {
       question: { type: 'string' },
-      to: { type: 'string', enum: ['parent', 'user'], description: 'parent (default for assignments) or user (the only choice for a session without a requester).' },
+      to: { type: 'string', enum: ['parent', 'user'], description: 'parent (default for assignments) or user (the default without a requester; for an assignment, only after the user has written to it).' },
       options: { type: 'array', items: { type: 'string' }, description: 'Suggested answers for the user; they may answer otherwise.' },
     },
     required: ['question'],
@@ -372,7 +374,7 @@ function nativeSessionConfig(
       ...(!parentAgent ? ['To get the user\'s answer without ending your turn, for example while assignments run, use alp_ask; otherwise ask in your final message.'] : []),
 
       ...(parentAgent
-        ? [`This session is an assignment from ${parentAgent}. If a decision is genuinely theirs, ask with alp_ask (it waits for the answer); only a decision that neither you nor ${parentAgent} can make goes to the user with alp_ask to: "user"; send information they need now with alp_send to: "parent", kind note. You cannot reach other assignments directly; ${parentAgent} relays. Before ending your turn, call alp_handoff with outcome, summary, and the evidence fields that apply (candidate, scope, verification, risks, ownership). Calling it again replaces the earlier handoff. Then end with a one-line final message.`]
+        ? [`This session is an assignment from ${parentAgent}. You do not talk to the user: ${parentAgent} does, through main. If a decision is genuinely theirs, ask with alp_ask (it waits for the answer); send information they need now with alp_send to: "parent", kind note. You cannot reach other assignments directly; ${parentAgent} relays. Before ending your turn, call alp_handoff with outcome, summary, and the evidence fields that apply (candidate, scope, verification, risks, ownership). Calling it again replaces the earlier handoff. Then end with a one-line final message.`]
         : []),
     ].join('\n\n'),
 
@@ -1153,6 +1155,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         if (assignment?.ask?.id === question.id) assignment.ask = undefined;
         session.lastActivity = Date.now();
         emit(sessionId, { type: 'question.resolved', questionId: question.id, outcome, ...(answer !== undefined ? { answer } : {}) });
+        // The requester learns what its assignment settled with the user.
+        if (outcome === 'answered' && session.parent) tellRequester(sessionId, session, `I asked the user: "${body}"\nThe user answered: "${answer}"`);
         runLog(rootId, { event: 'human.answer', questionId: question.id, sessionId, agent: question.agent, outcome, ...(answer !== undefined ? { answer } : {}), ...(reason ? { reason } : {}) });
         resolve(result ?? (outcome === 'answered'
           ? toolResult(true, { status: 'answered', from: 'user', answer })
@@ -1170,6 +1174,12 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       runLog(rootId, { event: 'human.question', questionId: question.id, sessionId, agent: question.agent, body, ...(options?.length ? { options } : {}) });
       timer = setTimeout(() => settle('timeout'), userAskTimeoutMs);
     });
+  }
+
+  /** A note from an assignment to its requester, sent by ALP so it is never forgotten. */
+  function tellRequester(sessionId: string, session: Session, body: string) {
+    if (!session.parent || !sessions.has(session.parent)) return;
+    post(session.parent, { kind: 'note', from: session.mapping.agent.name, assignment: sessionId, body: `[ALP, on behalf of ${session.mapping.agent.name}] ${body}` });
   }
 
   /** Questions to the user end with the turn or session that asked them. */
@@ -1192,6 +1202,10 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
     if (assignment?.ask || [...userQuestions.values()].some(pending => pending.question.sessionId === sessionId)) {
       return Promise.resolve(toolResult(false, { error: 'A question is already waiting for an answer' }));
+    }
+    // Only main talks to the user, unless the user has written to this assignment first.
+    if (to === 'user' && session.parent && !session.userOpened) {
+      return Promise.resolve(toolResult(false, { error: `Only main talks to the user; ask ${session.parentAgent ?? 'your requester'} with alp_ask instead` }));
     }
     if (to === 'user') return askUser(sessionId, session, assignment, args.question, args.options);
     if (!session.parent || !parent || !assignment) return Promise.resolve(toolResult(false, { error: 'This session has no requester; ask the user with to: "user"' }));
@@ -2015,9 +2029,12 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     },
 
     message(sessionId, text) {
-      openOf(sessionId);
+      const session = openOf(sessionId);
       if (typeof text !== 'string' || !text.trim() || text.length > MAIL_BODY_CHARS) throw new Error(`A message needs text of at most ${MAIL_BODY_CHARS} characters`);
+      // Writing to an assignment opens it to the user, and its requester is told.
+      if (session.parent) session.userOpened = true;
       post(sessionId, { kind: 'note', from: USER, assignment: sessionId, body: text });
+      if (session.parent) tellRequester(sessionId, session, `The user wrote to me directly: "${text}"`);
     },
 
     answer(questionId, reply) {
