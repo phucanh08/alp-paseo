@@ -48,6 +48,8 @@ export type DaemonConnection = {
   onEvent(listener: (envelope: Envelope) => void): () => void;
   onClose(listener: (error: Error) => void): () => void;
   close(): void;
+  /** True once the connection is gone; socket clients report it, in-process ones may not. */
+  readonly closed?: boolean;
 };
 
 export type DaemonServer = {
