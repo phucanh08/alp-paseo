@@ -117,6 +117,8 @@ node src/cli.js task add "Title" -p 1 --after t-91c2   # also: show | edit | clo
 node src/cli.js formula pour release --var version=0.4.0   # also: list | show; tasks export | import for beads
 node src/cli.js verify [--task t-77e0]   # run the project's verify commands; --task records the result
 node src/cli.js recall <assignment|task> "Why did you…?"   # ask a finished assignment about its work
+node src/cli.js pause [codex|claude] [--now]   # hold delegation; --now parks running assignments
+node src/cli.js resume [codex|claude]          # parked assignments continue
 node src/cli.js interrupt <session>
 ```
 
@@ -144,6 +146,8 @@ With `"verify": { "test": "npm test" }` (also `setup`, `typecheck`) in `.alp/set
 - on demand with `alp_verify` or `alp verify`.
 
 The result is recorded on the task, and an agent cannot close a task as done after a failed check without saying why. Details: [Verification gates](docs/alp/team-workflow.md#verification-gates).
+
+When a runtime hits its usage limit, ALP pauses it by itself. Assignments the limit stopped are parked instead of failed, and every open session shows a notice saying when the limit resets. Agents on the other runtime keep working. `alp resume codex` continues the parked assignments; `"limits": { "autoResume": true }` in `$ALP_HOME/settings.json` resumes after the reset instead. Details: [Pause and usage limits](docs/alp/team-workflow.md#pause-and-usage-limits).
 
 Finished assignments stay recallable for 14 days: main, or the agent that assigned one, asks it with `alp_recall` why it did something, and you ask with `alp recall <assignment|task> "question"`. ALP forks the assignment's session read-only, asks, and drops the fork; the question never changes the assignment's own session. ALP keeps the native threads of assignments for this, and deletes them after 14 days. The Paseo plugin starts the same daemon automatically.
 

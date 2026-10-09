@@ -105,7 +105,7 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
       return;
     }
     if (!record) return;
-    if (event.type === 'session.updated') save(record, { session: { ...record.session, ...event.session } });
+    if (event.type === 'session.updated') save(record, { session: { ...record.session, ...event.session, ...(event.session.parked ? {} : { parked: undefined }) } });
     else if (event.type === 'turn.started') save(record, { status: 'running', activeTurnId: event.turnId });
     else if (event.type === 'turn.ended') save(record, { status: 'idle', activeTurnId: undefined, ...(event.state === 'failed' ? { lastError: { message: event.error?.message ?? 'Turn failed' } } : {}) });
     else if (event.type === 'session.failed') save(record, { status: 'error', lastError: event.error });
@@ -358,6 +358,21 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
     async 'board.list'(_connection, { projectRoot } = {}) {
       if (typeof projectRoot !== 'string' || !path.isAbsolute(projectRoot)) throw new RpcError(-32602, 'An absolute projectRoot is required');
       return { pins: await runtime.board(projectRoot) };
+    },
+
+    /** Pauses delegation and wakes on a runtime, or everywhere (ALPD §29). */
+    'daemon.pause'(_connection, { runtime: kind, now = false, reason } = {}) {
+      try { return runtime.pause({ ...(kind === undefined ? {} : { runtime: kind }), now: now === true, ...(reason === undefined ? {} : { reason }) }); }
+      catch (error: any) { throw new RpcError(-32602, error?.message ?? String(error)); }
+    },
+
+    'daemon.resume'(_connection, { runtime: kind } = {}) {
+      try { return runtime.resume(kind === undefined ? {} : { runtime: kind }); }
+      catch (error: any) { throw new RpcError(-32602, error?.message ?? String(error)); }
+    },
+
+    'daemon.pauses'() {
+      return runtime.pauses();
     },
 
     /** Asks a finished assignment, or the last one on a task, about its work (ALPD §27). */

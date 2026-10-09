@@ -282,6 +282,10 @@ export function claudePermissions(sandbox: string, currentSandbox?: () => string
   };
 }
 
+/** Whether Claude's last rate limit report means requests are refused: rejected, with no overage to fall back on. */
+export const claudeLimited = (info?: { status: string; overageStatus?: string }) =>
+  info?.status === 'rejected' && info.overageStatus !== 'allowed' && info.overageStatus !== 'allowed_warning';
+
 /** Maps Claude Agent SDK streaming sessions to the normalized runtime protocol. */
 export class ClaudeTransport {
   private listeners = new Set<Listener>();
@@ -298,6 +302,9 @@ export class ClaudeTransport {
   private closed = false;
   private assistantText = new Map<string, string>();
   private toolCalls = new Map<string, { name: string; command: string }>();
+  /** The last rate limit Claude reported, and whether the running turn hit one. */
+  private rateLimit?: { status: string; resetsAt?: number; overageStatus?: string; rateLimitType?: string; utilization?: number };
+  private limitedTurn = false;
 
   constructor(
     private readonly command: string,
@@ -528,6 +535,12 @@ export class ClaudeTransport {
   }
 
   private handle(message: SDKMessage) {
+    if (message.type === 'rate_limit_event') {
+      this.rateLimit = message.rate_limit_info;
+      this.emit('account/rateLimits/updated', { claude: message.rate_limit_info });
+      return;
+    }
+    if (message.type === 'assistant' && message.error === 'rate_limit') this.limitedTurn = true;
     if (message.type === 'assistant' && !message.parent_tool_use_id) {
       for (const block of message.message.content as any[]) {
         if (block.type === 'text') {
@@ -590,13 +603,20 @@ export class ClaudeTransport {
     if (message.type === 'result' && this.activeTurn) {
       const turnId = this.activeTurn;
       this.activeTurn = undefined;
+      // A usage limit ends the turn with an error message or a failed result; report it as Codex does.
+      const limited = this.limitedTurn || (message.is_error && claudeLimited(this.rateLimit));
+      this.limitedTurn = false;
+      const failed = message.is_error || limited;
       this.emit('turn/completed', {
         threadId: this.threadId,
         turn: {
           id: turnId,
-          status: message.is_error ? 'failed' : 'completed',
-          ...(message.is_error
-            ? { error: { message: 'errors' in message ? message.errors.join('; ') : 'Claude turn failed' } }
+          status: failed ? 'failed' : 'completed',
+          ...(failed
+            ? { error: {
+              message: limited ? `Claude usage limit reached${this.rateLimit?.resetsAt ? `; resets ${new Date(this.rateLimit.resetsAt * 1000).toISOString()}` : ''}` : 'errors' in message && message.errors?.length ? message.errors.join('; ') : 'Claude turn failed',
+              ...(limited ? { codexErrorInfo: 'usageLimitExceeded', ...(this.rateLimit?.resetsAt ? { resetsAt: this.rateLimit.resetsAt } : {}) } : {}),
+            } }
             : {}),
         },
       });

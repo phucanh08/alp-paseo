@@ -47,6 +47,8 @@ const USAGE = `Usage:
   alp task dep <add|rm> <id> [--after ID]... [--parent ID] [--related ID]...
   alp task gate add <id> --human "question" | --timer +2h|ISO | --pr N|owner/repo#N | --run N|owner/repo#N
   alp task gate <clear|rm> <id> <gate> [-m note]
+  alp pause [codex|claude] [--now] [-m reason] | alp pause status   hold delegation; --now parks running assignments
+  alp resume [codex|claude]                  lift a pause; parked assignments continue
   alp recall <assignment|task> [--project DIR] [--json] <question>   ask a finished assignment about its work
   alp interrupt <session>`;
 
@@ -151,6 +153,7 @@ function printer(json) {
         const detail = item.detail.type === 'shell' ? item.detail.command : item.name === 'alp_delegate' ? `delegate → ${item.detail.input?.agent}` : item.name;
         line(sessionId, `  ${item.status === 'failed' ? '✗' : '✓'} ${detail}`);
       }
+      if (item.kind === 'notice') line(sessionId, `  ${item.level === 'error' ? '‼' : item.level === 'warning' ? '!' : 'ℹ'} ${item.text}`);
       if (item.kind === 'todo') {
         line(sessionId, '  tasks:');
         for (const entry of item.items) line(sessionId, `    ${entry.status === 'completed' ? '☑' : entry.status === 'in_progress' ? '◐' : '☐'} ${entry.text}`);
@@ -283,7 +286,8 @@ async function ps(args) {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { all: { type: 'boolean' } } });
   if (positionals.length) throw new UsageError();
   const client = await running();
-  const { sessions } = await client.request('session.list', { includeClosed: values.all }).finally(() => client.close());
+  const [{ sessions }, pauses] = await Promise.all([client.request('session.list', { includeClosed: values.all }), client.request('daemon.pauses')]).finally(() => client.close());
+  printPauses(pauses, false);
   if (!sessions.length) { console.log(values.all ? 'No sessions' : 'No live sessions'); return; }
   const children = new Map();
   for (const session of sessions) {
@@ -291,7 +295,7 @@ async function ps(args) {
     children.set(key, [...(children.get(key) ?? []), session]);
   }
   const print = (session, depth) => {
-    const status = session.status === 'running' || session.status === 'idle' ? (session.activeTurnId ? 'running' : session.busy ? 'waiting' : 'idle') : session.lastError?.code ?? session.status;
+    const status = session.parked ? `parked (${session.parked})` : session.status === 'running' || session.status === 'idle' ? (session.activeTurnId ? 'running' : session.busy ? 'waiting' : 'idle') : session.lastError?.code ?? session.status;
     console.log(`${'  '.repeat(depth)}${session.id}  ${session.agent}  ${session.runtime}:${session.model}  ${session.mode}  ${status}${depth ? '' : `  ${session.projectRoot}${session.title ? `  "${session.title}"` : ''}`}`);
     for (const child of children.get(session.id) ?? []) print(child, depth + 1);
   };
@@ -459,6 +463,15 @@ async function log(args) {
         break;
       case 'verify':
         text = `${entry.skipped ? '–' : entry.passed ? '✓' : '✗'} verify in the ${entry.where}${entry.taskId ? ` for ${entry.taskId}` : ''}${entry.assignmentId ? ` (${entry.assignmentId})` : ''}: ${entry.skipped ? `skipped: ${entry.skipped}` : entry.detail}`;
+        break;
+      case 'notice':
+        text = `${entry.level === 'error' ? '‼' : entry.level === 'warning' ? '!' : 'ℹ'} ${entry.text}`;
+        break;
+      case 'assignment.parked':
+        text = `⏸ ${entry.agent} ${entry.assignmentId} parked: ${entry.reason}`;
+        break;
+      case 'assignment.resumed':
+        text = `▶ ${entry.agent} ${entry.assignmentId} resumed`;
         break;
       case 'human.answer':
         text = `↳ ${entry.questionId} ${entry.outcome}${entry.answer !== undefined ? `: ${entry.answer.split('\n')[0].slice(0, 120)}` : ''}`;
@@ -764,6 +777,37 @@ function printTask(task, tasks) {
   }
 }
 
+/** Pauses and parked assignments, one line each; `always` also says when nothing is paused. */
+function printPauses({ all, runtimes, parked }, always = true) {
+  const line = (name, pause) => console.log(`⏸ ${name} paused since ${pause.since.slice(0, 16).replace('T', ' ')} by ${pause.by}: ${pause.reason}${pause.resetsAt ? `; the limit resets ${pause.resetsAt}` : ''}`);
+  if (all) line('ALP', all);
+  for (const [kind, pause] of Object.entries(runtimes)) line(kind, pause);
+  for (const entry of parked) console.log(`  parked ${entry.agent} ${entry.assignmentId} (${entry.runtime}): ${entry.reason}`);
+  if (always && !all && !Object.keys(runtimes).length) console.log('Nothing is paused');
+}
+
+/** alp pause: hold delegation and wakes on one runtime, or all; --now also parks running assignments. */
+async function pause(args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { now: { type: 'boolean' }, message: { type: 'string', short: 'm' }, json: { type: 'boolean' } } });
+  if (positionals.length > 1 || (positionals[0] && !['codex', 'claude', 'status'].includes(positionals[0]))) throw new UsageError();
+  const client = await running();
+  const state = await (positionals[0] === 'status'
+    ? client.request('daemon.pauses')
+    : client.request('daemon.pause', { ...(positionals[0] ? { runtime: positionals[0] } : {}), now: !!values.now, ...(values.message ? { reason: values.message } : {}) })).finally(() => client.close());
+  if (values.json) console.log(JSON.stringify(state));
+  else printPauses(state);
+}
+
+/** alp resume: lift a pause; parked assignments continue where they stopped. */
+async function resume(args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { json: { type: 'boolean' } } });
+  if (positionals.length > 1 || (positionals[0] && !['codex', 'claude'].includes(positionals[0]))) throw new UsageError();
+  const client = await running();
+  const state = await client.request('daemon.resume', positionals[0] ? { runtime: positionals[0] } : {}).finally(() => client.close());
+  if (values.json) console.log(JSON.stringify(state));
+  else printPauses(state);
+}
+
 /** alp verify: run the project's verify commands here, in the project root. */
 async function verify(args) {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { project: { type: 'string' }, task: { type: 'string' }, json: { type: 'boolean' } } });
@@ -809,7 +853,7 @@ async function interrupt(args) {
   console.log('Interrupted');
 }
 
-const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, verify, recall, interrupt };
+const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, verify, recall, pause, resume, interrupt };
 const [command, ...args] = process.argv.slice(2);
 try {
   if (!Object.hasOwn(commands, command)) throw new UsageError();

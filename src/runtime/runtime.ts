@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { appendFile, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -76,6 +76,12 @@ export type RuntimeOptions = {
   /** Where finished assignments' native threads are recorded for alp_recall. Omitted keeps the record in memory. */
   recallFile?: string;
 
+  /** Where pauses are kept across restarts. Omitted keeps them in memory. */
+  pauseFile?: string;
+
+  /** Resume a runtime a usage limit paused, a minute after the limit resets. Default false: the user resumes. */
+  autoResume?: boolean;
+
   /** False starts no supervisors, for hosts and tests that do not want them. Default true. */
   supervisor?: boolean;
 
@@ -122,9 +128,22 @@ export type AlpRuntime = {
   message(sessionId: string, text: string): void;
   /** The project board: live claims, then decisions and findings, oldest first. */
   board(projectRoot: string): Promise<Pin[]>;
+  /** Holds delegation and wakes on one runtime, or all; now also parks running assignments there. */
+  pause(input?: { runtime?: RuntimeKind; now?: boolean; reason?: string }): PauseState;
+  /** Lifts a pause and continues the assignments it parked. Without a runtime, lifts every pause. */
+  resume(input?: { runtime?: RuntimeKind }): PauseState;
+  /** Current pauses and parked assignments. */
+  pauses(): PauseState;
   /** The user asks a finished assignment, or the last one on a task of the project, about its work. */
   recall(target: { assignmentId?: string; taskId?: string; projectRoot?: string }, question: string): Promise<RecallAnswer>;
   shutdown(): Promise<void>;
+};
+
+export type Pause = { since: string; by: string; reason: string; resetsAt?: string };
+export type PauseState = {
+  all?: Pause;
+  runtimes: Partial<Record<RuntimeKind, Pause>>;
+  parked: Array<{ assignmentId: string; agent: string; runtime: RuntimeKind; rootId: string; reason: string; since: string }>;
 };
 
 export type RecallAnswer = { assignmentId: string; agent: string; taskId?: string; finishedAt: string; answer: string };
@@ -164,6 +183,12 @@ type Session = {
   wakes: number;
   /** Set by interrupt: pending mail waits for the next user prompt. */
   wakeBlocked: boolean;
+  /** An assignment a usage limit or a pause stopped: it waits, open, until its runtime resumes. */
+  parked?: { reason: string; since: number };
+  /** Why the running turn is being stopped, so its end parks the assignment instead of ending it. */
+  parkReason?: string;
+  /** Mail arrived while its runtime was paused; it is delivered on resume. */
+  wakeHeld?: boolean;
   /** Permission questions to the user, one at a time. */
   permissionQueue?: Promise<unknown>;
 
@@ -875,6 +900,17 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   const epoch = randomUUID();
   /** Finished assignments whose native threads alp_recall can question. */
   const recalls = createRecallBook(options.recallFile);
+  /** Pauses by runtime, or of everything; kept in pauseFile across restarts. */
+  let paused: { all?: Pause; runtimes: Partial<Record<RuntimeKind, Pause>> } = { runtimes: {} };
+  try {
+    const stored = options.pauseFile ? JSON.parse(readFileSync(options.pauseFile, 'utf8')) : undefined;
+    if (stored && typeof stored === 'object') paused = { ...(stored.all ? { all: stored.all } : {}), runtimes: stored.runtimes && typeof stored.runtimes === 'object' ? stored.runtimes : {} };
+  } catch {}
+  let pauseWrites = Promise.resolve();
+  /** The latest usage report of each runtime, and the warnings already given, by runtime and reset time. */
+  const usage = new Map<RuntimeKind, any>();
+  const warned = new Set<string>();
+  const resumeTimers = new Map<RuntimeKind, NodeJS.Timeout>();
   /** Write leases: one writing assignment per checkout across all trees, unless nested under the holder. */
   const leases = new Map<string, { assignment: string; agent: string }>();
   const worktreeRoot = options.worktreeDir ?? path.join(os.tmpdir(), 'alp-worktrees');
@@ -918,6 +954,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       ...(session.parent ? { parentId: session.parent } : {}),
       ...(session.toolCallId ? { toolCallId: session.toolCallId } : {}),
       ...(session.active ? { activeTurnId: session.active } : {}),
+      ...(session.parked ? { parked: session.parked.reason } : {}),
       busy: !!(session.active || session.pending || session.children.size || session.assignments.size || hasActiveMail(session) || reviewing(session)),
     };
   }
@@ -964,6 +1001,13 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
     if (session.role === 'supervisor' && session.parent && sessions.get(session.parent)?.reviewPending) review(session.parent);
     if (!session.parent) void showTasks(sessionId, session);
+
+    // An assignment a limit or a pause stopped waits, open, to continue instead of ending.
+    if (session.parkReason && state !== 'completed') {
+      park(sessionId, session);
+      return;
+    }
+    session.parkReason = undefined;
 
     // A requester is not done while its assignments run or mail awaits it.
     if (state === 'completed' && (session.assignments.size || hasActiveMail(session))) {
@@ -1090,6 +1134,11 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       return;
     }
 
+    if (method === 'account/rateLimits/updated') {
+      usageReport(session, params);
+      return;
+    }
+
     if (
       method === 'turn/completed' &&
       params.turn.id === session.active
@@ -1100,6 +1149,12 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
           : params.turn.status === 'interrupted'
             ? 'canceled'
             : 'failed';
+
+      // A usage limit pauses its runtime; an assignment it stopped is parked to continue later.
+      if (state === 'failed' && LIMIT_ERRORS.includes(params.turn.error?.codexErrorInfo)) {
+        if (session.parent && session.role !== 'supervisor') session.parkReason = `the ${label(session.runtimeKind)} usage limit was reached`;
+        void limitReached(session, params.turn.error);
+      }
 
       terminal(
         sessionId,
@@ -1598,6 +1653,156 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     return forgetting;
   }
 
+  const RUNTIMES: RuntimeKind[] = ['codex', 'claude'];
+  const LIMIT_ERRORS = ['usageLimitExceeded', 'rateLimitExceeded'];
+  const label = (kind: RuntimeKind) => kind === 'claude' ? 'Claude' : 'Codex';
+  const pauseOf = (kind: RuntimeKind) => paused.all ?? paused.runtimes[kind];
+  /** Whether a session may not start a turn by itself now: parked, or on a paused runtime. */
+  const held = (session: Session) => !!session.parked || !!pauseOf(session.runtimeKind);
+  const describePause = (pause: Pause, kind?: RuntimeKind) =>
+    `${kind ? label(kind) : 'ALP'} is paused (${pause.reason}${pause.by !== 'alpd' ? `, by ${pause.by}` : ''})${pause.resetsAt ? `; the limit resets ${pause.resetsAt}` : ''}`;
+
+  function pauseState(): PauseState {
+    return {
+      ...(paused.all ? { all: paused.all } : {}),
+      runtimes: { ...paused.runtimes },
+      parked: [...sessions].filter(([, session]) => session.parked && !session.closed).map(([id, session]) => ({
+        assignmentId: id, agent: session.mapping.agent.name, runtime: session.runtimeKind, rootId: rootOf(id), reason: session.parked!.reason, since: new Date(session.parked!.since).toISOString(),
+      })),
+    };
+  }
+
+  function savePauses() {
+    const file = options.pauseFile;
+    if (!file) return;
+    const body = JSON.stringify(paused, null, 2) + '\n';
+    pauseWrites = pauseWrites.then(async () => {
+      await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+      const temporary = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+      await writeFile(temporary, body, { mode: 0o600 });
+      await rename(temporary, file);
+    }).catch(() => {});
+  }
+
+  /** Tells every open root, and so the user in each viewer, something about ALP as a whole. */
+  function notice(level: 'info' | 'warning' | 'error', text: string) {
+    for (const [id, session] of sessions) {
+      if (session.parent || session.closed) continue;
+      emit(id, { type: 'item', item: { kind: 'notice', id: `notice-${randomUUID().slice(0, 8)}`, level, text } });
+      runLog(id, { event: 'notice', level, text });
+    }
+  }
+
+  function scheduleResume(kind: RuntimeKind, pause: Pause) {
+    clearTimeout(resumeTimers.get(kind));
+    resumeTimers.delete(kind);
+    if (!options.autoResume || pause.by !== 'alpd' || !pause.resetsAt) return;
+    const timer = setTimeout(() => { resumeTimers.delete(kind); if (paused.runtimes[kind] === pause) resumeRuntime(kind, 'alpd, after the limit reset'); }, Math.max(0, Date.parse(pause.resetsAt) - Date.now() + 60_000));
+    timer.unref?.();
+    resumeTimers.set(kind, timer);
+  }
+
+  function pauseRuntime(scope: RuntimeKind | 'all', pause: Pause, now = false) {
+    if (scope === 'all') paused.all = pause;
+    else { paused.runtimes[scope] = pause; scheduleResume(scope, pause); }
+    savePauses();
+    if (now) {
+      for (const [id, session] of sessions) {
+        if (!session.parent || session.closed || !session.active || session.role === 'supervisor' || (scope !== 'all' && session.runtimeKind !== scope)) continue;
+        session.parkReason = `paused by ${pause.by}`;
+        void session.runtime.request('turn/interrupt', { threadId: session.threadId, turnId: session.active }).catch(() => {});
+        runLog(rootOf(id), { event: 'assignment.parking', assignmentId: id, agent: session.mapping.agent.name, reason: session.parkReason });
+      }
+    }
+  }
+
+  function resumeRuntime(scope: RuntimeKind | 'all', by: string) {
+    if (scope === 'all') { paused = { runtimes: {} }; for (const timer of resumeTimers.values()) clearTimeout(timer); resumeTimers.clear(); }
+    else { delete paused.runtimes[scope]; clearTimeout(resumeTimers.get(scope)); resumeTimers.delete(scope); }
+    savePauses();
+    const free = RUNTIMES.filter(kind => !pauseOf(kind));
+    if (free.length) notice('info', `${scope === 'all' ? 'ALP' : label(scope)} resumed by ${by}.${pauseState().parked.length ? ' Parked assignments continue.' : ''}`);
+    for (const [id, session] of sessions) {
+      if (session.closed || pauseOf(session.runtimeKind)) continue;
+      if (session.parked) continueParked(id, session);
+      else if (session.wakeHeld) { session.wakeHeld = false; deliver(id, session); }
+    }
+  }
+
+  /** An assignment whose turn a limit or a pause ended stays open, and its requester learns why. */
+  function park(sessionId: string, session: Session) {
+    session.parked = { reason: session.parkReason!, since: Date.now() };
+    session.parkReason = undefined;
+    emit(sessionId, { type: 'session.updated', session: snapshot(sessionId, session) });
+    const parent = session.parent ? sessions.get(session.parent) : undefined;
+    const assignment = parent?.assignments.get(sessionId);
+    runLog(rootOf(sessionId), { event: 'assignment.parked', assignmentId: sessionId, agent: session.mapping.agent.name, reason: session.parked.reason });
+    if (!parent || !assignment) return;
+    emit(session.parent!, { type: 'assignment', assignment: assignmentSnapshot(assignment, 'parked') });
+    post(session.parent!, { kind: 'note', from: assignment.agent, assignment: sessionId, passive: true, body: `Parked: ${session.parked.reason}. ALP continues this assignment where it stopped when ${label(session.runtimeKind)} is resumed (the user runs alp resume). Wait for it, or start other work.` });
+  }
+
+  function continueParked(sessionId: string, session: Session) {
+    const reason = session.parked!.reason;
+    session.parked = undefined;
+    session.wakeHeld = false;
+    session.lastActivity = Date.now();
+    emit(sessionId, { type: 'session.updated', session: snapshot(sessionId, session) });
+    const parent = session.parent ? sessions.get(session.parent) : undefined;
+    const assignment = parent?.assignments.get(sessionId);
+    runLog(rootOf(sessionId), { event: 'assignment.resumed', assignmentId: sessionId, agent: session.mapping.agent.name });
+    if (assignment) emit(session.parent!, { type: 'assignment', assignment: assignmentSnapshot(assignment, 'running') });
+    void startPrompt(sessionId, {
+      clientMessageId: `alp-resume-${randomUUID()}`,
+      delivery: 'auto',
+      content: [{ type: 'text', text: `ALP resumed this assignment; it had stopped because ${reason}. Continue where you left off: your earlier work in this session and its files are intact. Finish with alp_handoff as before.` }],
+    }, 'assignment').catch(error => session.settle?.('failed', error));
+  }
+
+  /** When a limit resets, from what the runtime last reported: the latest reset of a window that is used up. */
+  async function limitReset(session: Session, error: any): Promise<string | undefined> {
+    const at = (seconds: unknown) => typeof seconds === 'number' && seconds > 0 ? new Date(seconds * 1000).toISOString() : undefined;
+    if (error?.resetsAt) return at(error.resetsAt);
+    const report = usage.get(session.runtimeKind);
+    if (session.runtimeKind === 'claude') return at(report?.claude?.resetsAt);
+    let windows = [report?.rateLimits?.primary, report?.rateLimits?.secondary].filter(Boolean);
+    if (!windows.some(window => window.usedPercent >= 100)) {
+      const context: any = await session.runtime.orchestrationContext?.().catch(() => undefined);
+      windows = (context?.usage?.limits ?? []).flatMap((limit: any) => limit.windows ?? []);
+    }
+    const resets = windows.filter(window => window.usedPercent >= 100 && window.resetsAt).map(window => window.resetsAt as number);
+    return resets.length ? at(Math.max(...resets)) : undefined;
+  }
+
+  /** A turn failed on a usage limit: pause that runtime for delegation and wakes, and tell the user. */
+  async function limitReached(session: Session, error: any) {
+    const kind = session.runtimeKind;
+    if (paused.runtimes[kind]?.by === 'alpd') return;
+    const resetsAt = await limitReset(session, error);
+    const pause: Pause = { since: new Date().toISOString(), by: 'alpd', reason: `${label(kind)} usage limit reached`, ...(resetsAt ? { resetsAt } : {}) };
+    pauseRuntime(kind, pause);
+    const other = RUNTIMES.find(candidate => candidate !== kind && !pauseOf(candidate));
+    notice('error', `${label(kind)} usage limit reached${resetsAt ? `; it resets ${resetsAt}` : ''}. ALP paused delegation to ${label(kind)} agents and parked their assignments${other ? `; ${label(other)} agents keep working` : ''}. ${options.autoResume && resetsAt ? 'ALP resumes it a minute after the reset.' : `Run alp resume ${kind} when it has reset.`}`);
+  }
+
+  /** Remembers a runtime's usage report and warns once per window when it nears its limit. */
+  function usageReport(session: Session, params: any) {
+    const kind = session.runtimeKind;
+    usage.set(kind, params);
+    const claude = params?.claude;
+    const windows = [params?.rateLimits?.primary, params?.rateLimits?.secondary].filter(Boolean);
+    const high = claude ? (claude.status === 'allowed_warning' ? { used: claude.utilization, resetsAt: claude.resetsAt } : undefined)
+      : windows.filter(window => window.usedPercent >= 90 && window.usedPercent < 100).map(window => ({ used: window.usedPercent, resetsAt: window.resetsAt }))[0];
+    if (!high) return;
+    const key = `${kind}:${high.resetsAt ?? ''}`;
+    if (warned.has(key)) return;
+    warned.add(key);
+    const used = typeof high.used === 'number' ? `${Math.round(high.used <= 1 ? high.used * 100 : high.used)}%` : 'nearly all';
+    notice('warning', `${label(kind)} has used ${used} of a usage window${high.resetsAt ? ` that resets ${new Date(high.resetsAt * 1000).toISOString()}` : ''}.`);
+  }
+
+  for (const [kind, pause] of Object.entries(paused.runtimes) as Array<[RuntimeKind, Pause]>) scheduleResume(kind, pause);
+
   /** Projects whose tasks this runtime checked for assignments an earlier alpd left behind. */
   const orphanChecks = new Map<string, Promise<void>>();
 
@@ -1844,7 +2049,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       if (session.mail.some(event => !event.deliveredTurn && !event.passive && !event.defer)) void steerMail(sessionId, session);
     } else if (!session.wakeBlocked && session.wakes < MAX_WAKES) {
       autoWake(sessionId, session);
-    } else if (session.parent && !session.wakeBlocked) {
+    } else if (session.parent && !session.wakeBlocked && !held(session)) {
       // A child never gets the user prompt that resets its wakes; report instead of waiting out the watchdog.
       session.settle?.('failed', `Wake limit (${MAX_WAKES}) reached with mail outstanding`);
     }
@@ -1875,6 +2080,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
   /** Queued behind client operations, so a wake never races a user prompt or an interrupt. */
   function autoWake(sessionId: string, session: Session) {
+    // Its runtime is paused or it is parked: the mail waits for resume.
+    if (held(session)) { session.wakeHeld = true; return; }
     const batch = takeBatch(session.mail, () => true);
     if (!batch.length) return;
     for (const event of batch) event.deliveredTurn = STARTING;
@@ -1929,7 +2136,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     return [...session.assignments.values()].map(assignment => ({
       assignmentId: assignment.id,
       agent: assignment.agent,
-      status: assignment.ask ? 'waiting_parent' : 'running',
+      status: sessions.get(assignment.id)?.parked ? 'parked' : assignment.ask ? 'waiting_parent' : 'running',
       idleMs: now - (sessions.get(assignment.id)?.lastActivity ?? assignment.startedAt),
     }));
   }
@@ -1945,6 +2152,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
           live++;
           const child = sessions.get(assignment.id);
           if (!child || assignment.ask || assignment.finished) continue;
+          // A parked assignment, or one on a paused runtime, is not stalled; its silence starts over on resume.
+          if (held(child)) { child.lastActivity = now; continue; }
           const idle = now - child.lastActivity;
           if (idle >= 2 * silentForMs) {
             void finishAssignment(parentId, parent, assignment, 'failed', `Assignment timed out: no activity for ${2 * silentForMs} ms`);
@@ -2663,6 +2872,13 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
     if (args.model !== undefined && !/^(codex|claude):[^\s]+$/.test(args.model)) return toolResult(false, { error: 'Use a runtime-prefixed model ID' });
     if (args.agent === 'oracle' && !ORACLE_MODELS.includes(args.model)) return toolResult(false, { error: `Oracle runs on ${ORACLE_MODELS.join(' or ')}; pass one as model. For two opinions, start one on each with wait: false` });
+    // A paused runtime takes no new assignments; another runtime may.
+    const childRuntime = (args.model?.split(':')[0] ?? session.runtimeKind) as RuntimeKind;
+    const hold = pauseOf(childRuntime);
+    if (hold) {
+      const other = RUNTIMES.find(kind => kind !== childRuntime && !pauseOf(kind));
+      return toolResult(false, { error: describePause(hold, paused.all ? undefined : childRuntime), next: other ? `Pass a model of ${other}: from the catalog to run it on ${label(other)}, or wait` : 'Wait until the user resumes ALP' });
+    }
     // The child's permission profile caps its mode, as resolving its session will.
     const childProfile = await profileFor(session.mapping.agent.projectRoot, options.libraryDir, args.agent).catch(() => null);
     const childMode = childProfile ? capMode(args.mode ?? session.mapping.mode, childProfile.base) : args.mode ?? session.mapping.mode;
@@ -3498,6 +3714,26 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       };
     },
 
+    pause(input = {}) {
+      const { runtime, now = false, reason } = input;
+      if (runtime !== undefined && !RUNTIMES.includes(runtime)) throw new Error('runtime must be codex or claude');
+      if (reason !== undefined && (typeof reason !== 'string' || reason.length > 500)) throw new Error('reason must be text of at most 500 characters');
+      const pause: Pause = { since: new Date().toISOString(), by: 'the user', reason: reason?.trim() || 'paused by the user' };
+      pauseRuntime(runtime ?? 'all', pause, now);
+      notice('warning', `${runtime ? label(runtime) : 'ALP'} paused by the user${reason?.trim() ? `: ${reason.trim()}` : ''}. Delegation${runtime ? ` to ${label(runtime)} agents` : ''} waits${now ? ', and running assignments park where they are' : '; running turns finish'}. alp resume continues.`);
+      return pauseState();
+    },
+
+    resume(input = {}) {
+      const { runtime } = input;
+      if (runtime !== undefined && !RUNTIMES.includes(runtime)) throw new Error('runtime must be codex or claude');
+      if (runtime && paused.all) throw new Error('All of ALP is paused; alp resume without a runtime lifts it');
+      resumeRuntime(runtime ?? 'all', 'the user');
+      return pauseState();
+    },
+
+    pauses: () => pauseState(),
+
     async recall(target, question) {
       if (typeof question !== 'string' || !question.trim() || question.length > RECALL_QUESTION_CHARS) throw new Error(`The question must be text of at most ${RECALL_QUESTION_CHARS} characters`);
       if (!target || (typeof target.assignmentId === 'string') === (typeof target.taskId === 'string')) throw new Error('Name either an assignment or a task');
@@ -3564,6 +3800,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       await runLogWrites;
       await forgetting;
       await recalls.flush();
+      for (const timer of resumeTimers.values()) clearTimeout(timer);
+      await pauseWrites;
 
       listeners.clear();
     },

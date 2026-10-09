@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir, open, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import templates from 'alp:templates';
@@ -38,6 +38,11 @@ async function detach(home: string) {
   await output.close();
 }
 
+/** Whether the user's settings let alpd resume a runtime by itself once its usage limit resets. */
+async function autoResume(home: string) {
+  try { return JSON.parse(await readFile(path.join(home, 'settings.json'), 'utf8'))?.limits?.autoResume === true; } catch { return false; }
+}
+
 async function run(home: string) {
   await mkdir(home, { recursive: true, mode: 0o700 });
   const { socket } = daemonPaths(home);
@@ -49,7 +54,7 @@ async function run(home: string) {
   // Review copies of interrupted assignments hold nothing to keep.
   const copyDir = path.join(home, 'copies');
   await reclaimCopies(copyDir).catch(() => 0);
-  const runtime = createAlpRuntime({ templates, runLogDir, worktreeDir, copyDir, boardDir: path.join(home, 'boards'), libraryDir: home, recallFile: path.join(home, 'state', 'recall.json') });
+  const runtime = createAlpRuntime({ templates, runLogDir, worktreeDir, copyDir, boardDir: path.join(home, 'boards'), libraryDir: home, recallFile: path.join(home, 'state', 'recall.json'), pauseFile: path.join(home, 'state', 'pause.json'), autoResume: await autoResume(home) });
   const store = createStore(path.join(home, 'state'));
   let stopping: Promise<void> | undefined;
   const shutdown = (code = 0) => {
