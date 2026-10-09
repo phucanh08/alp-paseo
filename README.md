@@ -115,6 +115,7 @@ node src/cli.js board [--project DIR] # the project board: claims, decisions and
 node src/cli.js tasks [ready]         # the project's tasks; ready: what nothing blocks
 node src/cli.js task add "Title" -p 1 --after t-91c2   # also: show | edit | close | reopen | dep
 node src/cli.js formula pour release --var version=0.4.0   # also: list | show; tasks export | import for beads
+node src/cli.js verify [--task t-77e0]   # run the project's verify commands; --task records the result
 node src/cli.js recall <assignment|task> "Why did you…?"   # ask a finished assignment about its work
 node src/cli.js interrupt <session>
 ```
@@ -136,6 +137,13 @@ Formulas are workflow templates, as in beads: a `<name>.formula.toml` (or `.json
 `alp tasks gates` and main's turns check the GitHub gates. `alp tasks compact` shrinks tasks closed more than 30 days ago. In Paseo, each workspace has a **Tasks** panel: you approve gates, add tasks, and accept or reopen them there. The CLI writes the files directly, so it works without alpd.
 
 `ALP_HOME` selects the daemon's directory (default `~/.alp`); `ALP_RUN_LOG_DIR` overrides where assignment logs go (default `$ALP_HOME/runs`). alpd records sessions, their timelines, and prompt receipts under `$ALP_HOME/state`, project boards under `$ALP_HOME/boards`, and its own location in `$ALP_HOME/alpd.json`. After a restart, or a crash, a root can be resumed with `send` or imported into Paseo; work that was running is marked `daemon_restarted`. A task an assignment held goes back to open at main's next turn, with the branch that kept the assignment's work, and main's task list shows it as interrupted.
+
+With `"verify": { "test": "npm test" }` (also `setup`, `typecheck`) in `.alp/settings.json`, alpd runs the project's checks itself:
+- before `alp_merge` applies a worktree change; if they fail, nothing is applied and main can fix the change with `alp_delegate { continueFrom }`;
+- in the checkout after a shared writer finishes;
+- on demand with `alp_verify` or `alp verify`.
+
+The result is recorded on the task, and an agent cannot close a task as done after a failed check without saying why. Details: [Verification gates](docs/alp/team-workflow.md#verification-gates).
 
 Finished assignments stay recallable for 14 days: main, or the agent that assigned one, asks it with `alp_recall` why it did something, and you ask with `alp recall <assignment|task> "question"`. ALP forks the assignment's session read-only, asks, and drops the fork; the question never changes the assignment's own session. ALP keeps the native threads of assignments for this, and deletes them after 14 days. The Paseo plugin starts the same daemon automatically.
 

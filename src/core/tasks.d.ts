@@ -21,10 +21,12 @@ export type Task = {
   gates: TaskGate[];
   assignee: { agent: string; session?: string; assignment?: string; pid?: number; epoch?: string; since: string } | null;
   handoff: Record<string, unknown> | null;
+  /** The last run of the project's verify commands for this task. */
+  verified: TaskVerification | null;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
-  closed: { at: string; by: string; reason: CloseReason; summary?: string } | null;
+  closed: { at: string; by: string; reason: CloseReason; summary?: string; unverified?: string } | null;
   log: TaskLogEntry[];
   compacted?: { at: string; by: string; chars: number };
   /** Where an imported task came from. */
@@ -62,7 +64,7 @@ export type TaskInput = {
 };
 
 export type TaskLinks = { blockedBy?: string[]; related?: string[]; parent?: string };
-export type TaskSummary = Pick<Task, 'id' | 'title' | 'type' | 'priority' | 'status'> & { labels?: string[]; parent?: string; blockedBy?: string[]; gates?: string[]; assignee?: string };
+export type TaskSummary = Pick<Task, 'id' | 'title' | 'type' | 'priority' | 'status'> & { labels?: string[]; parent?: string; blockedBy?: string[]; gates?: string[]; assignee?: string; verified?: 'passed' | 'failed' | 'skipped' };
 type WriteOptions = { ifRev?: number };
 
 export const TASKS_DIR: string;
@@ -91,7 +93,9 @@ export function createTask(projectRoot: string, input: TaskInput & { title: stri
 export function updateTask(projectRoot: string, id: string, input: TaskInput & { note?: string }, by: string, options?: WriteOptions): Promise<Task>;
 export function linkTask(projectRoot: string, id: string, change: { add?: TaskLinks; remove?: TaskLinks }, by: string, options?: WriteOptions): Promise<Task>;
 export function startTask(projectRoot: string, id: string, assignee: { agent: string; session?: string; assignment?: string; pid?: number; epoch?: string }, by: string, options?: WriteOptions): Promise<Task>;
-export function closeTask(projectRoot: string, id: string, close: { reason?: CloseReason; summary?: string }, by: string, options?: WriteOptions): Promise<Task>;
+export function closeTask(projectRoot: string, id: string, close: { reason?: CloseReason; summary?: string; unverified?: string }, by: string, options?: WriteOptions): Promise<Task>;
+export function verificationFailed(task: Task): boolean;
+export function recordVerification(projectRoot: string, id: string, verification: { passed: boolean; where?: string; commands?: Array<{ step: string; command: string; exitCode: number; ms: number; output?: string; timedOut?: boolean }>; skipped?: string }, by: string): Promise<Task>;
 export function reopenTask(projectRoot: string, id: string, reopen: { note?: string }, by: string, options?: WriteOptions): Promise<Task>;
 export function submitTask(projectRoot: string, id: string, submit: { assignment: string; handoff: { outcome: string; summary: string } & Record<string, unknown>; agent: string }, by: string): Promise<Task>;
 export function releaseOrphans(projectRoot: string, isOrphan: (assignee: { agent: string; assignment: string; pid?: number; epoch?: string }) => boolean, describe: (assignee: { agent: string; assignment: string }) => Promise<string | undefined>, by: string): Promise<Task[]>;
@@ -114,3 +118,5 @@ export type TaskBatch = {
   link(task: Task, kind: 'blockedBy' | 'parent' | 'discoveredFrom' | 'related', other: string): string | undefined;
 };
 export function batch<T>(projectRoot: string, work: (batch: TaskBatch) => T | Promise<T>, options?: { dryRun?: boolean }): Promise<T>;
+
+export type TaskVerification = { at: string; by: string; passed: boolean; where?: string; commands: Array<{ step: string; command: string; exitCode: number; ms: number; output?: string; timedOut?: boolean }>; skipped?: string };
