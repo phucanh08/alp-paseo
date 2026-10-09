@@ -37,6 +37,7 @@ export const toolShapes: Record<string, Record<string, z.ZodType>> = {
     mode: z.enum(['read-only', 'workspace-write', 'full-access']).optional(),
     isolation: z.enum(['shared', 'worktree']).optional(),
     wait: z.boolean().optional(),
+    etaMinutes: z.number().int().min(1).max(1440).optional(),
     taskId: z.string().min(1).optional(),
     continueFrom: z.string().min(1).optional(),
   },

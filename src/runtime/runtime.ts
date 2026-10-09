@@ -58,6 +58,8 @@ export type RuntimeOptions = {
 
   /** An assignment with no activity this long is reported stalled; twice this long, it fails. */
   silentForMs?: number;
+  /** How often main gets a check-in on its running assignments. Default 10 minutes; 0 turns it off. */
+  checkInMs?: number;
   /** How long alp_ask waits for the requester before returning unanswered. */
   askTimeoutMs?: number;
   /** How long alp_ask waits for the user before returning unanswered. Default 30 minutes. */
@@ -206,8 +208,10 @@ type Session = {
   mail: MailEvent[];
   waiters: Waiter[];
   lastActivity: number;
-  /** Auto-wakes since the last user prompt; capped to stop runaway loops. */
+  /** Auto-wakes since the last user prompt; capped to stop runaway loops. Check-ins do not count. */
   wakes: number;
+  /** When it last got a check-in, or when its assignments started running. */
+  checkInAt?: number;
   /** Set by interrupt: pending mail waits for the next user prompt. */
   wakeBlocked: boolean;
   /** An assignment a usage limit or a pause stopped: it waits, open, until its runtime resumes. prompt is what continues it. */
@@ -283,16 +287,27 @@ type Assignment = {
   warned: boolean;
   finished: boolean;
   rootId: string;
+  /** When the requester expected it done (alp_delegate etaMinutes); a check-in reports passing it, once. */
+  eta?: number;
+  overdue?: boolean;
+  /** The last note it sent its requester, for check-ins. */
+  lastNote?: string;
   ask?: { id: string; resolve: (result: unknown) => void };
 };
 
+/** 'user': the user wrote to the waiting session, which answers before it waits again. */
 type Waiter = {
   accept: (event: MailEvent) => boolean;
-  resolve: (events: MailEvent[] | null) => void;
+  resolve: (events: MailEvent[] | null | 'user') => void;
   timer?: NodeJS.Timeout;
 };
 
 const MAX_WAKES = 8;
+
+/** What a waiting session hears when the user wrote to it. */
+const USER_WROTE = 'The user just wrote to you; their message follows. Answer them first in a short reply, and steer an assignment with alp_send when their words change its brief. Your assignments keep running: then alp_wait again, or end your turn and ALP wakes you with their results.';
+/** What a waiting session hears with a check-in. */
+const CHECKED_IN = 'A check-in, not a result: the assignment keeps running. Act on the check-in, then alp_wait again or end your turn.';
 /** A session's native process is restarted at most RESTART_LIMIT times within RESTART_WINDOW_MS unless it makes progress meanwhile. */
 const RESTART_LIMIT = 3;
 const RESTART_WINDOW_MS = 10 * 60_000;
@@ -967,6 +982,15 @@ function nativeSessionConfig(
 
       ...(!parentAgent ? ['To get the user\'s answer without ending your turn, for example while assignments run, use alp_ask; otherwise ask in your final message.'] : []),
 
+      ...(!parentAgent && mapping.agent.name === mainOf(mapping)
+        ? [
+            'Unclear requests: when a request leaves open what to build, how far to go or how to judge it done, in ways that change the work, ask once before you plan or delegate. Ask two to four short questions together, each with concrete options and your recommended default, and offer to decide with those defaults. Use alp_ask with options while work runs; otherwise ask in your final message. Do not ask what you can find out yourself, and do not question clear requests. When the user lets you decide, state your choices in one line and go on.',
+            ...(targets.length
+              ? ['Stay reachable while others work. Before work that takes more than a few minutes, tell the user in one line what you start, who does it, and when to expect it. Delegate such work with wait: false and etaMinutes, then alp_wait or end your turn; ALP wakes you with results. When the user writes while you wait, ALP ends the wait early: answer them first in a short reply, steer the assignment their words change, then wait again. While assignments run, ALP sends you a check-in about every ten minutes, and when one passes its ETA: tell the user in one or two lines how the work is going, and act on work that is late or silent.']
+              : []),
+          ]
+        : []),
+
       ...(parentAgent
         ? [`This session is an assignment from ${parentAgent}. You do not talk to the user: ${parentAgent} does, through main. If a decision is genuinely theirs, ask with alp_ask (it waits for the answer); send information they need now with alp_send to: "parent", kind note. You cannot reach other assignments directly; ${parentAgent} relays. Before ending your turn, call alp_handoff with outcome, summary, and the evidence fields that apply (candidate, scope, verification, risks, ownership). Calling it again replaces the earlier handoff. Then end with a one-line final message.`]
         : []),
@@ -1014,6 +1038,7 @@ function nativeSessionConfig(
                 isolation: { type: 'string', enum: ['shared', 'worktree'], description: 'Default shared: your checkout. worktree: a writing peer works in its own git worktree, so it can run beside other peers; apply its change with alp_merge.' },
                 continueFrom: { type: 'string', description: 'A finished worktree assignment you have not merged or discarded: the new assignment works in a worktree that starts from its change, for example to fix what verification found. Implies isolation worktree.' },
                 wait: { type: 'boolean', description: 'Default true: wait for the result or the first question. false: return the assignmentId immediately.' },
+                etaMinutes: { type: 'integer', minimum: 1, maximum: 1440, description: 'Minutes you expect it to take. When it runs past them, ALP sends you a check-in.' },
                 ...(!parentAgent && mapping.agent.name === mainOf(mapping)
                   ? { taskId: { type: 'string', description: 'For lead or peer: the ready task this assignment takes. It starts the task, claims its paths for a writing assignment, and the handoff moves it to review for you to accept.' } }
                   : {}),
@@ -1484,6 +1509,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   }
 
   const silentForMs = options.silentForMs ?? 600_000;
+  const checkInMs = options.checkInMs ?? 600_000;
   const askTimeoutMs = options.askTimeoutMs ?? 900_000;
   const userAskTimeoutMs = options.userAskTimeoutMs ?? 1_800_000;
   /** Project boards by project root, loaded from boardDir on first use. */
@@ -2350,6 +2376,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
   function post(sessionId: string, event: Omit<MailEvent, 'id'>) {
     const mail: MailEvent = { id: `#${++mailSequence}`, ...event };
+    const sender = event.kind === 'note' ? sessions.get(sessionId)?.assignments.get(event.assignment) : undefined;
+    if (sender && event.body) sender.lastNote = clip(event.body, 240);
     const { result: _result, ...logged } = publicEvent(mail);
     runLog(rootOf(sessionId), { event: 'mail', to: sessionId, ...logged });
     const session = sessions.get(sessionId);
@@ -2426,7 +2454,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         release();
         return deliver(sessionId, session);
       }
-      session.wakes++;
+      if (!batch.every(event => event.kind === 'checkin')) session.wakes++;
       const id = `alp-wake-${randomUUID()}`;
       try {
         await startPrompt(sessionId, { clientMessageId: id, delivery: 'auto', content: [{ type: 'text', text: renderMail(batch, session.parentAgent) }] }, 'wake', batch);
@@ -2442,13 +2470,15 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
    * Resolves with delivered mail, [] on timeout, or null when the turn ends.
    * A waiting delegate goes first so a concurrent catch-all alp_wait cannot take its result.
    */
-  function waitFor(session: Session, accept: (event: MailEvent) => boolean, timeoutMs?: number, first = false) {
+  function waitFor(session: Session, wanted: (event: MailEvent) => boolean, timeoutMs?: number, first = false) {
+    // A check-in ends any wait: it is how a long wait hears that time passed.
+    const accept = (event: MailEvent) => event.kind === 'checkin' || wanted(event);
     const ready = takeBatch(session.mail, event => event.kind !== 'board' && !event.defer && accept(event));
     if (ready.length) {
       for (const event of ready) event.deliveredTurn = session.active;
-      return Promise.resolve<MailEvent[] | null>(ready);
+      return Promise.resolve<MailEvent[] | null | 'user'>(ready);
     }
-    return new Promise<MailEvent[] | null>(resolve => {
+    return new Promise<MailEvent[] | null | 'user'>(resolve => {
       const waiter: Waiter = { accept, resolve };
       if (timeoutMs !== undefined) {
         waiter.timer = setTimeout(() => {
@@ -2493,13 +2523,53 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
             post(parentId, { kind: 'stalled', from: assignment.agent, assignment: assignment.id, passive: true, body: `No activity for ${Math.round(idle / 1000)} s; the assignment fails after ${Math.round(2 * silentForMs / 1000)} s without activity.` });
           }
         }
+        checkIn(parentId, parent, now);
       }
       if (!live) {
         clearInterval(watchdog);
         watchdog = undefined;
       }
-    }, Math.max(5, Math.min(silentForMs / 4, 30_000)));
+    }, Math.max(5, Math.min(silentForMs / 4, checkInMs ? checkInMs / 4 : 30_000, 30_000)));
     watchdog.unref?.();
+  }
+
+  /**
+   * Main hears how its running assignments are doing every checkInMs, so it can tell
+   * the user; any requester hears once when an assignment passes its ETA.
+   */
+  function checkIn(parentId: string, parent: Session, now: number) {
+    const live = [...parent.assignments.values()].filter(assignment => !assignment.finished);
+    if (!live.length || parent.closed) { parent.checkInAt = undefined; return; }
+    parent.checkInAt ??= now;
+    if (held(parent)) return;
+    const late = live.filter(assignment => assignment.eta !== undefined && now >= assignment.eta && !assignment.overdue);
+    const userFacing = !parent.parent && parent.mapping.agent.name === mainOf(parent.mapping);
+    if (!late.length && !(userFacing && checkInMs > 0 && now - parent.checkInAt >= checkInMs)) return;
+    for (const assignment of late) assignment.overdue = true;
+    parent.checkInAt = now;
+    const span = (ms: number) => ms < 90_000 ? `${Math.max(1, Math.round(ms / 1000))} s` : `${Math.round(ms / 60_000)} min`;
+    const lines = live.map(assignment => {
+      const child = sessions.get(assignment.id);
+      const parts = [
+        `${assignment.agent} (${assignment.id}${assignment.taskId ? `, task ${assignment.taskId}` : ''}): running ${span(now - assignment.startedAt)}`,
+        assignment.ask ? 'waiting for your answer' : child && held(child) ? 'paused' : `last activity ${span(now - (child?.lastActivity ?? assignment.startedAt))} ago`,
+        ...(assignment.eta !== undefined ? [now >= assignment.eta ? `past its ETA by ${span(now - assignment.eta)}` : `ETA in ${span(assignment.eta - now)}`] : []),
+        ...(assignment.lastNote ? [`last note: ${assignment.lastNote}`] : []),
+      ];
+      return `- ${parts.join('; ')}`;
+    });
+    const next = userFacing
+      ? 'Tell the user in one or two lines how the work is going, unless you told them moments ago and nothing changed. Act on work past its ETA or long silent: ask it with alp_send, steer it, or tell the user. Then keep waiting or end your turn; ALP wakes you with results.'
+      : 'Act on work past its ETA: ask it with alp_send, steer it, or tell your requester. Then keep waiting.';
+    post(parentId, { kind: 'checkin', from: 'alp', assignment: '', body: [`${live.length} ${live.length === 1 ? 'assignment' : 'assignments'} still running${late.length ? `; ${late.map(assignment => assignment.agent).join(', ')} past the ETA you gave` : ''}:`, ...lines, next].join('\n') });
+  }
+
+  /** The user wrote to a waiting session: its waits return so it answers them now. */
+  function releaseWaiters(session: Session) {
+    for (const waiter of session.waiters.splice(0)) {
+      clearTimeout(waiter.timer);
+      waiter.resolve('user');
+    }
   }
 
   const assignmentSnapshot = (assignment: Assignment, status: string): AssignmentSnapshot => ({
@@ -2907,6 +2977,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     const accept = (event: MailEvent) => !ids || ids.has(event.assignment);
     const pending = [...session.assignments.keys()].some(id => !ids || ids.has(id)) || takeBatch(session.mail, event => event.kind !== 'board' && !event.defer && accept(event)).length > 0;
     const events = pending ? await waitFor(session, accept, Math.min(args.timeoutMs ?? 300_000, 900_000)) : [];
+    if (events === 'user') return toolResult(true, { events: [], userMessage: true, running: running(session), next: USER_WROTE });
     if (!events) return toolResult(false, { error: 'Turn ended' });
     return toolResult(true, { events: events.map(publicEvent), running: running(session) });
   }
@@ -3217,7 +3288,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       typeof args !== 'object' ||
       Array.isArray(args) ||
       Object.keys(args).some(
-        (key) => !['agent', 'task', 'mode', 'model', 'thinking', 'modelReason', 'wait', 'isolation', 'taskId', 'continueFrom'].includes(key),
+        (key) => !['agent', 'task', 'mode', 'model', 'thinking', 'modelReason', 'wait', 'isolation', 'taskId', 'continueFrom', 'etaMinutes'].includes(key),
       ) ||
       !targets.includes(args.agent) ||
       typeof args.task !== 'string' ||
@@ -3228,6 +3299,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         !modes.some(mode => mode.id === args.mode)
       ) ||
       (args.wait !== undefined && typeof args.wait !== 'boolean') ||
+      (args.etaMinutes !== undefined && (!Number.isSafeInteger(args.etaMinutes) || args.etaMinutes < 1 || args.etaMinutes > 1440)) ||
       (args.isolation !== undefined && !['shared', 'worktree'].includes(args.isolation))
     ) {
       return toolResult(false, {
@@ -3329,7 +3401,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     if (peer) root.peerCount++;
 
     const childId = `alp-child-${randomUUID()}`;
-    const assignment: Assignment = { id: childId, agent: args.agent, mode: childMode, isolation, rootId, startedAt: Date.now(), warned: false, finished: false };
+    const startedAt = Date.now();
+    const assignment: Assignment = { id: childId, agent: args.agent, mode: childMode, isolation, rootId, startedAt, warned: false, finished: false, ...(args.etaMinutes ? { eta: startedAt + args.etaMinutes * 60_000 } : {}) };
     if (sharedWriter && !holder) {
       assignment.lease = checkout;
       leases.set(checkout, { assignment: childId, agent: args.agent });
@@ -3476,7 +3549,10 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
 
     // Waiting returns the result, or the child's first question so it can be answered.
+    // The user's words and check-ins end the wait early; the assignment keeps running.
     const events = await waitFor(session, event => event.assignment === childId && (event.kind === 'result' || event.kind === 'question'), undefined, true);
+
+    if (events === 'user') return toolResult(true, { assignmentId: childId, agent: args.agent, status: 'running', userMessage: true, next: USER_WROTE });
 
     if (!events) {
       return toolResult(false, {
@@ -3487,7 +3563,9 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       });
     }
 
-    const [event] = events;
+    // A result that came with a check-in makes the check-in moot.
+    const event = events.find(candidate => candidate.kind === 'result') ?? events.find(candidate => candidate.kind === 'question');
+    if (!event) return toolResult(true, { assignmentId: childId, agent: args.agent, status: 'running', events: events.map(publicEvent), next: CHECKED_IN });
     if (event.kind === 'result') return toolResult(event.result!.status === 'completed', { ...event.result, ...capped });
     return toolResult(true, {
       assignmentId: childId,
@@ -4178,6 +4256,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         },
       });
       if (session.supervisor && origin === 'user') session.journal.push(`user ${prompt.delivery === 'steer' ? 'steered' : 'asked'} ${session.mapping.agent.name}: ${clip(text, 1500)}`);
+      // The steer reaches the model once its waiting tool returns; return it now, not when the work ends.
+      if (prompt.delivery === 'steer' && origin === 'user' && !session.parent) releaseWaiters(session);
 
       emit(sessionId, {
         type: 'prompt.accepted',

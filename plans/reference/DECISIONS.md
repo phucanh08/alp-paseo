@@ -218,3 +218,11 @@ Decided by the user on 2026-10-09. The plan is in [phase 13](../phases/13-settin
 - A Paseo settings screen edits the library, and a workspace panel edits a project's overrides.
 - Later: the mains of different teams work together ([phase 14](../phases/14-team-of-teams.md)).
 
+## D24 — Main stays reachable and asks about unclear requests
+
+Decided by the user on 2026-10-09, after main went quiet for about 28 minutes while
+lead worked and did not ask about a vague request.
+
+- A message from the user ends main's wait in `alp_delegate` or `alp_wait` at once. Main answers, then waits again; assignments keep running.
+- While main's assignments run, ALP sends main a check-in about every ten minutes, and when an assignment passes the ETA main gave. Main tells the user how the work is going. Check-ins do not use up wakes.
+- Main asks once about a request that is open in ways that change the work: two to four questions with options and a recommended default, and the offer to decide with those defaults. Clear requests are not questioned.

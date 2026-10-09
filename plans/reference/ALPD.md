@@ -1628,3 +1628,33 @@ Goal: the user found the settings screen and the Tasks panel hard to use. The se
 - `test/settings-screen.test.js` checks the aside's groups and order, the breadcrumb and source tabs, the overview rows and actions in both scopes, the Menu button when compact, and each editor tab for agents, teams, hooks, providers and a new MCP server.
 - `test/panel.test.js` checks the grouped list and its order, filters and search, `age`, the detail alone and beside the list, the board columns without epics, and the epics view.
 - Both screens were looked at in an isolated Paseo 0.11.1 (web client against a daemon with its own home and `ALP_HOME`).
+
+## 48. Main stays reachable as built (2026-10-09)
+
+Goal (D24): the user reaches main while its assignments run, hears how the work is going, and is asked about requests that are unclear.
+
+**Evidence of the problem.** In the user's `tools` session on 2026-10-09, main delegated to lead and sat in `alp_wait` from 14:49:59. Two messages from the user at 14:55 and 14:56 were steered into the turn. Codex and Claude show a steer only after the running tool call returns, so main answered 28 minutes later. Main had also delegated the first, open-ended request ("a web developer tools site") without asking anything.
+
+- **The user's words end waits.** `startPrompt`, after a user steer of a root session, calls `releaseWaiters`. Each waiting `alp_wait` or `alp_delegate` call resolves with `'user'`.
+  - `alp_wait` returns `{ events: [], userMessage: true, running, next }`.
+  - A waiting `alp_delegate` returns `{ assignmentId, status: 'running', userMessage: true, next }`.
+  - `next` tells main to answer the user first, steer what the user's words change, then wait again. Mail stays queued for the next wait.
+- **Check-ins.** The watchdog calls `checkIn` for every requester with live assignments.
+  - It posts mail of the new kind `checkin`, from `alp`. For the user-facing main, it posts every `checkInMs` (runtime option; default 10 minutes; 0 turns it off). For any requester, it posts once when an assignment passes its ETA.
+  - The body lists each live assignment: agent, id, task, running time, last activity (or waiting for an answer, or paused), ETA, and the last note it sent (`Assignment.lastNote`). The closing line tells main to update the user in one or two lines and act on late or silent work.
+  - `waitFor` accepts check-ins in every wait. A waiting `alp_delegate` that gets only a check-in returns `status: 'running'` with the events and `next`. A result in the same batch wins.
+  - Check-ins are not passive, so they steer a running turn or wake an idle one. A wake whose mail is only check-ins does not count toward `MAX_WAKES`.
+  - A held (parked or paused) requester gets none. ETAs are not kept across an alpd restart.
+- **ETA.** `alp_delegate` takes `etaMinutes`, an integer from 1 to 1440, in the Codex and Claude schemas. It sets `Assignment.eta`.
+- **Instructions.** The user-facing main gets two paragraphs, in the runtime and in `templates/agents/main/AGENT.md`:
+  - Unclear requests: ask once, two to four questions with options and a recommended default, and the offer to decide with them. Use `alp_ask` with options while work runs.
+  - Staying reachable: announce work that takes more than a few minutes, with who does it and an ETA. Delegate it with `wait: false` and `etaMinutes`. Answer the user first when a wait ends early. Report on check-ins.
+
+**Evidence.**
+- `test/reachable.test.js` checks:
+  - a user steer ends a waiting `alp_delegate` and `alp_wait`, and the result is collected afterwards;
+  - ten check-in wakes of an idle main, more than `MAX_WAKES`, each with running time, last activity, ETA and last note, then the result still wakes main;
+  - an ETA passed under a shifted clock ends a waiting delegate with one check-in, and the next wait gets the result;
+  - invalid `etaMinutes` values;
+  - main's instructions and schema.
+- `test/team.test.js`: user steering now ends the parent's wait, and `alp_wait` collects the lead's result.
