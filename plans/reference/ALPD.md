@@ -725,3 +725,50 @@ The CLI adds `alp permissions [--json]` and `alp permissions check <agent> "<com
   - The next Codex reviewer ran `npm test` in its sandbox, failed on the write, and never asked to escalate. Main did not know the profile capped the reviewer at read-only, so its brief forbade retries.
   - Since then, a coordinator's instructions list its targets' profiles (`targetNote`), and `alp_delegate` reports `mode` and `modeNote` when a profile caps the child. Codex sessions are told to request escalation for allowed commands from the start.
   - Rerun with a fresh ALP home: the Codex reviewer (`gpt-6.1-sol`) asked to run `/bin/zsh -lc 'npm test'` outside the sandbox. ALP accepted it under the allow rule (logged), and the test wrote its file. The supervisor found the turn sound.
+
+## 25. Asking the user for permissions as built, step 2 (2026-10-09)
+
+Goal: an agent that needs more than its profile allows asks the user instead of failing, and the user can allow it for good (D19).
+
+**Probe** (Claude Agent SDK, 2026-10-09):
+- `settings.permissions.ask` rules make Claude call `canUseTool` in `default`, `acceptEdits` and `bypassPermissions` alike, with `decisionReasonType: 'rule'`.
+- Other calls carry `suggestions`, Claude's proposed rule, for example `{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm test *' }], behavior: 'allow' }`. Claude now writes prefixes as `npm test *`, and `covers` treats `cmd *` like `cmd:*`.
+
+**Profiles.**
+- A profile also takes `ask` rules and `beyondMode: 'refuse' | 'ask'`; the default is `refuse`. `profileFor` returns both.
+- `commandDecision` returns `ask` when no deny rule covers the command and an ask rule covers any part. A line that cannot be split is `deny` when deny rules exist, and `ask` when only ask rules do.
+- `addAllowRule(projectRoot, home, profile, rule)` validates the rule and adds it to the profile's `allow`. It writes the first settings file that defines the profile, the project's before the user's, through a temporary file.
+
+**Claude.**
+- `claudePermissions` puts ask rules into the query's `settings` (merged with `ultracode`).
+- `canUseTool` asks ALP through the transport's request handler (`item/permission/request`) in two cases:
+  - Claude reports an ask rule.
+  - The session is read-only, the tool is not a reader, and the profile has `beyondMode: 'ask'`.
+- For the second case it offers an always rule: Claude's suggestion, else `Bash(<command>)` or `<Tool>(<file_path>)`. An approved always returns `updatedPermissions` with that rule for the session.
+
+**Codex.**
+- `codexApproval` also chooses `on-request` for Bash ask rules or `beyondMode: 'ask'` in a sandboxed session, and `untrusted` for Bash ask rules with full access.
+- `approve` asks the user for an ask rule, or for an uncovered request when the profile asks beyond its mode and the session is not full access. Its always rule is `Bash(<proposedExecpolicyAmendment> *)`, else the exact command.
+
+**Asking.**
+- `askPermission` queues one question per session. Before asking, it checks the profile again, so a command another question just allowed always is accepted without asking.
+- It puts the question to the user with `askUser`:
+  - The question names the agent, what it wants, and why it is asked.
+  - The options are Allow once, Always allow and Deny; for ask rules, only Allow once and Deny.
+  - The assignment's watchdog pauses while the question is open.
+- Always allow writes the rule with `addAllowRule` and adds it to the in-memory profile of every open session of that project with the same profile.
+- Allow once, or an approving word, allows the action. Anything else refuses it, and an unexpected answer is passed on as the reason. A timeout or dismissal also refuses.
+- Each answer is logged as a `permission` event with `asked: true` and `always` when a rule was added.
+- Coordinators' target notes and the session's own permission note mention ask rules and `beyondMode`. `alp permissions` shows them, and `check` can answer `ask`.
+
+**Evidence.**
+- `test/permissions.test.js` covers:
+  - ask and `beyondMode` validation, and precedence
+  - Claude's `canUseTool` for ask rules and beyond-mode requests, with suggestions and session rules
+  - a Codex reviewer: always allow writing `Bash(npm install *)` to the project's settings and stopping later questions; an ask rule offering no always and declining on Deny; queued questions; another answer refusing; a Claude request through the same runtime path
+  - `addAllowRule` writing to the user's file when only the user defines the profile
+  - the CLI
+- Live on 2026-10-09, with `reviewer` on a read-only profile with `beyondMode: 'ask'` and no rules:
+  - A Claude reviewer's compound command containing `npm test` raised a question naming it, with Always allow offering `Bash(npm test *)`. Answering Always allow wrote that rule to `.alp/settings.json`, and the command ran.
+  - In the next tree, a Codex reviewer's `npm test` was accepted by that rule without a question. Its `npm run lint` raised a question carrying Codex's own reason; Allow once ran it outside the sandbox and the script wrote its marker.
+  - The supervisor had main record a lesson: warn the user before delegating work that will raise a permission prompt.

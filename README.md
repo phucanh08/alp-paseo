@@ -84,7 +84,7 @@ For example, select Claude Code and one of its model aliases in `.alp/settings.j
 
 The Paseo model picker shows only the two profiles, Phở and Cafe; a session's model and effort follow from the profile and are not chosen in Paseo. `runtime.model` in `.alp/settings.json`, or `--model` and `--thinking` on `alp run`, still override them. Those take runtime-prefixed IDs such as `codex:gpt-6.1-sol` or `claude:claude-opus-5-5`, or any native model name the installed Codex or Claude Code accepts.
 
-`permissions` in `.alp/settings.json` (and in `$ALP_HOME/settings.json`) gives agents permission profiles with Claude Code-style rules. A profile caps an agent's mode, lets it run commands beyond that mode, or refuses them in any mode. For example, a read-only reviewer may run the tests:
+`permissions` in `.alp/settings.json` (and in `$ALP_HOME/settings.json`) gives agents permission profiles with Claude Code-style rules. A profile caps an agent's mode, lets it run commands beyond that mode, asks you before others (`ask`, or `"beyondMode": "ask"` for anything the mode refuses), or refuses them in any mode. You answer Allow once, Always allow (written to the profile) or Deny, in Paseo or with `alp answer`. For example, a read-only reviewer may run the tests:
 
 ```json
 "permissions": {

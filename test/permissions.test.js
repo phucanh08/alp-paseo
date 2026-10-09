@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initProject } from '../src/core/init.js';
-import { commandDecision, parseRule, profileFor, simpleCommands, unwrapShell, validatePermissions } from '../src/core/permissions.js';
+import { addAllowRule, commandDecision, parseRule, profileFor, simpleCommands, unwrapShell, validatePermissions } from '../src/core/permissions.js';
 import { claudePermissions, createAlpRuntime, resolveSession } from '../dist/runtime/index.js';
 
 const CLI = fileURLToPath(new URL('../src/cli.js', import.meta.url));
@@ -37,11 +37,12 @@ test('rules use Claude Code syntax and settings are checked', () => {
   assert.throws(check([]), /permissions must be an object/);
   assert.throws(check({ rules: {} }), /unsupported permissions field 'rules'/);
   assert.throws(check({ profiles: { r: { base: 'admin' } } }), /permissions\.profiles\.r\.base must be read-only, workspace-write, full-access/);
-  assert.throws(check({ profiles: { r: { ask: [] } } }), /unsupported field 'ask'/);
+  assert.throws(check({ profiles: { r: { mode: 'x' } } }), /unsupported field 'mode'/);
+  assert.throws(check({ profiles: { r: { beyondMode: 'maybe' } } }), /permissions\.profiles\.r\.beyondMode must be refuse or ask/);
   assert.throws(check({ profiles: { r: { allow: ['npm test'] } } }), /permissions\.profiles\.r\.allow: "npm test" is not Tool/);
   assert.throws(check({ agents: { reviewer: 3 } }), /permissions\.agents\.reviewer must name a profile/);
   assert.deepEqual(check({ profiles: { r: { base: 'read-only', allow: [' Bash(npm test:*) '] } }, agents: { reviewer: 'r' } })(),
-    { profiles: { r: { base: 'read-only', allow: ['Bash(npm test:*)'], deny: [] } }, agents: { reviewer: 'r' } });
+    { profiles: { r: { base: 'read-only', allow: ['Bash(npm test:*)'], ask: [], deny: [] } }, agents: { reviewer: 'r' } });
 });
 
 test('a command is allowed only when allow rules cover every part of it, and denied when a deny rule covers any', () => {
@@ -56,6 +57,11 @@ test('a command is allowed only when allow rules cover every part of it, and den
   for (const [command, expected] of cases) assert.equal(commandDecision(profile, command), expected, command);
   assert.equal(commandDecision({ allow: ['Bash(npm test:*)'], deny: [] }, 'echo `id`'), undefined);
   assert.equal(commandDecision({ allow: [], deny: ['Bash'] }, 'ls'), 'deny');
+  // Deny wins over ask, and ask over allow; `npm test *` is Claude's newer prefix form.
+  const asking = { allow: ['Bash(git *)'], ask: ['Bash(git push *)'], deny: ['Bash(git push --force *)'] };
+  assert.deepEqual(['git status', 'git', 'git push origin', 'git push --force origin', 'echo $(x)'].map(command => commandDecision(asking, command)), ['allow', 'allow', 'ask', 'deny', 'deny']);
+  // A line ALP cannot split is asked about when there are ask rules and no deny rules.
+  assert.equal(commandDecision({ allow: [], ask: ['Bash(git push *)'], deny: [] }, 'echo $(x)'), 'ask');
   assert.equal(unwrapShell(`/bin/bash -c 'echo '\\''hi'\\'''`), "echo 'hi'");
   assert.deepEqual(simpleCommands('a && b || c; d | e\nf & g'), ['a', 'b', 'c', 'd', 'e', 'f', 'g']);
 });
@@ -64,9 +70,10 @@ test('profiles merge the project and the user, cap modes, and keep advisors read
   const { root, home } = await project(t,
     { profiles: { review: { base: 'read-only', allow: ['Bash(npm test:*)'] }, builder: { base: 'workspace-write', deny: ['Bash(git push:*)'] } }, agents: { reviewer: 'review', peer: 'builder', main: 'builder' } },
     { profiles: { review: { base: 'full-access', allow: ['Bash(node --test:*)'], deny: ['Bash(rm:*)'] } }, agents: { reviewer: 'other', lead: 'workspace-write' } });
-  assert.deepEqual(await profileFor(root, home, 'reviewer'), { name: 'review', base: 'read-only', allow: ['Bash(npm test:*)', 'Bash(node --test:*)'], deny: ['Bash(rm:*)'] });
-  assert.deepEqual(await profileFor(root, home, 'oracle'), { name: 'read-only', base: 'read-only', allow: [], deny: [] });
-  assert.deepEqual(await profileFor(root, home, 'lead'), { name: 'workspace-write', base: 'workspace-write', allow: [], deny: [] });
+  const none = { ask: [], beyondMode: 'refuse' };
+  assert.deepEqual(await profileFor(root, home, 'reviewer'), { name: 'review', base: 'read-only', allow: ['Bash(npm test:*)', 'Bash(node --test:*)'], deny: ['Bash(rm:*)'], ...none });
+  assert.deepEqual(await profileFor(root, home, 'oracle'), { name: 'read-only', base: 'read-only', allow: [], deny: [], ...none });
+  assert.deepEqual(await profileFor(root, home, 'lead'), { name: 'workspace-write', base: 'workspace-write', allow: [], deny: [], ...none });
   assert.equal(await profileFor(root, undefined, 'lead'), null);
 
   // A profile caps the mode a session asks for.
@@ -141,8 +148,9 @@ test('Codex asks ALP before leaving its sandbox, and ALP answers by the profile'
   await main.call('alp_wait', {});
   main.finish('Done');
 
-  const log = (await readFile(path.join(directory, 'runs', 'root.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(entry => entry.event === 'permission');
-  assert.deepEqual(log.map(entry => [entry.agent, entry.request, entry.decision, entry.rule ?? null]), [
+  const read = async () => (await readFile(path.join(directory, 'runs', 'root.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(entry => entry.event === 'permission');
+  await until(async () => (await read()).length === 6);
+  assert.deepEqual((await read()).map(entry => [entry.agent, entry.request, entry.decision, entry.rule ?? null]), [
     ['main', 'command', 'decline', 'deny'], ['main', 'command', 'accept', null],
     ['reviewer', 'command', 'accept', 'allow'], ['reviewer', 'command', 'decline', 'deny'], ['reviewer', 'command', 'decline', null], ['reviewer', 'file change', 'decline', null],
   ]);
@@ -173,22 +181,125 @@ test('a Claude session carries its profile to the transport', async t => {
   await runtime.open('root', { cwd: root });
   await until(() => runtimes.length === 2);
   const [main, supervisor] = runtimes;
-  assert.deepEqual([main.config.runtime, main.config.permissions, supervisor.config.permissions], ['claude', null, { name: 'read-only', base: 'read-only', allow: [], deny: [] }]);
+  assert.deepEqual([main.config.runtime, main.config.permissions, supervisor.config.permissions], ['claude', null, { name: 'read-only', base: 'read-only', allow: [], ask: [], deny: [], beyondMode: 'refuse' }]);
   await runtime.prompt('root', { clientMessageId: 'm1', delivery: 'auto', content: [{ type: 'text', text: 'Review' }] });
   await main.call('alp_delegate', { agent: 'reviewer', task: 'Review', model: 'claude:claude-sonnet-5-5', wait: false });
   await until(() => runtimes.length === 3);
-  assert.deepEqual(runtimes[2].config.permissions, { name: 'review', base: 'read-only', allow: ['Bash(npm test:*)'], deny: [] });
+  assert.deepEqual(runtimes[2].config.permissions, { name: 'review', base: 'read-only', allow: ['Bash(npm test:*)'], ask: [], deny: [], beyondMode: 'refuse' });
+});
+
+test('Claude asks ALP for ask rules and for what a read-only mode refuses', async () => {
+  const asked = [];
+  const answer = { allow: true, always: true };
+  const { canUseTool, settings } = claudePermissions('read-only', () => 'read-only', { allow: [], ask: ['Bash(git push *)'], deny: [], beyondMode: 'ask' }, async request => { asked.push(request); return answer; });
+  assert.deepEqual(settings, { permissions: { ask: ['Bash(git push *)'] } });
+  // An ask rule: Claude says so in decisionReasonType; no rule to add.
+  assert.deepEqual(await canUseTool('Bash', { command: 'git push' }, { decisionReasonType: 'rule' }), { behavior: 'allow', updatedInput: { command: 'git push' } });
+  // Beyond the mode: Claude's suggestion becomes the rule an always-allow adds for the session.
+  const suggestions = [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm ci *' }], behavior: 'allow', destination: 'localSettings' }];
+  assert.deepEqual(await canUseTool('Bash', { command: 'npm ci' }, { decisionReasonType: 'other', suggestions }),
+    { behavior: 'allow', updatedInput: { command: 'npm ci' }, updatedPermissions: [{ type: 'addRules', rules: [{ toolName: 'Bash', ruleContent: 'npm ci *' }], behavior: 'allow', destination: 'session' }] });
+  assert.deepEqual(await canUseTool('Edit', { file_path: 'a.js' }, {}), { behavior: 'allow', updatedInput: { file_path: 'a.js' }, updatedPermissions: [{ type: 'addRules', rules: [{ toolName: 'Edit', ruleContent: 'a.js' }], behavior: 'allow', destination: 'session' }] });
+  assert.deepEqual(asked.map(request => [request.reason, request.rule ?? null]), [['rule', null], ['mode', 'Bash(npm ci *)'], ['mode', 'Edit(a.js)']]);
+  answer.allow = false; answer.message = 'The user refused it';
+  assert.deepEqual(await canUseTool('Bash', { command: 'rm x' }, {}), { behavior: 'deny', message: 'The user refused it' });
+  assert.equal((await canUseTool('Read', { file_path: 'a.js' }, {})).behavior, 'allow');
+  // Without beyondMode ask, read-only refuses as before and asks no one.
+  const refusing = claudePermissions('read-only', () => 'read-only', { allow: [], ask: [], deny: [], beyondMode: 'refuse' }, async () => assert.fail('asked'));
+  assert.deepEqual(await refusing.canUseTool('Bash', { command: 'npm ci' }, {}), { behavior: 'deny', message: 'ALP session is read-only' });
+  assert.equal(refusing.settings, undefined);
+});
+
+test('the user answers permission questions; always allow writes the rule and stops asking', async t => {
+  const { directory, root, home } = await project(t, {
+    profiles: { review: { base: 'read-only', ask: ['Bash(git push *)'], beyondMode: 'ask' } },
+    agents: { reviewer: 'review' },
+  });
+  const runtimes = [];
+  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: home, runLogDir: path.join(directory, 'runs') });
+  t.after(() => runtime.shutdown());
+  await runtime.open('root', { cwd: root, model: 'codex:gpt-6.1-sol' });
+  await until(() => runtimes.length === 2);
+  const [main] = runtimes;
+  assert.match(main.config.developerInstructions, /reviewer: at most read-only, with the user's approval each time Bash\(git push \*\), and asks the user before anything else beyond that mode\./);
+  await runtime.prompt('root', { clientMessageId: 'm1', delivery: 'auto', content: [{ type: 'text', text: 'Review' }] });
+  await main.call('alp_delegate', { agent: 'reviewer', task: 'Review', wait: false });
+  await until(() => runtimes.length === 3 && runtimes[2].started.length === 1);
+  const reviewer = runtimes[2];
+  assert.equal(reviewer.config.approvalPolicy, 'on-request');
+  assert.match(reviewer.config.developerInstructions, /The user approves each use of: Bash\(git push \*\); ALP asks them and you wait\. ALP asks the user before anything else your mode does not allow/);
+  const ask = (command, extra = {}) => reviewer.serverRequest('item/commandExecution/requestApproval', { kind: 'command', threadId: reviewer.threadId, command, ...extra });
+  const question = async () => { await until(() => runtime.questions().length === 1); return runtime.questions()[0]; };
+
+  // Beyond the mode: the user may allow always, and the rule lands in the project's settings.
+  const install = ask("/bin/zsh -lc 'npm install --no-audit'", { proposedExecpolicyAmendment: ['npm', 'install'], reason: 'needs network' });
+  const first = await question();
+  assert.deepEqual(first.options, ['Allow once', 'Always allow', 'Deny']);
+  assert.match(first.body, /^reviewer wants to run `npm install --no-audit` \(needs network\)\. Its read-only mode does not allow that\. Always allow adds Bash\(npm install \*\) to profile review\.$/);
+  runtime.answer(first.id, { text: 'Always allow' });
+  assert.deepEqual(await install, { decision: 'accept' });
+  const settings = JSON.parse(await readFile(path.join(root, '.alp', 'settings.json'), 'utf8'));
+  assert.deepEqual(settings.permissions.profiles.review.allow, ['Bash(npm install *)']);
+  assert.equal(settings.workflow !== undefined || settings.permissions !== undefined, true);
+  // The same session no longer asks about it.
+  assert.deepEqual(await ask("/bin/zsh -lc 'npm install left-pad'"), { decision: 'accept' });
+  assert.deepEqual(runtime.questions(), []);
+
+  // An ask rule asks every time, with no always.
+  const push = ask("/bin/zsh -lc 'git push origin main'");
+  const second = await question();
+  assert.deepEqual(second.options, ['Allow once', 'Deny']);
+  assert.match(second.body, /Its permission profile review asks you each time\.$/);
+  runtime.answer(second.id, { text: 'Deny' });
+  assert.deepEqual(await push, { decision: 'decline' });
+
+  // Questions wait in turn; another answer refuses.
+  const one = ask("/bin/zsh -lc 'touch a'");
+  const two = ask("/bin/zsh -lc 'touch b'");
+  const third = await question();
+  runtime.answer(third.id, { text: 'Allow once' });
+  assert.deepEqual(await one, { decision: 'accept' });
+  const fourth = await question();
+  assert.match(fourth.body, /touch b/);
+  runtime.answer(fourth.id, { text: 'not now' });
+  assert.deepEqual(await two, { decision: 'decline' });
+
+  // Claude's requests go the same way.
+  const claude = reviewer.serverRequest('item/permission/request', { tool: 'Bash', input: { command: 'npm ci' }, reason: 'mode', rule: 'Bash(npm ci *)' });
+  runtime.answer((await question()).id, { text: 'Allow once' });
+  assert.deepEqual(await claude, { allow: true });
+
+  // The run log is written in the background.
+  const permissions = async () => (await readFile(path.join(directory, 'runs', 'root.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(entry => entry.event === 'permission');
+  await until(async () => (await permissions()).length === 6);
+  assert.deepEqual((await permissions()).map(entry => [entry.decision, entry.asked ?? false, entry.always ?? null, entry.rule ?? null]), [
+    ['accept', true, 'Bash(npm install *)', null], ['accept', false, null, 'allow'], ['decline', true, null, 'ask'],
+    ['accept', true, null, null], ['decline', true, null, null], ['accept', true, null, null],
+  ]);
+  reviewer.call('alp_handoff', { outcome: 'complete', summary: 'Done' });
+  reviewer.finish('Done');
+  await main.call('alp_wait', {});
+  main.finish('Done');
+});
+
+test('always allow writes to the file that defines the profile', async t => {
+  const { root, home } = await project(t, undefined, { profiles: { mine: { base: 'read-only' } } });
+  assert.equal(await addAllowRule(root, home, 'mine', 'Bash(make check)'), path.join(home, 'settings.json'));
+  assert.deepEqual(JSON.parse(await readFile(path.join(home, 'settings.json'), 'utf8')).permissions.profiles.mine, { base: 'read-only', allow: ['Bash(make check)'] });
+  await assert.rejects(addAllowRule(root, home, 'missing', 'Bash(x)'), /No settings file defines profile missing/);
+  await assert.rejects(addAllowRule(root, home, 'mine', 'bash(x)'), /unknown tool bash/);
 });
 
 test('the CLI lists profiles and checks a command against one', async t => {
-  const { root, home } = await project(t, { profiles: { review: { base: 'read-only', allow: ['Bash(npm test:*)'], deny: ['Bash(rm:*)'] } }, agents: { reviewer: 'review' } });
+  const { root, home } = await project(t, { profiles: { review: { base: 'read-only', allow: ['Bash(npm test:*)'], ask: ['Bash(git push *)'], deny: ['Bash(rm:*)'], beyondMode: 'ask' } }, agents: { reviewer: 'review' } });
   const run = (...args) => spawnSync(process.execPath, [CLI, ...args], { cwd: root, encoding: 'utf8', env: { ...process.env, ALP_HOME: home } });
   const listed = run('permissions');
   assert.match(listed.stdout, /^main {2}no profile: the mode its requester or the user chooses$/m);
-  assert.match(listed.stdout, /^reviewer {2}profile review, at most read-only\n {2}allow: Bash\(npm test:\*\)\n {2}deny: {2}Bash\(rm:\*\)$/m);
+  assert.match(listed.stdout, /^reviewer {2}profile review, at most read-only; asks the user beyond it\n {2}allow: Bash\(npm test:\*\)\n {2}ask: {3}Bash\(git push \*\)\n {2}deny: {2}Bash\(rm:\*\)$/m);
   assert.match(listed.stdout, /^oracle {2}profile read-only, at most read-only$/m);
   assert.match(run('permissions', 'check', 'reviewer', 'npm test 2>&1').stdout, /^allow: profile review lets reviewer run it, even beyond its read-only mode/);
   assert.match(run('permissions', 'check', 'reviewer', 'npm test; rm -rf /').stdout, /^deny: a deny rule of profile review covers it/);
+  assert.match(run('permissions', 'check', 'reviewer', 'git push').stdout, /^ask: profile review asks the user each time/);
   assert.deepEqual(JSON.parse(run('permissions', 'check', 'main', 'ls', '--json').stdout), { agent: 'main', profile: null, base: null, decision: 'mode' });
   await writeFile(path.join(root, '.alp', 'settings.json'), JSON.stringify({ permissions: { profiles: { r: { allow: ['npm test'] } } } }));
   const broken = run('permissions');

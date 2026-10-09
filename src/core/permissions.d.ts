@@ -1,13 +1,14 @@
 export type PermissionBase = 'read-only' | 'workspace-write' | 'full-access';
-export type PermissionProfile = { name: string; base: PermissionBase; allow: string[]; deny: string[] };
+export type PermissionProfile = { name: string; base: PermissionBase; allow: string[]; ask: string[]; deny: string[]; beyondMode: 'refuse' | 'ask' };
 export const BASES: PermissionBase[];
 export const ADVISORS: string[];
 export const MAX_RULES: number;
 export const TOOLS: string[];
 export function parseRule(rule: unknown, source?: string): { tool: string; specifier?: string };
-export function validatePermissions(value: unknown, source: string): { profiles: Record<string, { base?: PermissionBase; allow: string[]; deny: string[] }>; agents: Record<string, string> };
+export function validatePermissions(value: unknown, source: string): { profiles: Record<string, { base?: PermissionBase; beyondMode?: 'refuse' | 'ask'; allow: string[]; ask: string[]; deny: string[] }>; agents: Record<string, string> };
+export function addAllowRule(projectRoot: string, home: string | undefined, profileName: string, rule: string): Promise<string>;
 export function profileFor(projectRoot: string, home: string | undefined, agent: string): Promise<PermissionProfile | null>;
 export function capMode(mode: string, base: string): string;
 export function unwrapShell(command: string): string;
 export function simpleCommands(line: string): string[] | null;
-export function commandDecision(profile: Pick<PermissionProfile, 'allow' | 'deny'>, command: string): 'allow' | 'deny' | undefined;
+export function commandDecision(profile: Pick<PermissionProfile, 'allow' | 'deny'> & { ask?: string[] }, command: string): 'allow' | 'ask' | 'deny' | undefined;

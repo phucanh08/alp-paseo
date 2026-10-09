@@ -147,8 +147,23 @@ type NativeConfig = {
   ephemeral?: boolean;
   threadId?: string;
   /** The session's permission profile: rules Claude enforces itself, in every permission mode. */
-  permissions?: { allow: string[]; deny: string[] } | null;
+  permissions?: PermissionRules | null;
 };
+
+type PermissionRules = { allow: string[]; ask?: string[]; deny: string[]; beyondMode?: 'refuse' | 'ask' };
+/** What ALP asks the user for a permission Claude would otherwise not have. */
+export type PermissionRequest = { tool: string; input: Record<string, unknown>; reason: 'rule' | 'mode'; rule?: string };
+export type PermissionAnswer = { allow: boolean; always?: boolean; message?: string };
+
+/** The rule an "always allow" adds: Claude's own suggestion, else the exact command or path. */
+function suggestedRule(tool: string, input: Record<string, unknown>, suggestions: any) {
+  const suggestion = (Array.isArray(suggestions) ? suggestions : []).find((entry: any) => entry?.type === 'addRules' && entry.behavior === 'allow' && entry.rules?.length);
+  const rule = suggestion?.rules[0];
+  if (rule?.toolName) return rule.ruleContent ? `${rule.toolName}(${rule.ruleContent})` : rule.toolName;
+  if (tool === 'Bash' && typeof input.command === 'string' && !input.command.includes(')')) return `Bash(${input.command})`;
+  if (typeof input.file_path === 'string' && !input.file_path.includes(')')) return `${tool}(${input.file_path})`;
+  return undefined;
+}
 
 class InputQueue implements AsyncIterable<SDKUserMessage> {
   private values: SDKUserMessage[] = [];
@@ -186,7 +201,7 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
 /** Claude's permission mode for an ALP mode; full-access skips every permission check. */
 export const claudePermissionMode = (sandbox: string) => sandbox === 'read-only' ? 'default' : sandbox === 'full-access' ? 'bypassPermissions' : 'acceptEdits';
 
-export function claudePermissions(sandbox: string, currentSandbox?: () => string, rules?: { allow: string[]; deny: string[] } | null) {
+export function claudePermissions(sandbox: string, currentSandbox?: () => string, rules?: PermissionRules | null, ask?: (request: PermissionRequest) => Promise<PermissionAnswer>) {
   const readOnly = sandbox === 'read-only';
   const readers = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'];
   return {
@@ -200,10 +215,19 @@ export function claudePermissions(sandbox: string, currentSandbox?: () => string
     // Allow rules run without asking, even in a read-only session; deny rules hold even with full access.
     ...(rules?.allow.length ? { allowedTools: rules.allow } : {}),
     disallowedTools: ['Agent', 'Task', 'TeamCreate', 'EnterPlanMode', 'ExitPlanMode', ...(rules?.deny ?? [])],
-    canUseTool: async (name: string, input: Record<string, unknown>) => {
-      if ((currentSandbox ? currentSandbox() === 'read-only' : readOnly) && !readers.includes(name) && !name.startsWith('mcp__alp__')) {
-        return { behavior: 'deny', message: 'ALP session is read-only' };
+    // Ask rules make Claude consult canUseTool in every mode, which asks the user.
+    ...(rules?.ask?.length ? { settings: { permissions: { ask: rules.ask } } } : {}),
+    canUseTool: async (name: string, input: Record<string, unknown>, context?: { decisionReasonType?: string; suggestions?: unknown }) => {
+      const beyond = (currentSandbox ? currentSandbox() === 'read-only' : readOnly) && !readers.includes(name) && !name.startsWith('mcp__alp__');
+      const reason = context?.decisionReasonType === 'rule' && rules?.ask?.length ? 'rule' : beyond && rules?.beyondMode === 'ask' ? 'mode' : undefined;
+      if (reason && ask) {
+        const rule = reason === 'mode' ? suggestedRule(name, input, context?.suggestions) : undefined;
+        const answer = await ask({ tool: name, input, reason, ...(rule ? { rule } : {}) });
+        if (!answer.allow) return { behavior: 'deny', message: answer.message ?? 'The user did not allow it' };
+        const [, toolName, ruleContent] = /^([^(]+)(?:\((.*)\))?$/s.exec(rule ?? '') ?? [];
+        return { behavior: 'allow', updatedInput: input, ...(answer.always && toolName ? { updatedPermissions: [{ type: 'addRules', rules: [{ toolName, ...(ruleContent ? { ruleContent } : {}) }], behavior: 'allow', destination: 'session' }] } : {}) };
       }
+      if (beyond) return { behavior: 'deny', message: 'ALP session is read-only' };
       return { behavior: 'allow', updatedInput: input };
     },
   };
@@ -392,15 +416,18 @@ export class ClaudeTransport {
       });
     }
 
+    const { settings: ruleSettings, ...permissions } = claudePermissions(config.sandbox, () => config.sandbox, config.permissions,
+      async request => (this.requestHandler ? await this.requestHandler('item/permission/request', request) as PermissionAnswer : { allow: false, message: 'No one can approve it' }));
+    const settings = { ...(config.thinking === 'ultracode' ? { ultracode: true } : {}), ...ruleSettings };
     const options = {
       cwd: config.cwd,
       env: this.env,
       model: config.model,
       effort: ['none', 'off', 'ultracode'].includes(config.thinking) ? undefined : config.thinking,
       thinking: ['none', 'off'].includes(config.thinking) ? { type: 'disabled' } : { type: 'adaptive' },
-      ...(config.thinking === 'ultracode' ? { settings: { ultracode: true } } : {}),
       systemPrompt: config.developerInstructions,
-      ...claudePermissions(config.sandbox, () => config.sandbox, config.permissions),
+      ...permissions,
+      ...(Object.keys(settings).length ? { settings } : {}),
       mcpServers,
       strictMcpConfig: true,
       settingSources: [],
