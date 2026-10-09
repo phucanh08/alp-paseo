@@ -879,8 +879,8 @@ the requester relays. The host binds the sender to the calling session.
 
 | Tool | Who | Purpose |
 | --- | --- | --- |
-| `alp_delegate {…, wait: false}` | requester | Start an assignment and return its `assignmentId` immediately |
-| `alp_wait {assignments?, timeoutMs?}` | requester | Return as soon as mail arrives (result, question, note, stall report); on timeout, an empty list and a snapshot of running work. Default 5 minutes, maximum 15 |
+| `alp_delegate {…, wait: false, etaMinutes?}` | requester | Start an assignment and return its `assignmentId` immediately; `etaMinutes` asks for a check-in when it runs past that |
+| `alp_wait {assignments?, timeoutMs?}` | requester | Return as soon as mail arrives (result, question, note, stall report, check-in) or, for main, the user writes; on timeout, an empty list and a snapshot of running work. Default 5 minutes, maximum 15 |
 | `alp_send {to, kind, body, replyTo?}` | both | `to` is an assignment id or `"parent"`. Requesters send `answer` (with `replyTo`), `steer`, or `note`; children send `note` only |
 | `alp_ask {question}` | child | Ask the requester and wait for the answer; after 15 minutes it returns `unanswered` |
 
@@ -899,6 +899,26 @@ their mail and hands off only after a turn ends with nothing outstanding.
 An assignment with no activity in its session tree for 10 minutes is reported to its
 requester as `stalled`; after 20 minutes it fails. Time spent waiting in `alp_ask`
 does not count. Stall reports never wake or steer on their own.
+
+### Main stays reachable
+
+Main talks with the user, so it never goes quiet while others work:
+
+- **Your message ends main's wait.** When you write to main while it waits in
+  `alp_delegate` or `alp_wait`, the wait returns at once with `userMessage: true`.
+  Main answers you first, steers an assignment your words change, then waits
+  again. The assignments keep running.
+- **Check-ins.** While main's assignments run, ALP sends main a `checkin` about
+  every ten minutes: each assignment's running time, last activity, ETA and last
+  note. A check-in ends a wait, steers a running turn, or wakes an idle main;
+  these wakes do not count toward the limit of 8. Main tells you in a line or two
+  how the work is going and acts on work that is late or silent.
+- **ETA.** `alp_delegate {…, etaMinutes}` records when the requester expects the
+  work done. When it runs past that, the requester gets one check-in about it.
+- **Unclear requests.** When a request leaves open what to build, how far to go
+  or how to judge it done, main asks once before it plans: two to four questions,
+  each with options and a recommended default, and the offer to decide with
+  those defaults.
 
 ## Structured handoff
 

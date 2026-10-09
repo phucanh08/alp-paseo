@@ -163,17 +163,21 @@ test('workspace-write parent can delegate read-only work without elevating desce
   runtimes[1].finish(); await lead;
 });
 
-test('user steering reaches the parent and keeps live assignments running', async t => {
+test('user steering reaches the parent, ends its wait, and keeps live assignments running', async t => {
   const { runtimes, connection } = await setup(t);
   const lead = runtimes[0].tool('lead');
   await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
   await connection.send({ type: 'session.prompt', sessionId: 'root', prompt: { clientMessageId: 'steer', delivery: 'steer', input: { type: 'message', content: [{ type: 'text', text: 'Change the assignment' }] } } });
   assert.ok(runtimes[0].calls.some(c => c.method === 'turn/steer'));
+  // The wait returns so main answers the user now; the assignment runs on.
+  const early = decode(await lead);
+  assert.deepEqual([early.status, early.userMessage], ['running', true]);
   assert.equal(runtimes[1].closed, false);
+  const waiting = runtimes[0].call('alp_wait', {}, 'wait-after-steer');
   runtimes[1].finish('lead still delivered');
-  const result = await lead;
-  assert.equal(result.success, true);
-  assert.equal(decode(result).output, 'lead still delivered');
+  const [event] = decode(await waiting).events;
+  assert.equal(event.kind, 'result');
+  assert.equal(event.result.output, 'lead still delivered');
 });
 
 test('interrupting parent while child initializes prevents an orphan runtime', async t => {
