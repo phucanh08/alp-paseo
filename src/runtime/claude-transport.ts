@@ -38,9 +38,14 @@ export const toolShapes: Record<string, Record<string, z.ZodType>> = {
     isolation: z.enum(['shared', 'worktree']).optional(),
     wait: z.boolean().optional(),
     taskId: z.string().min(1).optional(),
+    continueFrom: z.string().min(1).optional(),
   },
   alp_merge: {
     assignmentId: z.string().min(1),
+    skipVerify: z.string().min(1).max(2000).optional(),
+  },
+  alp_verify: {
+    taskId: z.string().min(1).optional(),
   },
   alp_recall: {
     assignmentId: z.string().min(1).optional(),
@@ -90,6 +95,7 @@ export const toolShapes: Record<string, Record<string, z.ZodType>> = {
     formula: z.string().min(1).optional(),
     vars: z.record(z.string(), z.string()).optional(),
     summary: z.string().min(1).max(2000).optional(),
+    unverified: z.string().min(1).max(2000).optional(),
     note: z.string().min(1).max(2000).optional(),
     status: z.enum(TASK_STATUSES as [string, ...string[]]).optional(),
     label: z.string().min(1).optional(),

@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { copyFile, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { copyFile, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -19,6 +20,8 @@ export type Worktree = {
   branch: string;
   /** The requester's state when the assignment started: HEAD plus uncommitted tracked changes. */
   base: string;
+  /** checkoutFingerprint of the requester's checkout then, to tell whether it changed since. */
+  fingerprint?: string;
 };
 
 export type WorktreeChange = { commit: string; files: string[]; stat: string };
@@ -97,19 +100,47 @@ export async function branchExists(directory: string, branch: string) {
 }
 
 /** Creates a worktree for `id` from the current state of the checkout containing `workdir`. */
-export async function createWorktree(workdir: string, root: string, id: string): Promise<Worktree> {
+/**
+ * Creates a worktree for `id` from the current state of the checkout containing `workdir`,
+ * or, with `from`, from an earlier assignment's committed change, keeping that assignment's
+ * base so a merge applies both changes together.
+ */
+export async function createWorktree(workdir: string, root: string, id: string, from?: Pick<Worktree, 'base' | 'fingerprint'> & { commit: string }): Promise<Worktree> {
   const checkout = await checkoutOf(workdir);
   if (!checkout) throw new Error('Worktree isolation needs a git repository');
   const head = await git(checkout, ['rev-parse', '--verify', 'HEAD']);
   if (head.code !== 0) throw new Error('Worktree isolation needs at least one commit');
+  const fingerprint = from ? from.fingerprint : await checkoutFingerprint(checkout);
   // `stash create` snapshots uncommitted tracked changes without touching the checkout.
-  const base = (await checked(checkout, ['stash', 'create'])) || head.stdout.trim();
+  const base = from ? from.base : (await checked(checkout, ['stash', 'create'])) || head.stdout.trim();
   const target = path.join(root, id);
   const branch = `alp/${id}`;
   await mkdir(root, { recursive: true, mode: 0o700 });
-  await checked(checkout, ['worktree', 'add', '--quiet', '-b', branch, target, base]);
+  await checked(checkout, ['worktree', 'add', '--quiet', '-b', branch, target, from ? from.commit : base]);
   const relative = path.relative(checkout, await realpath(workdir));
-  return { checkout, path: target, workdir: path.join(target, relative), branch, base };
+  return { checkout, path: target, workdir: path.join(target, relative), branch, base, ...(fingerprint ? { fingerprint } : {}) };
+}
+
+/** A digest of a checkout's state: HEAD, its uncommitted changes, and the names of untracked files. */
+export async function checkoutFingerprint(checkout: string) {
+  const head = await git(checkout, ['rev-parse', '--verify', 'HEAD']);
+  if (head.code !== 0) return undefined;
+  const diff = await git(checkout, ['diff', '--binary', 'HEAD']);
+  const untracked = await git(checkout, ['ls-files', '--others', '--exclude-standard', '-z']);
+  return createHash('sha256').update(head.stdout).update('\0').update(diff.stdout).update('\0').update(untracked.stdout).digest('hex');
+}
+
+/**
+ * Links the project's node_modules into the same place in a worktree that has none,
+ * so its build and tests run; returns what undoes it. Commits never see the link,
+ * because ALP removes it before the worktree is committed again.
+ */
+export async function linkModules(projectDir: string, worktreeDir: string) {
+  const source = path.join(projectDir, 'node_modules');
+  const target = path.join(worktreeDir, 'node_modules');
+  if (!(await stat(source).catch(() => undefined))?.isDirectory() || await lstat(target).catch(() => undefined)) return async () => {};
+  await symlink(source, target, 'dir');
+  return async () => { await unlink(target).catch(() => {}); };
 }
 
 /** Commits whatever the assignment left in its worktree and describes the change from its base. */

@@ -212,6 +212,56 @@ leased. Work is never deleted silently: changes not merged when their requester
 closes stay on their branch, and after a crash alpd commits work left in worktrees
 to their branches and removes the directories.
 
+## Verification gates
+
+A project can name the commands that prove a change works, in
+`.alp/settings.json`:
+
+```json
+{ "verify": { "setup": "npm ci", "typecheck": "npx tsc --noEmit", "test": "npm test", "timeoutSec": 600 } }
+```
+
+Any of `setup`, `typecheck` and `test` may be set. They run in that order through
+the shell, from the project root (or the same place in a worktree), and stop at
+the first failure. `timeoutSec` limits each command; it defaults to 600 seconds.
+alpd runs them itself, so their result does not depend on what an agent reports:
+
+- **Before `alp_merge` applies a worktree change.**
+  - ALP runs the commands in the assignment's worktree, with the project's
+    `node_modules` linked in for the run when the worktree has none.
+  - If they fail, nothing is applied, and the change stays waiting.
+  - The result gives each step's exit code and the end of the failed step's
+    output. It also suggests three ways on:
+    - delegate again with `continueFrom` set to that assignment, so the new
+      worktree starts from the change and the brief carries the failure;
+    - `alp_discard` the change;
+    - merge anyway with `skipVerify: "why"`, which is recorded.
+- **When the requester's checkout changed since the worktree was made.** The
+  worktree's check then says little about the merged result. ALP runs the
+  commands again in the checkout after applying, and reports and records that
+  result instead.
+- **After a writer in the shared checkout finishes.** If the writer changed the
+  checkout, ALP runs the commands there while it still holds the write lease.
+  The assignment's result carries the outcome.
+- **On demand.** Main and lead can call `alp_verify`, for example after
+  resolving conflict markers, and only main may pass `taskId`. The user can run
+  `alp verify [--task ID]`.
+
+Each run is logged as a `verify` entry, and alp log shows it as
+`✓ verify in the worktree …`. A run for a task is recorded on the task as
+`verified`: where it ran, and each step's command, exit code and time, plus the
+end of a failed step's output.
+
+Main's task list shows the result next to tasks in review:
+`handoff complete, verification failed: test exited 1`. Closing a task as `done`
+whose last verification failed is refused for agents unless they pass
+`unverified: "why"`. The user can always close it, and ALP notes that it closed
+after a failed check. `skipVerify` and other close reasons need no passing run.
+
+Live, a Codex main merged a peer's change that the project's check rejected. It
+fixed the change twice with `continueFrom`, the third merge passed, and only
+then did it close the task.
+
 ## Talking to the user
 
 The user talks with main. Main asks the user with `alp_ask` (for a root session

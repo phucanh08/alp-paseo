@@ -12,9 +12,10 @@ import { seedLibrary } from './core/library.js';
 import { exportBeads, importBeads, parseJsonl } from './core/beads.js';
 import { findFormula, formulaDirs, listFormulas, pourFormula } from './core/formulas.js';
 import { commandDecision, profileFor } from './core/permissions.js';
+import { describeVerification, runVerify, verifyConfig } from './core/verify.js';
 import { discoverAgents } from './core/resolver.js';
 import { parse as toml } from 'smol-toml';
-import { addGate, blockersOf, checkGates, childrenOf, closeTask, compactTasks, createTask, describeGate, gateOpen, gatesOf, isTaskId, linkTask, listTasks, loadTasks, readyTasks, reopenTask, resolveGate, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
+import { addGate, blockersOf, checkGates, childrenOf, closeTask, compactTasks, createTask, describeGate, gateOpen, gatesOf, getTask, isTaskId, linkTask, recordVerification, listTasks, loadTasks, readyTasks, reopenTask, resolveGate, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
 import { alpHome, connect, ensureDaemon, lockAlive, readLock } from './client/index.js';
 
 const USAGE = `Usage:
@@ -40,7 +41,8 @@ const USAGE = `Usage:
   alp task add <title> [-d text] [-p 0-4] [-t task|bug|feature|chore|epic] [--parent ID] [--after ID]... [-l label]... [--path P]... [--from ID]
   alp task show <id> [--json]
   alp task edit <id> [--title T] [-d text] [-p N] [-t type] [-l label]... [--path P]... [-m note]
-  alp task close <id> [--reason done|wontfix|duplicate|superseded] [-m summary]
+  alp task close <id> [--reason done|wontfix|duplicate|superseded] [-m summary] [--unverified "why"]
+  alp verify [--project DIR] [--task ID] [--json]   run the project's verify commands; --task records the result
   alp task reopen <id> [-m note]
   alp task dep <add|rm> <id> [--after ID]... [--parent ID] [--related ID]...
   alp task gate add <id> --human "question" | --timer +2h|ISO | --pr N|owner/repo#N | --run N|owner/repo#N
@@ -455,6 +457,9 @@ async function log(args) {
       case 'human.question':
         text = `? ${entry.agent} asks the user [${entry.questionId}]: ${entry.body.split('\n')[0].slice(0, 120)}`;
         break;
+      case 'verify':
+        text = `${entry.skipped ? '–' : entry.passed ? '✓' : '✗'} verify in the ${entry.where}${entry.taskId ? ` for ${entry.taskId}` : ''}${entry.assignmentId ? ` (${entry.assignmentId})` : ''}: ${entry.skipped ? `skipped: ${entry.skipped}` : entry.detail}`;
+        break;
       case 'human.answer':
         text = `↳ ${entry.questionId} ${entry.outcome}${entry.answer !== undefined ? `: ${entry.answer.split('\n')[0].slice(0, 120)}` : ''}`;
         break;
@@ -671,7 +676,7 @@ async function taskCommand([action, ...args]) {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
     description: { type: 'string', short: 'd' }, priority: { type: 'string', short: 'p' }, type: { type: 'string', short: 't' },
     label: { ...repeated, short: 'l' }, path: repeated, parent: { type: 'string' }, after: repeated, related: repeated, from: { type: 'string' },
-    title: { type: 'string' }, message: { type: 'string', short: 'm' }, reason: { type: 'string' }, project: { type: 'string' }, json: { type: 'boolean' },
+    title: { type: 'string' }, message: { type: 'string', short: 'm' }, reason: { type: 'string' }, unverified: { type: 'string' }, project: { type: 'string' }, json: { type: 'boolean' },
     human: { type: 'string' }, timer: { type: 'string' }, pr: { type: 'string' }, run: { type: 'string' },
   } });
   const root = await taskProject(values.project);
@@ -701,7 +706,7 @@ async function taskCommand([action, ...args]) {
     task = await updateTask(root, positionals[0], { ...fields, ...(values.title !== undefined ? { title: values.title } : {}), note: values.message }, 'user');
   } else if (action === 'close') {
     if (positionals.length !== 1) throw new UsageError();
-    task = await closeTask(root, positionals[0], { reason: values.reason, summary: values.message }, 'user');
+    task = await closeTask(root, positionals[0], { reason: values.reason, summary: values.message, unverified: values.unverified }, 'user');
   } else if (action === 'reopen') {
     if (positionals.length !== 1) throw new UsageError();
     task = await reopenTask(root, positionals[0], { note: values.message }, 'user');
@@ -750,12 +755,34 @@ function printTask(task, tasks) {
   if (task.labels.length) console.log(`  labels: ${task.labels.join(', ')}`);
   if (task.paths.length) console.log(`  paths: ${task.paths.join(', ')}`);
   for (const child of childrenOf(task.id, tasks)) console.log(`  ${taskRow(child, tasks)}`);
-  if (task.closed) console.log(`  closed ${task.closed.reason} by ${task.closed.by}${task.closed.summary ? `: ${task.closed.summary}` : ''}`);
+  if (task.verified) console.log(`  ${task.verified.skipped ? '–' : task.verified.passed ? '✓' : '✗'} ${describeVerification(task.verified)}${task.verified.where ? ` in the ${task.verified.where}` : ''}, ${ago(task.verified.at)} ago`);
+  if (task.closed) console.log(`  closed ${task.closed.reason} by ${task.closed.by}${task.closed.summary ? `: ${task.closed.summary}` : ''}${task.closed.unverified ? ` (unverified: ${task.closed.unverified})` : ''}`);
   for (const entry of task.log.slice(-10)) {
     const { at, by, event, ...detail } = entry;
     const text = Object.entries(detail).map(([key, value]) => `${key} ${Array.isArray(value) ? value.join(', ') : value}`).join('; ');
     console.log(`  ${at.slice(0, 16).replace('T', ' ')}  ${by} ${event}${text ? `: ${text}` : ''}`);
   }
+}
+
+/** alp verify: run the project's verify commands here, in the project root. */
+async function verify(args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { project: { type: 'string' }, task: { type: 'string' }, json: { type: 'boolean' } } });
+  if (positionals.length) throw new UsageError();
+  const root = await taskProject(values.project);
+  const config = await verifyConfig(root);
+  if (!config) throw new Error(`${root} has no verify commands; add "verify": { "test": "npm test" } to .alp/settings.json`);
+  if (values.task) await getTask(root, values.task);
+  const verification = await runVerify(root, config);
+  if (values.task) await recordVerification(root, values.task, { ...verification, where: 'checkout' }, 'user');
+  if (values.json) console.log(JSON.stringify(verification));
+  else {
+    for (const command of verification.commands) {
+      console.log(`${command.exitCode === 0 ? '✓' : '✗'} ${command.step}: ${command.command}  (${(command.ms / 1000).toFixed(1)} s${command.timedOut ? ', timed out' : command.exitCode ? `, exit ${command.exitCode}` : ''})`);
+      if (command.exitCode !== 0 && command.output) console.log(`  ${command.output.trimEnd().split('\n').slice(-30).join('\n  ')}`);
+    }
+    console.log(`${describeVerification(verification)}${values.task ? `; recorded on ${values.task}` : ''}`);
+  }
+  if (!verification.passed) process.exitCode = 1;
 }
 
 /** alp recall: ask a finished assignment, or the last one on a task, what it did and why. */
@@ -782,7 +809,7 @@ async function interrupt(args) {
   console.log('Interrupted');
 }
 
-const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, recall, interrupt };
+const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, verify, recall, interrupt };
 const [command, ...args] = process.argv.slice(2);
 try {
   if (!Object.hasOwn(commands, command)) throw new UsageError();

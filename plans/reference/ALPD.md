@@ -869,3 +869,54 @@ Goal (D20, step 1): work an assignment held is not stuck when alpd stops under i
   - A probe forked a non-ephemeral thread on each runtime, and the fork recalled a code word and its reason. `thread/delete` then removed the original, and a second fork found nothing. The probe also found Codex's `excludeTurns` requirement.
   - Through alpd, with an isolated `ALP_HOME`: main delegated a task to a Codex peer. `alp recall <task>` returned the peer's actual rule for its number.
   - A second delegation in a worktree was killed with `kill -9` on alpd mid-assignment. The next `alp run` reclaimed the worktree onto `alp/<assignment>`, put the task back to open, and main's turn showed the interrupted line with that branch. The branch held the peer's partial file.
+
+## 28. Verification gates as built (2026-10-09)
+
+Goal (D20, step 2): a change is checked by the project's own commands, which alpd runs rather than an agent reports, before it reaches the requester's checkout. The result is recorded on the task. The idea comes from Gas Town's Refinery, which runs gates before it merges. Its batching and bisecting queue is not taken.
+
+**Settings and runner (`src/core/verify.js`).**
+- `verify: { setup?, typecheck?, test?, timeoutSec? }` in `.alp/settings.json`. `validateSettings` checks it: known keys, at least one command, and a timeout of 1–7200 s (default 600).
+- `runVerify(cwd, config)` runs the steps in order through `/bin/sh -c` (or `cmd /c`), stopping at the first failure.
+  - It keeps the last 4000 characters of output.
+  - A timeout kills the process group and reports exit 124 with `timedOut`.
+  - It sets `ALP_VERIFY=1` and passes the session environment without host agent variables.
+- `describeVerification` gives a one-line form: `verified (setup, test)`, `verification failed: test exited 1`, or `verification skipped: why`.
+
+**Tasks.**
+- `recordVerification` stores `verified` on a task that is not closed. It keeps where the run happened, and each step's command, exit code and time, plus the last 1000 characters of a failed step's output. It logs a `verified` entry.
+- `closeTask` refuses `done` with `TASK_UNVERIFIED` when the last run failed, unless `unverified` says why. A user close is never refused; it records `unverified: "the user closed it after …"`. A skipped run does not block.
+- `summarize` adds `verified: passed|failed|skipped`. The digest shows the result on tasks in review, and failures on tasks in progress.
+
+**Runtime.**
+- `alp_merge { assignmentId, skipVerify? }` checks first:
+  - With verify configured, it runs the commands in the worktree's copy of the project root. `linkModules` lends the project's `node_modules` for the run when the worktree has none, and removes the link after.
+  - On failure, the pending change is kept together with the verification. The result is an error with the steps, output and next steps, and nothing is applied.
+  - `skipVerify` records a skipped verification on the task.
+- `Worktree.fingerprint` is `checkoutFingerprint` at creation: a sha256 of HEAD, `git diff --binary HEAD` and the untracked names. Inside the checkout queue, the merge compares it with the checkout's current fingerprint. If they differ, ALP verifies the checkout again after applying, then reports and records that run (`verifiedIn`).
+- Merges and verify runs on one checkout share one queue (`inCheckout`).
+- `alp_delegate { continueFrom }` takes a pending worktree change as soon as it is checked, so a merge or another delegation cannot use it too.
+  - `createWorktree(…, from)` starts a new branch at that change's commit, keeping its `base` and fingerprint, so the next merge applies both changes as one.
+  - The old worktree and branch are removed.
+  - The brief starts with the change's files and, after a failed check, the failing command and the end of its output.
+  - `continueFrom` implies worktree isolation.
+- A shared writer that finished `completed` and changed the checkout is verified in `finishAssignment` while it still holds the lease. The fingerprint taken at its start tells whether it changed anything. The result carries `verification`.
+- `alp_verify { taskId? }` is offered to agents that delegate. It runs in their workdir, inside the checkout queue. Only main may record on a task.
+- Every run is logged as `verify`. `alp_task close` takes `unverified`.
+
+**CLI.**
+- `alp verify [--project] [--task] [--json]` runs the commands in the project root. It exits 1 on failure, and with `--task` it records the result as the user.
+- `alp task close --unverified`, `alp task show` and `alp log` show verifications.
+
+**Evidence.**
+- `test/verify.test.js` covers:
+  - settings validation; step order, stopping on failure, output, and timeouts;
+  - the close gate for agents, with `unverified`, for the user, and with a skipped run; digest and summary;
+  - a worktree merge refused by the check: nothing applied, the node_modules link gone after, close refused. Then `continueFrom` building on the change, the old branch removed, the brief carrying the failure, the merge passing and the task closing;
+  - re-verifying a checkout that changed meanwhile; `alp_verify` recording on a task; `skipVerify` being recorded;
+  - shared writers verified only when they changed something;
+  - the CLI.
+- Live on 2026-10-09: a Codex main sent a deliberately bad change through a project whose check rejects `TODO.txt` and a non-semver version, in alpd with an isolated `ALP_HOME`.
+  - The first two merges applied nothing, each with the check's message.
+  - Main delegated `continueFrom` twice with the same task, and the third merge passed and applied.
+  - The task log shows two failed and one passed verification before main closed it.
+  - No branches, worktrees or processes were left.

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { AlpError } from './errors.js';
 import { validatePermissions } from './permissions.js';
+import { validateVerify } from './verify.js';
 
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const nonempty = value => typeof value === 'string' && value.trim().length > 0;
@@ -22,6 +23,7 @@ export function validateSettings(settings, source) {
     if (settings.workflow.supervisor !== undefined) check(typeof settings.workflow.supervisor === 'boolean', 'workflow.supervisor must be true or false');
   }
   validatePermissions(settings.permissions, source);
+  validateVerify(settings.verify, source);
   const runtime = settings.runtime ?? {};
   if (settings.runtime !== undefined) check(object(settings.runtime), 'runtime must be an object');
   for (const key of Object.keys(runtime)) {

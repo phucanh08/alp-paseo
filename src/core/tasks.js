@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, rename, rmdir, stat, writeFile } from 'node:f
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { AlpError } from './errors.js';
+import { describeVerification } from './verify.js';
 
 /**
  * The project's task graph (plans/reference/ALPD.md §20), modelled on beads:
@@ -65,7 +66,7 @@ export async function loadTasks(projectRoot) {
 function normalize(task) {
   return {
     description: '', type: 'task', priority: 2, labels: [], paths: [], parent: null, blockedBy: [],
-    discoveredFrom: null, related: [], gates: [], assignee: null, handoff: null, closed: null, log: [], rev: 0,
+    discoveredFrom: null, related: [], gates: [], assignee: null, handoff: null, verified: null, closed: null, log: [], rev: 0,
     ...task,
   };
 }
@@ -133,6 +134,7 @@ export function summarize(task, tasks, index = byId(tasks)) {
     ...(blockers.length ? { blockedBy: blockers } : {}),
     ...(gates.length ? { gates } : {}),
     ...(task.assignee ? { assignee: task.assignee.agent } : {}),
+    ...(task.verified && task.status !== 'closed' ? { verified: task.verified.skipped ? 'skipped' : task.verified.passed ? 'passed' : 'failed' } : {}),
   };
 }
 
@@ -421,19 +423,45 @@ export function startTask(projectRoot, id, assignee, by, options) {
   }, options);
 }
 
-/** Closes a task with a reason and a summary of the outcome. */
-export function closeTask(projectRoot, id, { reason = 'done', summary } = {}, by, options) {
+/**
+ * Closes a task with a reason and a summary of the outcome. For an agent, done
+ * needs the last verification to have passed, or `unverified`: why it is done
+ * anyway. The user may always close; the failed verification is noted.
+ */
+export function closeTask(projectRoot, id, { reason = 'done', summary, unverified } = {}, by, options) {
   return mutate(projectRoot, id, (task, tasks) => {
     if (!CLOSE_REASONS.includes(reason)) fail('INVALID_TASK', `reason must be one of ${CLOSE_REASONS.join(', ')}`);
     const closing = checkText(summary, 'summary', NOTE_CHARS);
+    let excuse = checkText(unverified, 'unverified', NOTE_CHARS);
     if (task.status === 'closed') fail('INVALID_TASK', `${id} is already closed`);
     const open = childrenOf(id, tasks).filter(child => child.status !== 'closed').map(child => child.id);
     if (reason === 'done' && open.length) fail('INVALID_TASK', `${id} has open children: ${open.join(', ')}; close them first`);
+    if (reason === 'done' && verificationFailed(task) && !excuse?.trim()) {
+      if (by !== 'user') fail('TASK_UNVERIFIED', `${id}'s last ${describeVerification(task.verified)}; fix it and verify again, or close it with unverified saying why it is done anyway`);
+      excuse = `the user closed it after ${describeVerification(task.verified)}`;
+    }
     task.status = 'closed';
-    task.closed = { at: now(), by, reason, ...(closing ? { summary: closing } : {}) };
+    task.closed = { at: now(), by, reason, ...(closing ? { summary: closing } : {}), ...(excuse ? { unverified: excuse } : {}) };
     task.assignee = null;
-    addLog(task, by, 'closed', { reason, ...(closing ? { summary: closing } : {}) });
+    addLog(task, by, 'closed', { reason, ...(closing ? { summary: closing } : {}), ...(excuse ? { unverified: excuse } : {}) });
   }, options);
+}
+
+/** Whether the task's last verification ran and failed. */
+export const verificationFailed = task => !!task.verified && !task.verified.passed && !task.verified.skipped;
+
+/**
+ * Records the outcome of the project's verify commands on a task: where they ran,
+ * each step's exit code and time, and the end of a failed step's output.
+ * @param {{ passed: boolean, cwd?: string, where?: string, commands?: Array<{ step: string, command: string, exitCode: number, ms: number, output?: string, timedOut?: boolean }>, skipped?: string }} verification
+ */
+export function recordVerification(projectRoot, id, verification, by) {
+  return mutate(projectRoot, id, task => {
+    if (task.status === 'closed') return;
+    const commands = (verification.commands ?? []).map(({ output, ...command }) => ({ ...command, ...(command.exitCode !== 0 && output ? { output: output.slice(-1000) } : {}) }));
+    task.verified = { at: now(), by, passed: verification.passed, ...(verification.where ? { where: verification.where } : {}), commands, ...(verification.skipped ? { skipped: verification.skipped } : {}) };
+    addLog(task, by, 'verified', { passed: verification.passed, detail: describeVerification(task.verified) });
+  });
 }
 
 /** Reopens a closed task, or puts one in progress or in review back to open. */
@@ -535,8 +563,8 @@ export function taskDigest(tasks, errors = []) {
   // Tasks only a gate holds back; a human gate waits for the user, the others clear by themselves.
   const gated = tasks.filter(task => task.status === 'open' && task.type !== 'epic' && !blockersOf(task, tasks, index).length && gatesOf(task, tasks, index).length).sort(rank);
   const lines = [
-    ...review.map(task => `- review: ${line(task)} ← ${task.handoff?.agent ?? task.assignee?.agent ?? 'unknown'}, handoff ${task.handoff?.outcome ?? 'none'}; accept with close, or send it back`),
-    ...working.map(task => `- in progress: ${line(task)} ← ${task.assignee?.agent ?? 'unknown'}`),
+    ...review.map(task => `- review: ${line(task)} ← ${task.handoff?.agent ?? task.assignee?.agent ?? 'unknown'}, handoff ${task.handoff?.outcome ?? 'none'}${task.verified ? `, ${describeVerification(task.verified)}` : ''}; accept with close, or send it back`),
+    ...working.map(task => `- in progress: ${line(task)} ← ${task.assignee?.agent ?? 'unknown'}${verificationFailed(task) ? `, ${describeVerification(task.verified)}` : ''}`),
     ...interrupted.map(task => { const entry = orphanedEntry(task); return `- interrupted: ${line(task)} ← ${entry.agent}; alpd stopped while it worked${entry.note ? `, ${entry.note}` : ''}; delegate it again`; }),
     ...gated.map(task => `- waiting on ${gatesOf(task, tasks, index).join('; ')}: ${line(task)}`),
     ...ready.slice(0, DIGEST_READY).map(task => `- ready: ${line(task)}`),

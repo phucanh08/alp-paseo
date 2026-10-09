@@ -13,14 +13,15 @@ import { LESSONS_FILE, READ_ONLY_AGENTS, resolveSession, type ResolvedSession, t
 import { MAIL_BODY_CHARS, publicEvent, renderMail, takeBatch, USER, type MailEvent } from './mailbox.js';
 import type { AlpEvent, AssignmentSnapshot, Envelope, SessionSnapshot, TreeStatus, TurnOrigin, UserQuestion } from './events.js';
 import { BOARD_KEEP, live, normalizePaths, overlapping, PIN_BODY_CHARS, PIN_KINDS, renderBoard, renderPin, type Pin, type PinKind } from './board.js';
+import { describeVerification, runVerify, verifyConfig, type Verification, type VerifyConfig } from '../core/verify.js';
 import { createRecallBook, recallPrompt, RECALL_KEEP_MS, RECALL_QUESTION_CHARS, RECALL_TIMEOUT_MS, type RecallEntry } from './recall.js';
-import { branchExists, checkoutKey, commitWorktree, createCopy, createWorktree, mergeWorktree, removeCopy, removeWorktree, type Copy, type Worktree, type WorktreeChange } from './workspace.js';
+import { branchExists, checkoutFingerprint, checkoutKey, commitWorktree, createCopy, createWorktree, linkModules, mergeWorktree, removeCopy, removeWorktree, type Copy, type Worktree, type WorktreeChange } from './workspace.js';
 import { claudeSandboxAvailable } from './claude-transport.js';
 import { ALP_REPO, gh, projectRepo, type GitHubRunner } from './github.js';
 import { parse as toml } from 'smol-toml';
 import { findFormula, formulaDirs, listFormulas, pourFormula } from '../core/formulas.js';
 import { ADVISORS, addAllowRule, capMode, commandDecision, profileFor, unwrapShell, type PermissionProfile } from '../core/permissions.js';
-import { CLOSE_REASONS, GATE_KINDS, addGate, checkGates, resolveGate, TASK_STATUSES, TASK_TYPES, TASKS_DIR, blockersOf, childrenOf, closeTask, releaseOrphans, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, releaseTask, reopenTask, startRefusal, startTask, submitTask, summarize, taskDigest, updateTask, type Task } from '../core/tasks.js';
+import { CLOSE_REASONS, GATE_KINDS, addGate, checkGates, resolveGate, TASK_STATUSES, TASK_TYPES, TASKS_DIR, blockersOf, childrenOf, closeTask, recordVerification, releaseOrphans, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, releaseTask, reopenTask, startRefusal, startTask, submitTask, summarize, taskDigest, updateTask, type Task } from '../core/tasks.js';
 
 export type RuntimeTransport = {
   request(method: string, params: any): Promise<any>;
@@ -170,7 +171,8 @@ type Session = {
   acknowledged: Promise<void>;
 
   /** Finished isolated assignments whose change waits for alp_merge or alp_discard. */
-  worktrees: Map<string, { agent: string; worktree: Worktree; change: WorktreeChange }>;
+  /** Finished worktree assignments waiting for alp_merge or alp_discard; verification holds a failed check. */
+  worktrees: Map<string, { agent: string; worktree: Worktree; change: WorktreeChange; taskId?: string; verification?: Verification }>;
 
   settle?: (state: string, error?: unknown) => void;
 
@@ -213,6 +215,8 @@ type Assignment = {
   lease?: string;
   /** The task this assignment took with alp_delegate { taskId }. */
   taskId?: string;
+  /** For a writer in the shared checkout: checkoutFingerprint when it started, to tell whether it changed anything. */
+  fingerprint?: string;
   startedAt: number;
   warned: boolean;
   finished: boolean;
@@ -297,11 +301,25 @@ const SEND_TOOL = {
 const MERGE_TOOL = {
   type: 'function',
   name: 'alp_merge',
-  description: 'Apply the change of a finished worktree assignment to your checkout, uncommitted. Conflicts are left as conflict markers for you to resolve.',
+  description: 'Apply the change of a finished worktree assignment to your checkout, uncommitted. Conflicts are left as conflict markers for you to resolve. When the project configures verify commands, ALP runs them in the worktree first and applies nothing if they fail.',
   inputSchema: {
     type: 'object',
-    properties: { assignmentId: { type: 'string' } },
+    properties: {
+      assignmentId: { type: 'string' },
+      skipVerify: { type: 'string', description: 'Merge without running the verify commands; say why. It is recorded on the task.' },
+    },
     required: ['assignmentId'],
+    additionalProperties: false,
+  },
+};
+
+const VERIFY_TOOL = {
+  type: 'function',
+  name: 'alp_verify',
+  description: "Run the project's verify commands (setup, typecheck, test from .alp/settings.json) in your checkout, for example after resolving merge conflicts. Main may pass taskId to record the result on the task.",
+  inputSchema: {
+    type: 'object',
+    properties: { taskId: { type: 'string', description: 'Main only: the task the result counts for.' } },
     additionalProperties: false,
   },
 };
@@ -454,7 +472,7 @@ const TASK_FIELDS: Record<TaskAction, string[]> = {
   update: ['id', 'title', 'description', 'type', 'priority', 'labels', 'paths', 'note'],
   link: ['id', 'add', 'remove'],
   start: ['id'],
-  close: ['id', 'reason', 'summary'],
+  close: ['id', 'reason', 'summary', 'unverified'],
   reopen: ['id', 'note'],
   gate: ['id', 'kind', 'note', 'until', 'ref'],
   clear: ['id', 'gate', 'note'],
@@ -516,6 +534,7 @@ function taskTool(actions: TaskAction[]) {
           formula: { type: 'string', description: 'For pour: the formula name, from action formulas.' },
           vars: { type: 'object', additionalProperties: { type: 'string' }, description: 'For pour: values of the formula variables.' },
           summary: { type: 'string', description: 'For close: the outcome and its evidence.' },
+          unverified: { type: 'string', description: "For close as done when the task's last verification failed: why it is done anyway. Recorded on the task." },
           note: { type: 'string', description: 'For update and reopen: why.' },
         } : {}),
         ...(actions.includes('list') ? {
@@ -721,6 +740,7 @@ function nativeSessionConfig(
       'A worktree result lists its branch and changed files; apply it with alp_merge (uncommitted, conflicts left as markers) or drop it with alp_discard, then verify. ' +
       'Writers in this shared checkout run one at a time. ' +
       'To learn why a finished assignment did something, ask it with alp_recall rather than guessing from its handoff. ' +
+      'When the project configures verify commands, ALP runs them before alp_merge applies a change, and after a writer in your checkout finishes; a failed check applies nothing. To fix a failed worktree change, delegate again with continueFrom set to its assignmentId. ' +
       'Do not run shell/file mutations in parallel with delegation. ' +
       'Include scope, constraints, verification, and required handoff in task. ' +
       'Child inherits your mode unless you request read-only. ' +
@@ -810,6 +830,7 @@ function nativeSessionConfig(
                   description: 'Never more than your own mode.',
                 },
                 isolation: { type: 'string', enum: ['shared', 'worktree'], description: 'Default shared: your checkout. worktree: a writing peer works in its own git worktree, so it can run beside other peers; apply its change with alp_merge.' },
+                continueFrom: { type: 'string', description: 'A finished worktree assignment you have not merged or discarded: the new assignment works in a worktree that starts from its change, for example to fix what verification found. Implies isolation worktree.' },
                 wait: { type: 'boolean', description: 'Default true: wait for the result or the first question. false: return the assignmentId immediately.' },
                 ...(!parentAgent && mapping.agent.name === 'main'
                   ? { taskId: { type: 'string', description: 'For lead or peer: the ready task this assignment takes. It starts the task, claims its paths for a writing assignment, and the handoff moves it to review for you to accept.' } }
@@ -821,7 +842,7 @@ function nativeSessionConfig(
           },
         ]
       : []),
-      ...(targets.length ? [WAIT_TOOL, MERGE_TOOL, DISCARD_TOOL, RECALL_TOOL] : []),
+      ...(targets.length ? [WAIT_TOOL, MERGE_TOOL, DISCARD_TOOL, VERIFY_TOOL, RECALL_TOOL] : []),
       ...(targets.length || parentAgent ? [SEND_TOOL] : []),
       ...(parentAgent ? [HANDOFF_TOOL] : []),
       ...(supervised ? [LESSON_TOOL, SKILL_TOOL] : []),
@@ -1443,7 +1464,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         const rows = action === 'ready' ? readyTasks(tasks) : listTasks(tasks, { status: args.status, label: args.label });
         return toolResult(true, { tasks: rows.slice(0, limit).map(task => summarize(task, tasks)), ...(rows.length > limit ? { more: rows.length - limit } : {}), ...warnings });
       }
-      const { action: _action, id, note, reason, summary, add, remove, ...input } = args;
+      const { action: _action, id, note, reason, summary, unverified, add, remove, ...input } = args;
       if (action === 'pour' && (typeof input.formula !== 'string' || (input.vars !== undefined && (!input.vars || typeof input.vars !== 'object' || Array.isArray(input.vars) || !Object.values(input.vars).every(value => typeof value === 'string'))))) {
         return toolResult(false, { error: 'pour needs formula, and vars as an object of text values' });
       }
@@ -1461,7 +1482,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         : action === 'clear' ? await resolveGate(project, id, gate, { by, note })
         : action === 'link' ? await linkTask(project, id, { add, remove }, by)
         : action === 'start' ? await startTask(project, id, { agent: by, session: sessionId }, by)
-        : action === 'close' ? await closeTask(project, id, { reason, summary }, by)
+        : action === 'close' ? await closeTask(project, id, { reason, summary, unverified }, by)
         : await reopenTask(project, id, { note }, by);
       touchTask(rootOf(sessionId), task.id);
       runLog(rootOf(sessionId), { event: 'task', action, agent: by, id: task.id, title: task.title, status: task.status, ...(summary ?? note ? { detail: summary ?? note } : {}) });
@@ -1972,7 +1993,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         runLog(rootOf(parentId), { event: 'worktree.kept', assignmentId: assignment.id, branch: worktree.branch });
         return { ...described, note: 'The requester closed; the change stays on the branch' };
       }
-      parent.worktrees.set(assignment.id, { agent: assignment.agent, worktree, change });
+      parent.worktrees.set(assignment.id, { agent: assignment.agent, worktree, change, ...(assignment.taskId ? { taskId: assignment.taskId } : {}) });
       return { ...described, next: 'Apply it with alp_merge, or drop it with alp_discard' };
     } catch (error) {
       await removeWorktree(worktree).catch(() => {});
@@ -1981,7 +2002,10 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   }
 
   async function worktreeTool(sessionId: string, session: Session, args: unknown, action: 'merge' | 'discard') {
-    if (!plainObject(args, ['assignmentId']) || typeof args.assignmentId !== 'string') return toolResult(false, { error: 'assignmentId is required' });
+    if (!plainObject(args, ['assignmentId', 'skipVerify']) || typeof args.assignmentId !== 'string' ||
+      (args.skipVerify !== undefined && (action !== 'merge' || typeof args.skipVerify !== 'string' || !args.skipVerify.trim()))) {
+      return toolResult(false, { error: action === 'merge' ? 'assignmentId is required; skipVerify, when given, says why to merge without verification' : 'assignmentId is required' });
+    }
     const pending = session.worktrees.get(args.assignmentId);
     if (!pending) {
       return toolResult(false, { error: session.assignments.has(args.assignmentId) ? 'The assignment is still running; wait for its result' : 'No unmerged worktree change with that assignment id' });
@@ -2005,26 +2029,132 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       session.worktrees.set(args.assignmentId, pending);
       return toolResult(false, { error: `${holder.agent} in another session is writing this checkout; merge after it finishes` });
     }
-    const previous = merging.get(checkout) ?? Promise.resolve();
-    const attempt = previous.catch(() => {}).then(() => mergeWorktree(worktree, change));
-    merging.set(checkout, attempt);
-    void attempt.finally(() => { if (merging.get(checkout) === attempt) merging.delete(checkout); }).catch(() => {});
-    let merged;
+    const project = session.mapping.agent.projectRoot;
+    const rootId = rootOf(sessionId);
+    let config: VerifyConfig | undefined;
+    try { config = await verifyConfig(project); }
+    catch (error) {
+      session.worktrees.set(args.assignmentId, pending);
+      return toolResult(false, { error: errorData(error).message });
+    }
+    let verified: Verification | undefined;
+    if (config && args.skipVerify === undefined) {
+      const verification = verified = await verifyIn(project, worktreeDirectory(worktree, project), config);
+      noteVerification(rootId, project, pending.taskId, args.assignmentId, 'worktree', verification);
+      if (!verification.passed) {
+        session.worktrees.set(args.assignmentId, { ...pending, verification });
+        return toolResult(false, {
+          assignmentId: args.assignmentId,
+          error: `${describeVerification(verification)} in the assignment's worktree; nothing was applied`,
+          verification: verificationResult(verification),
+          branch: worktree.branch,
+          next: `Delegate again with continueFrom "${args.assignmentId}"${pending.taskId ? ` and taskId ${pending.taskId}` : ''} to fix it in a worktree that starts from this change; or alp_discard it; or alp_merge it with skipVerify saying why`,
+        });
+      }
+    } else if (config && pending.taskId) {
+      await recordVerification(project, pending.taskId, { passed: false, skipped: args.skipVerify }, session.mapping.agent.name).catch(() => {});
+      runLog(rootId, { event: 'verify', assignmentId: args.assignmentId, where: 'worktree', skipped: args.skipVerify });
+    }
+    let merged: Awaited<ReturnType<typeof mergeWorktree>>;
+    let moved = false;
     try {
-      merged = await attempt;
+      ({ merged, moved } = await inCheckout(checkout, async () => {
+        const before = await checkoutFingerprint(worktree.checkout).catch(() => undefined);
+        return { merged: await mergeWorktree(worktree, change), moved: !worktree.fingerprint || before !== worktree.fingerprint };
+      }));
     } catch (error) {
       session.worktrees.set(args.assignmentId, pending);
       return toolResult(false, { error: errorData(error).message, branch: worktree.branch, next: 'Merge the branch yourself, or alp_discard it' });
     }
     // A conflicted change keeps its branch for reference.
     await removeWorktree(worktree, { deleteBranch: merged.status !== 'conflicts' });
-    runLog(rootOf(sessionId), { event: 'worktree.merged', assignmentId: args.assignmentId, branch: worktree.branch, ...merged });
+    runLog(rootId, { event: 'worktree.merged', assignmentId: args.assignmentId, branch: worktree.branch, ...merged });
+    // The checkout changed since the assignment started, so the worktree's check says little about the result: check the checkout too.
+    let checked: Verification | undefined;
+    if (config && args.skipVerify === undefined && merged.status === 'applied' && moved) {
+      checked = await inCheckout(checkout, () => verifyIn(project, session.mapping.workdir, config!));
+      noteVerification(rootId, project, pending.taskId, args.assignmentId, 'checkout', checked);
+    }
     return toolResult(true, {
       assignmentId: args.assignmentId,
       ...merged,
       ...(merged.status === 'conflicts' ? { branch: worktree.branch } : {}),
-      next: merged.status === 'conflicts' ? 'Resolve the conflict markers in the listed files, then verify' : 'Review and verify the applied change; it is not committed',
+      ...(verified ? { verification: verificationResult(checked ?? verified), ...(checked ? { verifiedIn: 'your checkout, which changed since the assignment started' } : {}) } : {}),
+      ...(args.skipVerify !== undefined && config ? { verification: { skipped: args.skipVerify } } : {}),
+      next: merged.status === 'conflicts' ? `Resolve the conflict markers in the listed files, then verify${config ? ' with alp_verify' : ''}`
+        : checked && !checked.passed ? `The change passed in its worktree but ${describeVerification(checked)} in your checkout, which changed meanwhile; fix it, then run alp_verify`
+        : 'Review the applied change; it is not committed',
     });
+  }
+
+  /** Work on a checkout, one at a time: merges and the verify runs that check them. */
+  function inCheckout<T>(checkout: string, work: () => Promise<T>): Promise<T> {
+    const previous = merging.get(checkout) ?? Promise.resolve();
+    const attempt = previous.catch(() => {}).then(work);
+    merging.set(checkout, attempt);
+    void attempt.finally(() => { if (merging.get(checkout) === attempt) merging.delete(checkout); }).catch(() => {});
+    return attempt;
+  }
+
+  /** The directory in a worktree that corresponds to the project root. */
+  function worktreeDirectory(worktree: Worktree, project: string) {
+    let real = project;
+    try { real = realpathSync(project); } catch {}
+    return path.join(worktree.path, path.relative(worktree.checkout, real));
+  }
+
+  /** Runs the project's verify commands in `directory`; a worktree borrows the project's node_modules for the run. */
+  async function verifyIn(project: string, directory: string, config: VerifyConfig) {
+    const same = path.resolve(directory) === path.resolve(project);
+    const unlinkModules = same ? async () => {} : await linkModules(project, directory).catch(() => async () => {});
+    try {
+      return await runVerify(directory, config, { env: nativeEnvironment(options) });
+    } finally {
+      await unlinkModules();
+    }
+  }
+
+  /** What an agent sees of a verification: each step's exit code and time, and the end of a failed step's output. */
+  function verificationResult(verification: Verification | { passed: boolean; commands: Array<Record<string, any>>; cwd?: string }) {
+    const failed = verification.commands.find(command => command.exitCode !== 0);
+    return {
+      passed: verification.passed,
+      steps: verification.commands.map(({ step, command, exitCode, ms, timedOut }) => ({ step, command, exitCode, ms, ...(timedOut ? { timedOut } : {}) })),
+      ...(failed?.output ? { output: failed.output } : {}),
+    };
+  }
+
+  /** Logs a verification, and records it on the task it counts for. */
+  function noteVerification(rootId: string, project: string, taskId: string | undefined, assignmentId: string | undefined, where: 'worktree' | 'checkout', verification: Verification) {
+    runLog(rootId, { event: 'verify', ...(assignmentId ? { assignmentId } : {}), ...(taskId ? { taskId } : {}), where, passed: verification.passed, detail: describeVerification(verification) });
+    if (taskId) void recordVerification(project, taskId, { ...verification, where }, 'alpd').then(() => touchTask(rootId, taskId), () => {});
+  }
+
+  /** The start of the brief of an assignment that continues an earlier worktree change. */
+  function continuedBrief(from: string, continued: { agent: string; change: WorktreeChange; verification?: Verification }) {
+    const failed = continued.verification?.commands.find(command => command.exitCode !== 0);
+    return `Your worktree starts from the change of ${continued.agent}'s assignment ${from}, committed on your branch (${continued.change.files.length} files: ${continued.change.files.slice(0, 20).join(', ')}). Build on it rather than starting over.` +
+      (continued.verification && !continued.verification.passed
+        ? ` The project's checks failed on it: ${describeVerification(continued.verification)}, running \`${failed?.command}\`. The end of its output:\n${failed?.output.slice(-1500) ?? ''}`
+        : '');
+  }
+
+  async function verifyTool(sessionId: string, session: Session, args: unknown) {
+    if (!plainObject(args, ['taskId']) || (args.taskId !== undefined && typeof args.taskId !== 'string')) return toolResult(false, { error: 'alp_verify takes only taskId' });
+    if (args.taskId !== undefined && (session.parent || session.mapping.agent.name !== 'main')) return toolResult(false, { error: 'Only main records a verification on a task; call alp_verify without taskId' });
+    const project = session.mapping.agent.projectRoot;
+    let config: VerifyConfig | undefined;
+    try { config = await verifyConfig(project); } catch (error) { return toolResult(false, { error: errorData(error).message }); }
+    if (!config) return toolResult(false, { error: 'This project has no verify commands (verify in .alp/settings.json); run its checks yourself' });
+    if (args.taskId !== undefined) {
+      const task = (await loadTasks(project)).tasks.find(entry => entry.id === args.taskId);
+      if (!task) return toolResult(false, { error: `No task ${args.taskId}` });
+      if (task.status === 'closed') return toolResult(false, { error: `${args.taskId} is closed` });
+    }
+    const checkout = await checkoutKey(session.mapping.workdir);
+    const verification = await inCheckout(checkout, () => verifyIn(project, session.mapping.workdir, config!));
+    noteVerification(rootOf(sessionId), project, args.taskId, undefined, 'checkout', verification);
+    return toolResult(true, { ...verificationResult(verification), summary: describeVerification(verification), ...(args.taskId ? { recordedOn: args.taskId } : {}) });
   }
 
   /**
@@ -2083,6 +2213,18 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       await removeCopy(assignment.copy).catch(() => {});
       runLog(rootOf(parentId), { event: 'copy.removed', assignmentId: assignment.id, path: assignment.copy.path });
     }
+    // A writer in the shared checkout left its change there: check it while still holding the lease, so no other writer changes the tree meanwhile.
+    if (state === 'completed' && assignment.isolation === 'shared' && !assignment.copy && writes(assignment.mode) && child) {
+      const project = child.mapping.agent.projectRoot;
+      const config = await verifyConfig(project).catch(() => undefined);
+      const checkout = await checkoutKey(child.mapping.workdir);
+      const changed = !assignment.fingerprint || assignment.fingerprint !== await checkoutFingerprint(checkout).catch(() => undefined);
+      if (config && changed) {
+        const verification = await inCheckout(checkout, () => verifyIn(project, child.mapping.workdir, config));
+        result.verification = verificationResult(verification);
+        noteVerification(rootOf(parentId), project, assignment.taskId, assignment.id, 'checkout', verification);
+      }
+    }
     if (assignment.lease && leases.get(assignment.lease)?.assignment === assignment.id) leases.delete(assignment.lease);
     if (assignment.worktree) result.worktree = await settleWorktree(parentId, parent, assignment);
     if (assignment.taskId) result.task = await settleTask(parent, assignment, state, child?.handoff);
@@ -2125,7 +2267,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
 
     if (
-      !['alp_delegate', 'alp_handoff', 'alp_wait', 'alp_send', 'alp_ask', 'alp_merge', 'alp_discard', 'alp_recall', 'alp_pin', 'alp_board', 'alp_unpin', 'alp_lesson', 'alp_skill', 'alp_issue', 'alp_task'].includes(params.tool) ||
+      !['alp_delegate', 'alp_handoff', 'alp_wait', 'alp_send', 'alp_ask', 'alp_merge', 'alp_discard', 'alp_recall', 'alp_verify', 'alp_pin', 'alp_board', 'alp_unpin', 'alp_lesson', 'alp_skill', 'alp_issue', 'alp_task'].includes(params.tool) ||
       params.namespace != null ||
       typeof params.callId !== 'string'
     ) {
@@ -2154,6 +2296,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       : params.tool === 'alp_board' ? boardTool(session, args)
       : params.tool === 'alp_unpin' ? unpinTool(sessionId, session, args)
       : params.tool === 'alp_recall' ? recallTool(sessionId, session, args)
+      : params.tool === 'alp_verify' ? verifyTool(sessionId, session, args)
       : params.tool === 'alp_merge' || params.tool === 'alp_discard' ? worktreeTool(sessionId, session, args, params.tool === 'alp_merge' ? 'merge' : 'discard')
       : Promise.resolve(params.tool === 'alp_send' ? sendTool(sessionId, session, args) : recordHandoff(session, args));
 
@@ -2497,7 +2640,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       typeof args !== 'object' ||
       Array.isArray(args) ||
       Object.keys(args).some(
-        (key) => !['agent', 'task', 'mode', 'model', 'thinking', 'modelReason', 'wait', 'isolation', 'taskId'].includes(key),
+        (key) => !['agent', 'task', 'mode', 'model', 'thinking', 'modelReason', 'wait', 'isolation', 'taskId', 'continueFrom'].includes(key),
       ) ||
       !targets.includes(args.agent) ||
       typeof args.task !== 'string' ||
@@ -2527,7 +2670,11 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       ...(childProfile && childMode !== (args.mode ?? session.mapping.mode) ? { mode: childMode, modeNote: `${args.agent} runs ${childMode}: its permission profile ${childProfile.name} caps it` } : {}),
       ...(childProfile?.workdir === 'copy' && isolationOf(args) === 'shared' ? { workdirNote: `${args.agent} works in a disposable copy of your tree; nothing it changes reaches yours` } : {}),
     };
-    const isolation: Assignment['isolation'] = args.isolation ?? 'shared';
+    if (args.continueFrom !== undefined) {
+      if (typeof args.continueFrom !== 'string' || !session.worktrees.has(args.continueFrom)) return toolResult(false, { error: 'continueFrom names a finished worktree assignment of yours that you have not merged or discarded' });
+      if (args.isolation === 'shared') return toolResult(false, { error: 'continueFrom works in a worktree; leave out isolation or pass "worktree"' });
+    }
+    const isolation: Assignment['isolation'] = args.isolation ?? (args.continueFrom !== undefined ? 'worktree' : 'shared');
     if (isolation === 'worktree' && !writes(childMode)) return toolResult(false, { error: 'Worktree isolation is for writing assignments (mode workspace-write or full-access)' });
     const project = session.mapping.agent.projectRoot;
     let task: Task | undefined;
@@ -2589,6 +2736,10 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     if (holder && !lineage(sessionId).includes(holder.assignment)) {
       return toolResult(false, { error: `${holder.agent} in another session is writing ${checkout}; wait for it, or use isolation "worktree"` });
     }
+    // Taken now, so a second delegation or a merge cannot use the same change.
+    const continued = args.continueFrom !== undefined ? session.worktrees.get(args.continueFrom) : undefined;
+    if (args.continueFrom !== undefined && !continued) return toolResult(false, { error: `${args.continueFrom} was merged or discarded meanwhile` });
+    if (continued) session.worktrees.delete(args.continueFrom);
     root.calls++;
     if (args.agent === 'peer') root.peerCount++;
 
@@ -2641,9 +2792,19 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         runLog(rootId, { event: 'task', action: 'delegate', agent: session.mapping.agent.name, id: started.id, title: started.title, status: started.status, detail: `to ${args.agent}` });
       }
       if (isolation === 'worktree') {
-        assignment.worktree = await createWorktree(session.mapping.workdir, worktreeRoot, childId);
-        runLog(rootId, { event: 'worktree.created', assignmentId: childId, branch: assignment.worktree.branch, base: assignment.worktree.base });
-      } else if (childProfile?.workdir === 'copy') {
+        try {
+          assignment.worktree = await createWorktree(session.mapping.workdir, worktreeRoot, childId, continued ? { commit: continued.change.commit, base: continued.worktree.base, fingerprint: continued.worktree.fingerprint } : undefined);
+        } catch (error) {
+          if (continued) session.worktrees.set(args.continueFrom, continued);
+          throw error;
+        }
+        // The new branch holds the earlier change, so its worktree and branch can go.
+        if (continued) await removeWorktree(continued.worktree, { deleteBranch: true }).catch(() => {});
+        runLog(rootId, { event: 'worktree.created', assignmentId: childId, branch: assignment.worktree.branch, base: assignment.worktree.base, ...(continued ? { continuedFrom: args.continueFrom } : {}) });
+      } else if (sharedWriter) {
+        assignment.fingerprint = await checkoutFingerprint(checkout).catch(() => undefined);
+      }
+      if (isolation !== 'worktree' && childProfile?.workdir === 'copy') {
         assignment.copy = await createCopy(session.mapping.workdir, copyRoot, childId);
         runLog(rootId, { event: 'copy.created', assignmentId: childId, agent: args.agent, path: assignment.copy.path });
       }
@@ -2697,6 +2858,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
               `Assignment from ${session.mapping.agent.name}. ` +
               'Finish by filing your handoff for that agent with alp_handoff.\n\n' +
               (task ? `${taskBrief(task, writes(childMode))}\n\n` : '') +
+              (continued ? `${continuedBrief(args.continueFrom, continued)}\n\n` : '') +
               args.task +
               (digest ? `\n\n${digest}` : ''),
           },
