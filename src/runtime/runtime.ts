@@ -308,8 +308,8 @@ const MAX_WAKES = 8;
 
 /** What a waiting session hears when the user wrote to it. */
 const USER_WROTE = 'The user just wrote to you; their message follows. Answer them first in a short reply, and steer an assignment with alp_send when their words change its brief. Your assignments keep running: then alp_wait again, or end your turn and ALP wakes you with their results.';
-/** What a waiting session hears with a check-in. */
-const CHECKED_IN = 'A check-in, not a result: the assignment keeps running. Act on the check-in, then alp_wait again or end your turn.';
+/** What a waiting session hears with a check-in, or mail from its requester or the user. */
+const CHECKED_IN = 'Not a result: the assignment keeps running. Act on this mail first (a steer from your requester or the user\'s words may change what your assignments should do: pass that on with alp_send), then alp_wait again or end your turn.';
 /** A session's native process is restarted at most RESTART_LIMIT times within RESTART_WINDOW_MS unless it makes progress meanwhile. */
 const RESTART_LIMIT = 3;
 const RESTART_WINDOW_MS = 10 * 60_000;
@@ -2472,9 +2472,10 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
    * Resolves with delivered mail, [] on timeout, or null when the turn ends.
    * A waiting delegate goes first so a concurrent catch-all alp_wait cannot take its result.
    */
-  function waitFor(session: Session, wanted: (event: MailEvent) => boolean, timeoutMs?: number, first = false) {
-    // A check-in ends any wait: it is how a long wait hears that time passed.
-    const accept = (event: MailEvent) => event.kind === 'checkin' || wanted(event);
+  function waitFor(sessionId: string, session: Session, wanted: (event: MailEvent) => boolean, timeoutMs?: number, first = false) {
+    // A check-in ends any wait, and so does mail to the session itself: its requester's
+    // steer or the user's words must not sit behind a long wait for its own assignments.
+    const accept = (event: MailEvent) => event.kind === 'checkin' || event.assignment === sessionId || wanted(event);
     const ready = takeBatch(session.mail, event => event.kind !== 'board' && !event.defer && accept(event));
     if (ready.length) {
       for (const event of ready) event.deliveredTurn = session.active;
@@ -2925,7 +2926,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       : params.tool === 'alp_issue' ? issueTool(sessionId, session, args)
       : params.tool === 'alp_task' ? taskToolCall(sessionId, session, args)
       : params.tool === 'alp_delegate' ? runDelegation(sessionId, session, params)
-      : params.tool === 'alp_wait' ? waitTool(session, args)
+      : params.tool === 'alp_wait' ? waitTool(sessionId, session, args)
       : params.tool === 'alp_ask' ? askTool(sessionId, session, args)
       : params.tool === 'alp_pin' ? pinTool(sessionId, session, args)
       : params.tool === 'alp_board' ? boardTool(session, args)
@@ -2966,7 +2967,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   const plainObject = (value: unknown, keys: string[]): value is Record<string, any> =>
     !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(key => keys.includes(key));
 
-  async function waitTool(session: Session, args: unknown) {
+  async function waitTool(sessionId: string, session: Session, args: unknown) {
     if (!plainObject(args, ['assignments', 'timeoutMs'])) return toolResult(false, { error: 'Invalid wait' });
     const known = (id: unknown) => typeof id === 'string' && (session.assignments.has(id) || session.mail.some(event => event.assignment === id));
     if (args.assignments !== undefined && (!Array.isArray(args.assignments) || !args.assignments.every(known))) {
@@ -2978,7 +2979,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     const ids: Set<string> | undefined = args.assignments?.length ? new Set(args.assignments) : undefined;
     const accept = (event: MailEvent) => !ids || ids.has(event.assignment);
     const pending = [...session.assignments.keys()].some(id => !ids || ids.has(id)) || takeBatch(session.mail, event => event.kind !== 'board' && !event.defer && accept(event)).length > 0;
-    const events = pending ? await waitFor(session, accept, Math.min(args.timeoutMs ?? 300_000, 900_000)) : [];
+    const events = pending ? await waitFor(sessionId, session, accept, Math.min(args.timeoutMs ?? 300_000, 900_000)) : [];
     if (events === 'user') return toolResult(true, { events: [], userMessage: true, running: running(session), next: USER_WROTE });
     if (!events) return toolResult(false, { error: 'Turn ended' });
     return toolResult(true, { events: events.map(publicEvent), running: running(session) });
@@ -3552,7 +3553,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
     // Waiting returns the result, or the child's first question so it can be answered.
     // The user's words and check-ins end the wait early; the assignment keeps running.
-    const events = await waitFor(session, event => event.assignment === childId && (event.kind === 'result' || event.kind === 'question'), undefined, true);
+    const events = await waitFor(sessionId, session, event => event.assignment === childId && (event.kind === 'result' || event.kind === 'question'), undefined, true);
 
     if (events === 'user') return toolResult(true, { assignmentId: childId, agent: args.agent, status: 'running', userMessage: true, next: USER_WROTE });
 

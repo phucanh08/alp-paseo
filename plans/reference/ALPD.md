@@ -1679,3 +1679,13 @@ Goal: the user saw no skills on main in Settings → ALP, though main gets six. 
 - `test/library-edit.test.js`: a built-in main's `librarySkills`, setting the list without a copy, resolution, an unknown skill refused, and an empty list removed.
 - `test/settings-screen.test.js`: the hinted switch in the library and the locked one in a project.
 - `test/paseo.test.js` and `test/panel.test.js`: the RPC list.
+
+## 50. Requesters hear their own mail while they wait (2026-10-09)
+
+Goal: the D24 fix let the user's words end main's waits; lead had the same gap one level down. In the user's `tools` session, main steered lead at 15:05:07 with the user's new style requirement. Lead was waiting for peer in `alp_delegate`, whose waiter took only the peer's result or question. Lead read the steer at 15:16:24, when the peer finished.
+
+- `waitFor(sessionId, …)` accepts, besides what the caller waits for and check-ins, any mail addressed to the waiting session itself (`event.assignment === sessionId`): its requester's steer or note, and the user's direct words. `alp_wait` with named assignments and a waiting `alp_delegate` now return on it.
+- A waiting `alp_delegate` returns `status: 'running'` with the events. `next` tells the session to act on the mail, pass on what changes its assignments' work with `alp_send`, then wait again.
+- Deferred mail (the supervisor's) and board mail still never end a wait.
+
+**Evidence.** `test/reachable.test.js`: in a Cafe tree, main's steer ends lead's waiting `alp_delegate` for its peer, which keeps running, and main's note ends lead's `alp_wait` for that named assignment.
