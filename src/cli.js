@@ -8,6 +8,7 @@ import { parseArgs } from 'node:util';
 import { initProject } from './core/init.js';
 import { upgradeProject } from './core/upgrade.js';
 import { seedLibrary } from './core/library.js';
+import { blockersOf, childrenOf, closeTask, createTask, linkTask, listTasks, loadTasks, readyTasks, reopenTask, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
 import { alpHome, connect, ensureDaemon, lockAlive, readLock } from './client/index.js';
 
 const USAGE = `Usage:
@@ -22,6 +23,13 @@ const USAGE = `Usage:
   alp answer <question> <text> | alp answer <question> --dismiss [--reason R]
   alp log <session> [--json]
   alp board [--project DIR] [--json]
+  alp tasks [ready] [--all] [--status S] [--label L] [--project DIR] [--json]
+  alp task add <title> [-d text] [-p 0-4] [-t task|bug|feature|chore|epic] [--parent ID] [--after ID]... [-l label]... [--path P]... [--from ID]
+  alp task show <id> [--json]
+  alp task edit <id> [--title T] [-d text] [-p N] [-t type] [-l label]... [--path P]... [-m note]
+  alp task close <id> [--reason done|wontfix|duplicate|superseded] [-m summary]
+  alp task reopen <id> [-m note]
+  alp task dep <add|rm> <id> [--after ID]... [--parent ID] [--related ID]...
   alp interrupt <session>`;
 
 const DAEMON_ENTRY = fileURLToPath(new URL('../dist/alpd.js', import.meta.url));
@@ -451,6 +459,121 @@ async function board(args) {
   }
 }
 
+const STATUS_MARK = { open: '○', in_progress: '◐', review: '◑', closed: '●' };
+
+/** The ALP project a task command works on: --project, or the current directory. */
+async function taskProject(directory) {
+  const root = path.resolve(directory ?? process.cwd());
+  try { await access(path.join(root, '.alp')); }
+  catch { throw new Error(`${root} is not an ALP project (no .alp directory); run alp init, or pass --project`); }
+  return root;
+}
+
+function taskRow(task, tasks) {
+  const row = summarize(task, tasks);
+  const extra = [
+    row.blockedBy ? `blocked by ${row.blockedBy.join(', ')}` : '',
+    row.assignee ? `@${row.assignee}` : '',
+    row.labels ? row.labels.map(label => `#${label}`).join(' ') : '',
+  ].filter(Boolean).join('  ');
+  return `${STATUS_MARK[task.status]} ${task.id.padEnd(10)} P${task.priority} ${task.type.padEnd(7)} ${task.status.padEnd(11)} ${task.title}${extra ? `  ${extra}` : ''}`;
+}
+
+function warnUnreadable(errors) {
+  for (const { file, error } of errors) console.error(`alp: skipped ${file}: ${error}`);
+}
+
+/** The project's tasks: open, in progress and in review by default; ready lists what nothing blocks. */
+async function tasksCommand(args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
+    all: { type: 'boolean' }, status: { type: 'string' }, label: { type: 'string' }, project: { type: 'string' }, json: { type: 'boolean' },
+  } });
+  if (positionals.length > 1 || (positionals.length && positionals[0] !== 'ready')) throw new UsageError();
+  const root = await taskProject(values.project);
+  const { tasks, errors } = await loadTasks(root);
+  warnUnreadable(errors);
+  const rows = positionals[0] === 'ready' ? readyTasks(tasks) : listTasks(tasks, { status: values.status, label: values.label, all: values.all });
+  if (values.json) { console.log(JSON.stringify(rows)); return; }
+  if (!rows.length) { console.log(positionals[0] === 'ready' ? 'No task is ready' : `No tasks in ${path.join(root, TASKS_DIR)}`); return; }
+  for (const task of rows) console.log(taskRow(task, tasks));
+}
+
+const repeated = { type: 'string', multiple: true };
+
+async function taskCommand([action, ...args]) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
+    description: { type: 'string', short: 'd' }, priority: { type: 'string', short: 'p' }, type: { type: 'string', short: 't' },
+    label: { ...repeated, short: 'l' }, path: repeated, parent: { type: 'string' }, after: repeated, related: repeated, from: { type: 'string' },
+    title: { type: 'string' }, message: { type: 'string', short: 'm' }, reason: { type: 'string' }, project: { type: 'string' }, json: { type: 'boolean' },
+  } });
+  const root = await taskProject(values.project);
+  const fields = {
+    ...(values.description !== undefined ? { description: values.description } : {}),
+    ...(values.priority !== undefined ? { priority: values.priority } : {}),
+    ...(values.type !== undefined ? { type: values.type } : {}),
+    ...(values.label ? { labels: values.label } : {}),
+    ...(values.path ? { paths: values.path } : {}),
+  };
+  let task;
+  if (action === 'add') {
+    const title = positionals.join(' ').trim();
+    if (!title) throw new UsageError();
+    task = await createTask(root, { title, ...fields, parent: values.parent, blockedBy: values.after, related: values.related, discoveredFrom: values.from }, 'user');
+  } else if (action === 'show') {
+    if (positionals.length !== 1) throw new UsageError();
+    const { tasks, errors } = await loadTasks(root);
+    warnUnreadable(errors);
+    task = tasks.find(candidate => candidate.id === positionals[0]);
+    if (!task) throw new Error(`No task ${positionals[0]} in ${path.join(root, TASKS_DIR)}`);
+    if (values.json) { console.log(JSON.stringify(task)); return; }
+    printTask(task, tasks);
+    return;
+  } else if (action === 'edit') {
+    if (positionals.length !== 1) throw new UsageError();
+    task = await updateTask(root, positionals[0], { ...fields, ...(values.title !== undefined ? { title: values.title } : {}), note: values.message }, 'user');
+  } else if (action === 'close') {
+    if (positionals.length !== 1) throw new UsageError();
+    task = await closeTask(root, positionals[0], { reason: values.reason, summary: values.message }, 'user');
+  } else if (action === 'reopen') {
+    if (positionals.length !== 1) throw new UsageError();
+    task = await reopenTask(root, positionals[0], { note: values.message }, 'user');
+  } else if (action === 'dep') {
+    const [change, id, ...rest] = positionals;
+    if (!['add', 'rm'].includes(change) || !id || rest.length || !(values.after || values.parent || values.related)) throw new UsageError();
+    const links = { ...(values.after ? { blockedBy: values.after } : {}), ...(values.parent ? { parent: values.parent } : {}), ...(values.related ? { related: values.related } : {}) };
+    task = await linkTask(root, id, change === 'add' ? { add: links } : { remove: links }, 'user');
+  } else {
+    throw new UsageError();
+  }
+  if (values.json) { console.log(JSON.stringify(task)); return; }
+  const { tasks } = await loadTasks(root);
+  console.log(`${{ add: 'Created', close: 'Closed', reopen: 'Reopened' }[action] ?? 'Updated'} ${path.join(TASKS_DIR, `${task.id}.json`)}`);
+  console.log(taskRow(task, tasks));
+}
+
+function printTask(task, tasks) {
+  console.log(`${STATUS_MARK[task.status]} ${task.id}  ${task.title}`);
+  console.log(`  ${task.type}, P${task.priority}, ${task.status}${task.assignee ? ` with ${task.assignee.agent}` : ''}; created by ${task.createdBy} ${ago(task.createdAt)} ago, rev ${task.rev}`);
+  if (task.description) console.log(`\n  ${task.description.replace(/\n/g, '\n  ')}\n`);
+  const blockers = task.status === 'closed' ? [] : blockersOf(task, tasks);
+  const relations = [
+    task.parent && `parent ${task.parent}`,
+    task.blockedBy.length && `after ${task.blockedBy.join(', ')}${blockers.length ? ` (open: ${blockers.join(', ')})` : ''}`,
+    task.discoveredFrom && `found during ${task.discoveredFrom}`,
+    task.related.length && `related ${task.related.join(', ')}`,
+  ].filter(Boolean);
+  if (relations.length) console.log(`  ${relations.join('; ')}`);
+  if (task.labels.length) console.log(`  labels: ${task.labels.join(', ')}`);
+  if (task.paths.length) console.log(`  paths: ${task.paths.join(', ')}`);
+  for (const child of childrenOf(task.id, tasks)) console.log(`  ${taskRow(child, tasks)}`);
+  if (task.closed) console.log(`  closed ${task.closed.reason} by ${task.closed.by}${task.closed.summary ? `: ${task.closed.summary}` : ''}`);
+  for (const entry of task.log.slice(-10)) {
+    const { at, by, event, ...detail } = entry;
+    const text = Object.entries(detail).map(([key, value]) => `${key} ${Array.isArray(value) ? value.join(', ') : value}`).join('; ');
+    console.log(`  ${at.slice(0, 16).replace('T', ' ')}  ${by} ${event}${text ? `: ${text}` : ''}`);
+  }
+}
+
 async function interrupt(args) {
   if (args.length !== 1) throw new UsageError();
   const client = await running();
@@ -458,7 +581,7 @@ async function interrupt(args) {
   console.log('Interrupted');
 }
 
-const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, top, attach, send, questions, answer, log, board, interrupt };
+const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, interrupt };
 const [command, ...args] = process.argv.slice(2);
 try {
   if (!Object.hasOwn(commands, command)) throw new UsageError();
