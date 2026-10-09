@@ -59,8 +59,10 @@ test('plugin registers ALP with public SDK contract', async t => {
     if (previous === undefined) delete process.env.ALP_HOME; else process.env.ALP_HOME = previous;
     await rm(home, { recursive: true, force: true });
   });
-  let registration; contribute({ registerProvider(p) { registration = p; } });
+  let registration; const rpc = [];
+  contribute({ registerProvider(p) { registration = p; }, handle(contract) { rpc.push(contract.name); } });
   assert.equal(registration.id, 'alp');
+  assert.deepEqual(rpc, ['alp.tasks.list', 'alp.tasks.add', 'alp.tasks.change']);
   await assert.rejects(registration.connect({ versions: [99], capabilities: [] }), /protocol/);
   const conn = await registration.connect({ versions: [1], capabilities: PROVIDER_CAPABILITIES });
   const events = []; conn.onEvent(e => events.push(e));
