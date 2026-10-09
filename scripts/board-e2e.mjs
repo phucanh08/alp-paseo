@@ -15,7 +15,7 @@ const env = { ...process.env, ALP_HOME: home, ALP_RUN_LOG_DIR: path.join(home, '
 const alp = (...args) => spawnSync(process.execPath, ['src/cli.js', ...args], { env, encoding: 'utf8' });
 const root = path.resolve('.alp-test', `board-${Date.now()}`);
 await initProject(root);
-await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify({ defaultAgent: 'main', workflow: { mode: 'smart', maxPeers: 2 } }));
+await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify({ defaultAgent: 'main', workflow: { mode: 'pho', maxPeers: 2 } }));
 const hashing = `HASH-${randomUUID().slice(0, 8)}`;
 const finding = `FINDING-${randomUUID().slice(0, 8)}`;
 

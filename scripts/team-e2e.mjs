@@ -30,7 +30,7 @@ let agent;
 try {
   await driver.connect();
   agent = await client.agents.create({ cwd: root, title: 'ALP main → lead → peer verification', config: {
-    provider: 'alp/gpt-5.6-sol', options: { workflow: 'supervised' }, modeId: writeMode ? 'workspace-write' : 'read-only', thinkingOptionId: 'low',
+    provider: 'alp/cafe', modeId: writeMode ? 'workspace-write' : 'read-only', thinkingOptionId: 'low',
   } });
   console.log(JSON.stringify({ project: root, agent: agent.id }));
   const prompt = writeMode

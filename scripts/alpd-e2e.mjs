@@ -32,7 +32,7 @@ const prompt = 'Integration check: use alp_delegate exactly once to assign lead 
 try {
   assert.equal(cli('daemon', 'start').status, 0);
   const output = await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['src/cli.js', 'run', '--json', '--project', root, '--workflow', 'supervised', '--model', model, '--thinking', 'low', prompt], { env });
+    const child = spawn(process.execPath, ['src/cli.js', 'run', '--json', '--project', root, '--profile', 'cafe', '--model', model, '--thinking', 'low', prompt], { env });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => { child.kill('SIGINT'); reject(new Error('alp run timed out')); }, 300_000);

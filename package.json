@@ -24,7 +24,7 @@
     "test:core": "node --test test/init.test.js test/upgrade.test.js test/delegation.test.js test/resolver.test.js test/ir.test.js test/adapter.test.js",
     "test:team": "node scripts/build-paseo.mjs && node --test test/team.test.js",
     "test:runtime": "node scripts/build-paseo.mjs && node --test test/runtime.test.js",
-    "test:e2e:workflow": "node scripts/workflow-e2e.mjs smart && node scripts/workflow-e2e.mjs supervised",
+    "test:e2e:workflow": "node scripts/workflow-e2e.mjs pho && node scripts/workflow-e2e.mjs cafe",
     "test:e2e:mailbox": "node scripts/mailbox-e2e.mjs ask && node scripts/mailbox-e2e.mjs wake && node scripts/mailbox-e2e.mjs steer",
     "test:e2e:team": "node scripts/team-e2e.mjs",
     "test:e2e:claude": "node scripts/claude-e2e.mjs",
