@@ -58,7 +58,9 @@ export function validatePermissions(value, source) {
       const where = `permissions.profiles.${name}`;
       if (!NAME.test(name)) fail(source, `${where}: a profile name has letters, digits, dots, dashes and underscores`);
       if (!object(profile)) fail(source, `${where} must be an object`);
-      for (const key of Object.keys(profile)) if (!['base', 'allow', 'ask', 'deny', 'beyondMode'].includes(key)) fail(source, `${where}: unsupported field '${key}'`);
+      for (const key of Object.keys(profile)) if (!['base', 'allow', 'ask', 'deny', 'beyondMode', 'workdir'].includes(key)) fail(source, `${where}: unsupported field '${key}'`);
+      if (profile.workdir !== undefined && profile.workdir !== 'copy') fail(source, `${where}.workdir must be copy`);
+      if (profile.workdir === 'copy' && profile.base !== undefined && profile.base !== 'read-only') fail(source, `${where}: workdir copy is for read-only profiles; writers use worktree isolation`);
       if (profile.base !== undefined && !BASES.includes(profile.base)) fail(source, `${where}.base must be ${BASES.join(', ')}`);
       if (profile.beyondMode !== undefined && !['refuse', 'ask'].includes(profile.beyondMode)) fail(source, `${where}.beyondMode must be refuse or ask`);
       const rules = {};
@@ -68,7 +70,7 @@ export function validatePermissions(value, source) {
         for (const rule of list) parseRule(rule, `${source}: ${where}.${kind}`);
         rules[kind] = list.map(rule => rule.trim());
       }
-      profiles[name] = { ...(profile.base ? { base: profile.base } : {}), ...(profile.beyondMode ? { beyondMode: profile.beyondMode } : {}), ...rules };
+      profiles[name] = { ...(profile.base ? { base: profile.base } : {}), ...(profile.beyondMode ? { beyondMode: profile.beyondMode } : {}), ...(profile.workdir ? { workdir: profile.workdir } : {}), ...rules };
     }
   }
   const agents = {};
@@ -94,7 +96,9 @@ async function settingsPermissions(file) {
 /**
  * The permission profile of an agent, or null when none applies: then the agent
  * keeps the runtime's defaults. Advisors without a profile get a read-only one.
- * @returns {Promise<{ name: string, base: string, allow: string[], ask: string[], deny: string[], beyondMode: 'refuse' | 'ask' } | null>}
+ * `workdir: 'copy'` runs the agent in a disposable copy of its requester's tree,
+ * where it may write, build and test; the requester's tree stays untouched.
+ * @returns {Promise<{ name: string, base: string, allow: string[], ask: string[], deny: string[], beyondMode: 'refuse' | 'ask', workdir?: 'copy' } | null>}
  */
 export async function profileFor(projectRoot, home, agent) {
   const project = await settingsPermissions(path.join(projectRoot, '.alp', 'settings.json'));
@@ -108,6 +112,8 @@ export async function profileFor(projectRoot, home, agent) {
   }
   // A bare base name is a profile with no rules.
   const base = defined.find(profile => profile.base)?.base ?? (BASES.includes(name) ? name : advisor ? 'read-only' : 'full-access');
+  const copy = defined.some(profile => profile.workdir === 'copy');
+  if (copy && base !== 'read-only') throw new AlpError('INVALID_SETTINGS', `Profile '${name}' has workdir copy, which needs base read-only`);
   if (advisor && base !== 'read-only') throw new AlpError('INVALID_SETTINGS', `${agent} is an advisor; its profile '${name}' must have base read-only`);
   return {
     name, base,
@@ -115,6 +121,7 @@ export async function profileFor(projectRoot, home, agent) {
     ask: [...new Set(defined.flatMap(profile => profile.ask ?? []))],
     deny: [...new Set(defined.flatMap(profile => profile.deny ?? []))],
     beyondMode: defined.find(profile => profile.beyondMode)?.beyondMode ?? 'refuse',
+    ...(copy ? { workdir: 'copy' } : {}),
   };
 }
 

@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initProject } from '../src/core/init.js';
 import { addAllowRule, commandDecision, parseRule, profileFor, simpleCommands, unwrapShell, validatePermissions } from '../src/core/permissions.js';
-import { claudePermissions, createAlpRuntime, resolveSession } from '../dist/runtime/index.js';
+import { claudePermissions, createAlpRuntime, createCopy, reclaimCopies, removeCopy, resolveSession } from '../dist/runtime/index.js';
 
 const CLI = fileURLToPath(new URL('../src/cli.js', import.meta.url));
 
@@ -345,3 +345,150 @@ async function until(check) {
   for (let i = 0; i < 400; i++) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 5)); }
   assert.fail('Expected condition did not arrive');
 }
+
+// --- step 3: the sandbox floor and review copies -------------------------------------
+
+const git = (cwd, ...args) => { const result = spawnSync('git', args, { cwd, encoding: 'utf8' }); assert.equal(result.status, 0, result.stderr); return result.stdout.trim(); };
+
+test('a floor puts Claude Bash in the OS sandbox and keeps file tools in the workspace', async () => {
+  const root = path.join(tmpdir(), 'alp-floor-root');
+  const asked = [];
+  const readOnly = claudePermissions('read-only', () => 'read-only', { allow: ['Bash(npm test *)'], ask: [], deny: ['Bash(rm *)'], beyondMode: 'refuse', floor: 'read-only', floorRoot: root }, async request => { asked.push(request); return { allow: true }; });
+  assert.deepEqual(readOnly.sandbox, { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: true, filesystem: { denyWrite: [root] } });
+  // Inside a read-only floor any command runs; the OS stops its writes.
+  assert.equal((await readOnly.canUseTool('Bash', { command: 'node -e "1"' }, {})).behavior, 'allow');
+  // Leaving the sandbox needs an allow rule; a deny rule refuses even that.
+  assert.equal((await readOnly.canUseTool('Bash', { command: 'npm test', dangerouslyDisableSandbox: true }, {})).behavior, 'allow');
+  assert.deepEqual(await readOnly.canUseTool('Bash', { command: 'touch x', dangerouslyDisableSandbox: true }, {}), { behavior: 'deny', message: 'Bash runs inside the sandbox; leaving it needs an allow rule in your permission profile' });
+  assert.deepEqual(await readOnly.canUseTool('Bash', { command: 'npm test && rm -rf a', dangerouslyDisableSandbox: true }, {}), { behavior: 'deny', message: 'A deny rule of your permission profile covers it' });
+  assert.equal((await readOnly.canUseTool('Edit', { file_path: path.join(root, 'a.js') }, {})).behavior, 'deny');
+  assert.deepEqual(asked, []);
+
+  const asking = claudePermissions('read-only', () => 'read-only', { allow: [], ask: [], deny: [], beyondMode: 'ask', floor: 'read-only', floorRoot: root }, async request => { asked.push(request); return { allow: true, always: true }; });
+  const left = await asking.canUseTool('Bash', { command: 'npm ci', dangerouslyDisableSandbox: true }, {});
+  assert.deepEqual([left.behavior, asked.map(request => [request.reason, request.rule])], ['allow', [['mode', 'Bash(npm ci)']]]);
+
+  // A workspace floor: the workspace and temp files, nothing else, for Bash and file tools alike.
+  const workspace = claudePermissions('workspace-write', () => 'workspace-write', { allow: [], ask: [], deny: [], beyondMode: 'refuse', floor: 'workspace-write', floorRoot: root });
+  assert.deepEqual(workspace.sandbox, { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: true });
+  assert.equal((await workspace.canUseTool('Write', { file_path: path.join(root, 'src', 'a.js') }, {})).behavior, 'allow');
+  assert.equal((await workspace.canUseTool('Write', { file_path: 'relative/b.js' }, {})).behavior, 'allow');
+  assert.equal((await workspace.canUseTool('Write', { file_path: path.join(tmpdir(), 'scratch.txt') }, {})).behavior, 'allow');
+  assert.deepEqual(await workspace.canUseTool('Edit', { file_path: '/etc/hosts' }, {}), { behavior: 'deny', message: 'Outside your workspace' });
+  assert.deepEqual(await workspace.canUseTool('Bash', { command: 'curl x', dangerouslyDisableSandbox: true }, {}), { behavior: 'deny', message: 'Bash runs inside the sandbox; leaving it needs an allow rule in your permission profile' });
+  // Without a floor nothing changes.
+  assert.equal(claudePermissions('read-only', () => 'read-only', { allow: [], ask: [], deny: [] }).sandbox, undefined);
+});
+
+test('a review copy has the requester\'s state, links node_modules, and leaves the tree untouched', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'alp-copy-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const checkout = path.join(directory, 'repo');
+  await mkdir(path.join(checkout, 'src'), { recursive: true });
+  await mkdir(path.join(checkout, 'node_modules', 'dep'), { recursive: true });
+  await writeFile(path.join(checkout, '.gitignore'), 'node_modules\ndist\n');
+  await writeFile(path.join(checkout, 'src', 'a.js'), 'one\n');
+  git(checkout, 'init', '-q'); git(checkout, 'add', '-A'); git(checkout, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init');
+  await writeFile(path.join(checkout, 'src', 'a.js'), 'two\n');
+  await writeFile(path.join(checkout, 'src', 'new.js'), 'new\n');
+  await mkdir(path.join(checkout, 'dist'));
+  await writeFile(path.join(checkout, 'dist', 'out.js'), 'built\n');
+  const status = git(checkout, 'status', '--porcelain');
+
+  const copy = await createCopy(path.join(checkout, 'src'), path.join(directory, 'copies'), 'a1');
+  assert.equal(copy.workdir, path.join(copy.path, 'src'));
+  assert.equal(await readFile(path.join(copy.path, 'src', 'a.js'), 'utf8'), 'two\n');
+  assert.equal(await readFile(path.join(copy.path, 'src', 'new.js'), 'utf8'), 'new\n');
+  // A reviewer sees the requester's diff and status there.
+  assert.equal(git(copy.path, 'diff'), git(checkout, 'diff'));
+  assert.equal(git(copy.path, 'status', '--porcelain'), status);
+  await assert.rejects(readFile(path.join(copy.path, 'dist', 'out.js')));
+  assert.ok((await readdir(path.join(copy.path, 'node_modules'))).includes('dep'));
+  await writeFile(path.join(copy.path, 'src', 'a.js'), 'changed in the copy\n');
+  await mkdir(path.join(copy.path, 'dist'), { recursive: true });
+  await writeFile(path.join(copy.path, 'dist', 'out.js'), 'rebuilt\n');
+  assert.equal(await readFile(path.join(checkout, 'src', 'a.js'), 'utf8'), 'two\n');
+  assert.equal(await readFile(path.join(checkout, 'dist', 'out.js'), 'utf8'), 'built\n');
+  assert.equal(git(checkout, 'status', '--porcelain'), status);
+
+  await removeCopy(copy);
+  await assert.rejects(readdir(copy.path));
+  assert.ok((await readdir(path.join(checkout, 'node_modules'))).includes('dep'));
+  assert.doesNotMatch(git(checkout, 'worktree', 'list'), /copies/);
+  const again = await createCopy(checkout, path.join(directory, 'copies'), 'a2');
+  assert.equal(await reclaimCopies(path.join(directory, 'copies')), 1);
+  await assert.rejects(readdir(again.path));
+});
+
+test('an assignment with workdir copy writes, builds and tests in its copy, which goes when it ends', async t => {
+  const { directory, root, home } = await project(t, { profiles: { review: { base: 'read-only', workdir: 'copy', allow: ['Bash(npm test *)'] } }, agents: { reviewer: 'review' } });
+  git(root, 'init', '-q'); git(root, 'add', '-A'); git(root, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init');
+  const previous = process.env.ALP_CLAUDE_SANDBOX;
+  process.env.ALP_CLAUDE_SANDBOX = '1';
+  t.after(() => { if (previous === undefined) delete process.env.ALP_CLAUDE_SANDBOX; else process.env.ALP_CLAUDE_SANDBOX = previous; });
+  const runtimes = [];
+  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: home, runLogDir: path.join(directory, 'runs'), copyDir: path.join(directory, 'copies') });
+  t.after(() => runtime.shutdown());
+  await runtime.open('root', { cwd: root, model: 'codex:gpt-6.1-sol' });
+  await until(() => runtimes.length === 2);
+  const [main] = runtimes;
+  await runtime.prompt('root', { clientMessageId: 'm1', delivery: 'auto', content: [{ type: 'text', text: 'Review' }] });
+
+  // Codex: the copy is its workspace; the requester's tree is not writable.
+  const started = await main.call('alp_delegate', { agent: 'reviewer', task: 'Review and test', wait: false });
+  assert.equal(started.workdirNote, 'reviewer works in a disposable copy of your tree; nothing it changes reaches yours');
+  await until(() => runtimes.length === 3 && runtimes[2].started.length === 1);
+  const codex = runtimes[2];
+  const copy = codex.config.cwd;
+  assert.ok(copy.startsWith(path.join(directory, 'copies')));
+  assert.deepEqual([codex.config.sandbox, codex.started[0].params.sandboxPolicy.type, codex.started[0].params.sandboxPolicy.writableRoots], ['workspace-write', 'workspaceWrite', [copy]]);
+  assert.match(codex.config.developerInstructions, /You work in a disposable copy of your requester's tree at /);
+  // To ALP it stays read-only: it claims nothing.
+  assert.match((await codex.call('alp_pin', { kind: 'claim', paths: ['src'], body: 'x' })).error, /read-only session changes no files/);
+  assert.match(codex.config.developerInstructions, new RegExp(`mirroring ${root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\. .*Never run a command in, or write to, the requester's tree\\.`));
+  assert.match(main.config.developerInstructions, /reviewer: at most read-only, may also run Bash\(npm test \*\), and works in a disposable copy of your tree, so name paths relative to the project/);
+  // Codex lets a command write where it runs, so ALP reports commands run in the requester's tree.
+  codex.notification('item/started', { threadId: codex.threadId, item: { type: 'commandExecution', id: 'c1', command: "/bin/zsh -lc 'npm test'", cwd: root, status: 'inProgress' } });
+  codex.notification('item/started', { threadId: codex.threadId, item: { type: 'commandExecution', id: 'c2', command: "/bin/zsh -lc 'git diff'", cwd: copy, status: 'inProgress' } });
+  codex.call('alp_handoff', { outcome: 'complete', summary: 'Tests pass in the copy' });
+  codex.finish('Done');
+  const waited = await main.call('alp_wait', {});
+  assert.match(JSON.stringify(waited), /reviewer ran commands in your tree, not its copy; they may have changed files there: npm test \(in [^)]*\/project\)"/);
+  await assert.rejects(readdir(copy));
+
+  // Claude: Bash sandboxed to the copy.
+  await main.call('alp_delegate', { agent: 'reviewer', task: 'Review again', model: 'claude:claude-sonnet-5-5', wait: false });
+  await until(() => runtimes.length === 4 && runtimes[3].started.length === 1);
+  const claude = runtimes[3];
+  assert.deepEqual([claude.config.sandbox, claude.config.floor], ['workspace-write', 'workspace-write']);
+  assert.match(claude.config.developerInstructions, /Bash runs in an OS sandbox: it writes only .*copies.* and temporary files, and has no network\. Run any command you need for your work in it\. To run a command outside it .* set dangerouslyDisableSandbox/);
+  claude.call('alp_handoff', { outcome: 'complete', summary: 'Done' });
+  claude.finish('Done');
+  await main.call('alp_wait', {});
+
+  // Without the sandbox, a Claude reviewer cannot get a copy.
+  process.env.ALP_CLAUDE_SANDBOX = '0';
+  assert.match((await main.call('alp_delegate', { agent: 'reviewer', task: 'Once more', model: 'claude:claude-sonnet-5-5' })).error, /A review copy on Claude needs its Bash sandbox/);
+  main.finish('Done');
+  await until(async () => (await readdir(path.join(directory, 'copies')).catch(() => [])).length === 0);
+  const copies = async () => (await readFile(path.join(directory, 'runs', 'root.jsonl'), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line).event).filter(event => event.startsWith('copy.'));
+  await until(async () => (await copies()).length === 7);
+  assert.deepEqual(await copies(), ['copy.created', 'copy.escape', 'copy.removed', 'copy.created', 'copy.removed', 'copy.created', 'copy.removed']);
+});
+
+test('advisors on Claude run Bash in a read-only floor by default', async t => {
+  const { directory, root, home } = await project(t);
+  const previous = process.env.ALP_CLAUDE_SANDBOX;
+  process.env.ALP_CLAUDE_SANDBOX = '1';
+  t.after(() => { if (previous === undefined) delete process.env.ALP_CLAUDE_SANDBOX; else process.env.ALP_CLAUDE_SANDBOX = previous; });
+  const runtimes = [];
+  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: home, runLogDir: path.join(directory, 'runs') });
+  t.after(() => runtime.shutdown());
+  await runtime.open('root', { cwd: root });
+  await until(() => runtimes.length === 2);
+  const [main, supervisor] = runtimes;
+  assert.equal(main.config.floor, undefined);
+  assert.deepEqual([supervisor.config.floor, supervisor.config.sandbox], ['read-only', 'read-only']);
+  assert.match(supervisor.config.developerInstructions, /Bash runs in an OS sandbox: it writes nothing but temporary files, and has no network\. Run any command you need for your work in it\./);
+  assert.doesNotMatch(supervisor.config.developerInstructions, /dangerouslyDisableSandbox/);
+});

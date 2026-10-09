@@ -6,6 +6,7 @@ import { resolveAgent } from '../core/resolver.js';
 import { ensureLibrary } from '../core/library.js';
 import { compileAgent } from '../core/adapter.js';
 import { capMode, profileFor } from '../core/permissions.js';
+import { claudeSandboxAvailable } from './claude-transport.js';
 import type { ResolvedAgent } from '../core/types.js';
 import type { AlpRuntimeAdapter } from '../core/adapter.js';
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_MODEL, MAIN_MODEL, MAIN_THINKING, ORACLE_MODELS, ORACLE_THINKING, modes, thinkingOptions, thinkingOptionsFor } from './catalog.js';
@@ -35,6 +36,10 @@ export type SessionSpec = {
   restore?: { agent: string; threadId: string; runtime?: string; model?: string; workflow?: { mode: string; maxPeers: number; supervisor?: boolean } };
   /** Where the native harness works, when not the project root: an assignment's git worktree. ALP files are still read from cwd. */
   workdir?: string;
+  /** The workdir is a disposable copy the session may write, though its mode is read-only for the requester's tree. */
+  copy?: boolean;
+  /** The requester's directory the copy mirrors. */
+  copyOf?: string;
 };
 
 export type ResolvedSession = Awaited<ReturnType<typeof resolveSession>>;
@@ -112,6 +117,8 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
     (profileModel ? MAIN_THINKING : agent.name === 'oracle' ? ORACLE_THINKING : availableThinking.length ? 'medium' : 'none');
   if (!model.trim()) throw new Error('Model must be nonempty');
   if (!modes.some(m => m.id === mode)) throw new Error(`Unsupported mode '${mode}'`);
+  // Only Claude's Bash sandbox keeps a session in a copy from writing elsewhere.
+  if (spec.copy && runtimeKind === 'claude' && !claudeSandboxAvailable()) throw new Error('A review copy on Claude needs its Bash sandbox (Seatbelt on macOS; bubblewrap and socat on Linux)');
   if (!thinkingOptions.some(m => m.id === thinking)) throw new Error(`Unsupported thinking option '${thinking}'`);
   if (availableThinking.length && !availableThinking.some(candidate => candidate.id === thinking)) throw new Error(`Thinking option '${thinking}' is unsupported by ${runtimeKind}:${model}`);
   const mcp: Record<string, unknown> = {};
@@ -140,6 +147,8 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
   return {
     agent, workflow, runtimeKind: runtimeKind as RuntimeKind, model, mode, permissions, thinking, threadId: restored?.threadId,
     workdir: spec.workdir ?? agent.projectRoot,
+    copy: Boolean(spec.copy && spec.workdir),
+    ...(spec.copy && spec.copyOf ? { copyOf: spec.copyOf } : {}),
     instructions: [compiled.material.instructions, learned, spec.systemPrompt].filter(Boolean).join('\n\n'),
     mcp, env: { ...spec.env }, persist: spec.persist ?? false,
   };

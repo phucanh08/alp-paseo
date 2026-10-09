@@ -145,3 +145,4 @@ The work runs in three steps, one PR each:
 
 Details: [alpd §24](ALPD.md).
 
+All three steps were built on 2026-10-09 (ALPD §24–§26). With no settings, there is one visible change: on Claude, oracle, reviewer and the supervisor run Bash in a read-only OS sandbox instead of being refused Bash.

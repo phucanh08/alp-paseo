@@ -9,7 +9,7 @@ export { CodexTransport } from './transport.js';
 export { ClaudeTransport, claudePermissions, toolShapes as claudeToolShapes } from './claude-transport.js';
 export { MAIL_BATCH_CHARS, MAIL_BODY_CHARS, publicEvent, renderMail, takeBatch, USER } from './mailbox.js';
 export type { MailEvent, MailKind } from './mailbox.js';
-export { reclaimWorktrees } from './workspace.js';
+export { createCopy, reclaimCopies, reclaimWorktrees, removeCopy } from './workspace.js';
 export type { Worktree, WorktreeChange } from './workspace.js';
 export { PIN_KINDS, renderBoard, renderPin } from './board.js';
 export type { Pin, PinKind } from './board.js';

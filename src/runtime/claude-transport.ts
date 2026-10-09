@@ -1,10 +1,12 @@
-import { accessSync, constants, realpathSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, realpathSync, rmdirSync, statSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { optionalRead, claudeUsage } from './runtime-context.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { PIN_KINDS } from './board.js';
 import { CLOSE_REASONS, GATE_KINDS, TASK_STATUSES, TASK_TYPES } from '../core/tasks.js';
+import { commandDecision } from '../core/permissions.js';
 
 // Keep the Claude SDK behind the runtime boundary. Paseo inspects static
 // imports while compiling plugin entrypoints, including their declaration
@@ -148,9 +150,28 @@ type NativeConfig = {
   threadId?: string;
   /** The session's permission profile: rules Claude enforces itself, in every permission mode. */
   permissions?: PermissionRules | null;
+  /** The OS sandbox for Bash, when ALP chose one. */
+  floor?: 'read-only' | 'workspace-write';
 };
 
-type PermissionRules = { allow: string[]; ask?: string[]; deny: string[]; beyondMode?: 'refuse' | 'ask' };
+type PermissionRules = {
+  allow: string[]; ask?: string[]; deny: string[]; beyondMode?: 'refuse' | 'ask';
+  /** The OS sandbox ALP puts Bash in, and the directory it may write besides temp files. */
+  floor?: 'read-only' | 'workspace-write'; floorRoot?: string;
+};
+
+/** Whether Claude Code can sandbox Bash here: Seatbelt on macOS, bubblewrap and socat on Linux. ALP_CLAUDE_SANDBOX=0 turns it off, =1 claims it (tests). */
+export function claudeSandboxAvailable() {
+  if (process.env.ALP_CLAUDE_SANDBOX === '0') return false;
+  if (process.env.ALP_CLAUDE_SANDBOX === '1') return true;
+  if (process.platform === 'darwin') return existsSync('/usr/bin/sandbox-exec');
+  if (process.platform !== 'linux') return false;
+  const onPath = (name: string) => (process.env.PATH ?? '').split(path.delimiter).some(dir => dir && existsSync(path.join(dir, name)));
+  return onPath('bwrap') && onPath('socat');
+}
+
+const WRITERS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
+const inside = (file: string, root: string) => { const relative = path.relative(root, file); return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative)); };
 /** What ALP asks the user for a permission Claude would otherwise not have. */
 export type PermissionRequest = { tool: string; input: Record<string, unknown>; reason: 'rule' | 'mode'; rule?: string };
 export type PermissionAnswer = { allow: boolean; always?: boolean; message?: string };
@@ -217,9 +238,25 @@ export function claudePermissions(sandbox: string, currentSandbox?: () => string
     disallowedTools: ['Agent', 'Task', 'TeamCreate', 'EnterPlanMode', 'ExitPlanMode', ...(rules?.deny ?? [])],
     // Ask rules make Claude consult canUseTool in every mode, which asks the user.
     ...(rules?.ask?.length ? { settings: { permissions: { ask: rules.ask } } } : {}),
+    // The floor: Bash runs in the OS sandbox, which writes only the workspace (or nothing, read-only) and temp files, offline.
+    // A command leaves it only with dangerouslyDisableSandbox, which Claude allows itself for allow rules and asks canUseTool otherwise.
+    ...(rules?.floor ? { sandbox: { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: true, ...(rules.floor === 'read-only' && rules.floorRoot ? { filesystem: { denyWrite: [rules.floorRoot] } } : {}) } } : {}),
     canUseTool: async (name: string, input: Record<string, unknown>, context?: { decisionReasonType?: string; suggestions?: unknown }) => {
-      const beyond = (currentSandbox ? currentSandbox() === 'read-only' : readOnly) && !readers.includes(name) && !name.startsWith('mcp__alp__');
-      const reason = context?.decisionReasonType === 'rule' && rules?.ask?.length ? 'rule' : beyond && rules?.beyondMode === 'ask' ? 'mode' : undefined;
+      const mode = currentSandbox ? currentSandbox() : sandbox;
+      const leaving = Boolean(rules?.floor) && name === 'Bash' && input.dangerouslyDisableSandbox === true;
+      // Inside a read-only floor the OS keeps Bash from writing, so it may run.
+      const sandboxed = rules?.floor === 'read-only' && name === 'Bash' && !leaving;
+      const beyond = (mode === 'read-only' && !readers.includes(name) && !name.startsWith('mcp__alp__') && !sandboxed) ||
+        // With a floor, file tools write only the workspace and temp files, like Bash.
+        (Boolean(rules?.floor && rules.floorRoot) && WRITERS.includes(name) && typeof input.file_path === 'string' && !inside(path.resolve(rules!.floorRoot!, input.file_path), rules!.floorRoot!) && !inside(path.resolve(input.file_path), os.tmpdir())) ||
+        (leaving && mode !== 'full-access');
+      if (leaving && typeof input.command === 'string' && rules) {
+        const decision = commandDecision(rules, input.command);
+        if (decision === 'deny') return { behavior: 'deny', message: 'A deny rule of your permission profile covers it' };
+        if (decision === 'allow') return { behavior: 'allow', updatedInput: input };
+        if (decision === 'ask' && ask) context = { ...context, decisionReasonType: 'rule' };
+      }
+      const reason = context?.decisionReasonType === 'rule' && (rules?.ask?.length || leaving) ? 'rule' : beyond && rules?.beyondMode === 'ask' ? 'mode' : undefined;
       if (reason && ask) {
         const rule = reason === 'mode' ? suggestedRule(name, input, context?.suggestions) : undefined;
         const answer = await ask({ tool: name, input, reason, ...(rule ? { rule } : {}) });
@@ -227,7 +264,8 @@ export function claudePermissions(sandbox: string, currentSandbox?: () => string
         const [, toolName, ruleContent] = /^([^(]+)(?:\((.*)\))?$/s.exec(rule ?? '') ?? [];
         return { behavior: 'allow', updatedInput: input, ...(answer.always && toolName ? { updatedPermissions: [{ type: 'addRules', rules: [{ toolName, ...(ruleContent ? { ruleContent } : {}) }], behavior: 'allow', destination: 'session' }] } : {}) };
       }
-      if (beyond) return { behavior: 'deny', message: 'ALP session is read-only' };
+      if (leaving && beyond) return { behavior: 'deny', message: 'Bash runs inside the sandbox; leaving it needs an allow rule in your permission profile' };
+      if (beyond) return { behavior: 'deny', message: mode === 'read-only' ? 'ALP session is read-only' : 'Outside your workspace' };
       return { behavior: 'allow', updatedInput: input };
     },
   };
@@ -238,6 +276,8 @@ export class ClaudeTransport {
   private listeners = new Set<Listener>();
   private failures = new Set<(error: Error) => void>();
   private requestHandler?: RequestHandler;
+  /** Whether the workspace had a .claude directory before a sandboxed session started. */
+  private claudeDirectory?: boolean;
   private input = new InputQueue();
   private query?: ClaudeQuery;
   private pump?: Promise<void>;
@@ -416,7 +456,9 @@ export class ClaudeTransport {
       });
     }
 
-    const { settings: ruleSettings, ...permissions } = claudePermissions(config.sandbox, () => config.sandbox, config.permissions,
+    if (config.floor) this.claudeDirectory ??= existsSync(path.join(config.cwd, '.claude'));
+    const rules = config.permissions || config.floor ? { allow: [], deny: [], ...config.permissions, ...(config.floor ? { floor: config.floor, floorRoot: config.cwd } : {}) } : null;
+    const { settings: ruleSettings, ...permissions } = claudePermissions(config.sandbox, () => config.sandbox, rules,
       async request => (this.requestHandler ? await this.requestHandler('item/permission/request', request) as PermissionAnswer : { allow: false, message: 'No one can approve it' }));
     const settings = { ...(config.thinking === 'ultracode' ? { ultracode: true } : {}), ...ruleSettings };
     const options = {
@@ -561,5 +603,9 @@ export class ClaudeTransport {
     await this.pump?.catch(() => {});
     this.listeners.clear();
     this.failures.clear();
+    // Claude's sandbox leaves an empty .claude/.cc-writes in the workspace; remove what it created.
+    if (this.claudeDirectory === false && this.config) {
+      for (const directory of ['.claude/.cc-writes', '.claude']) { try { rmdirSync(path.join(this.config.cwd, directory)); } catch {} }
+    }
   }
 }
