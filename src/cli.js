@@ -113,9 +113,10 @@ async function daemon([action, ...rest]) {
   } else if (action === 'restart') {
     const client = await running().catch(() => undefined);
     const status = client && await client.request('daemon.status').finally(() => client.close());
-    if (status?.sessions) throw new Error(`alpd has ${status.sessions} live sessions; interrupt them before restarting`);
     await stop();
     await daemon(['start']);
+    // Running work is kept on stop and continued at start (ALPD §31).
+    if (status?.sessions) console.log(`${status.sessions} live sessions were open; alpd reopens what was still working`);
   } else if (action === 'status') {
     const lock = await readLock(alpHome());
     if (!lockAlive(lock)) {
@@ -126,6 +127,7 @@ async function daemon([action, ...rest]) {
     const client = await connect(lock.socket, { name: 'alp-cli', version: '1' });
     const status = await client.request('daemon.status').finally(() => client.close());
     console.log(`alpd ${status.version} running (pid ${status.pid}) since ${status.startedAt}; ${status.sessions} live sessions; socket ${lock.socket}`);
+    if (status.previousExit?.kind === 'crash') console.log(`the alpd before it stopped unexpectedly${status.previousExit.at ? ` around ${status.previousExit.at}` : ''}`);
   } else {
     throw new UsageError();
   }
@@ -476,6 +478,21 @@ async function log(args) {
         break;
       case 'assignment.resumed':
         text = `▶ ${entry.agent} ${entry.assignmentId} resumed`;
+        break;
+      case 'assignment.interrupted':
+        text = `⏹ ${entry.agent} ${entry.assignmentId} interrupted: ${entry.reason}; the next alpd continues it`;
+        break;
+      case 'assignment.recovered':
+        text = `↻ ${entry.agent} ${entry.assignmentId} reopened after alpd restarted`;
+        break;
+      case 'session.restarted':
+        text = `↻ ${entry.agent}'s native process stopped (${entry.error}); restart ${entry.restarts}`;
+        break;
+      case 'session.revived':
+        text = `▶ ${entry.agent} running again`;
+        break;
+      case 'session.revive_failed':
+        text = `✗ ${entry.agent} could not be restarted: ${entry.error}`;
         break;
       case 'human.answer':
         text = `↳ ${entry.questionId} ${entry.outcome}${entry.answer !== undefined ? `: ${entry.answer.split('\n')[0].slice(0, 120)}` : ''}`;

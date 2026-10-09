@@ -159,3 +159,42 @@ Deferred until a real need appears: an integration branch per epic, formula over
 
 Step 1 was built on 2026-10-09. Details: [alpd §27](ALPD.md). Step 2 was built the same day; the user closing a task is never refused, and ALP notes the failed check instead. Details: [alpd §28](ALPD.md). Step 3 was built the same day. Details: [alpd §29](ALPD.md). Step 4 was built the same day. Any task with children counts as an epic. The report reaches the user as a notice in that project's sessions, and through `alp task close`, `alp task report` and the Paseo Tasks panel. Details: [alpd §30](ALPD.md).
 
+## D21 — Upgrades taken from Gas City
+
+Decided by the user on 2026-10-09, after reviewing [Gas City](https://github.com/gastownhall/gascity) at `ad1f07c`. The review page is kept as a claude.ai artifact. ALP takes Gas City's view that sessions are mortal and work is durable, and some cheap hardening, in three steps.
+
+**A. Crash resilience** (one PR):
+- A1: after a crash or a stop, alpd reopens working trees and continues their assignments on their threads.
+- A2: a dead native process is restarted, with a breaker.
+- A3: alpd tells a crash from a clean stop.
+
+**B. Hardening** (one PR):
+- B1: text other agents wrote is stripped of system-reminder tags before it reaches a prompt.
+- B2: verify stops commands gracefully and does not count infrastructure failures.
+- B3: orphan checks compare process start time.
+- B4: `CLAUDECODE` and `GIT_*` are kept from agents and git.
+
+**C. Next**, one PR each:
+- C1: a context-fill advisory and self-handoff;
+- C2: `alp doctor`;
+- C3: `alp daemon install` for launchd;
+- C4: a prompt fingerprint in the run log;
+- C5: unknown and retired settings keys;
+- C6: shared scripted fake agents and CLI golden tests;
+- C7: a fixed verdict format for reviewers.
+
+The daemon follows seven invariants from Gas City's controller, listed in [alpd §31](ALPD.md).
+
+**Phase after this**, done only when its trigger appears; see [phases/12-gascity-later.md](../phases/12-gascity-later.md):
+- D1: a global event journal;
+- D2: orders that pour formulas on a schedule;
+- D3: transient retries for formula steps;
+- D4: review quorum;
+- D5: settings reload;
+- D6: PR monitoring with head-SHA dedupe;
+- D7: mail dedupe keys;
+- D8: the three items deferred by D20.
+
+**Not taken:** adopting live processes (they end with alpd), HTTP/SSE with a typed OpenAPI, signed grants and SSRF guards, reconciler v2, agent pools and idle-sleep policy, a multi-city supervisor and pack registry, Dolt and SQLite, tmux and herdr, and an external messaging fabric.
+
+Step A was built on 2026-10-09. Details: [alpd §31](ALPD.md).

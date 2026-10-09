@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import templates from 'alp:templates';
@@ -38,9 +38,19 @@ async function detach(home: string) {
   await output.close();
 }
 
-/** Whether the user's settings let alpd resume a runtime by itself once its usage limit resets. */
-async function autoResume(home: string) {
-  try { return JSON.parse(await readFile(path.join(home, 'settings.json'), 'utf8'))?.limits?.autoResume === true; } catch { return false; }
+/** The user's alpd settings in $ALP_HOME/settings.json; none when it is missing or unreadable. */
+async function userSettings(home: string): Promise<any> {
+  try { return JSON.parse(await readFile(path.join(home, 'settings.json'), 'utf8')) ?? {}; } catch { return {}; }
+}
+
+/**
+ * How the previous alpd ended (ALPD §31). A running alpd keeps a marker file and
+ * touches it with its heartbeat; a clean stop removes it last. A marker found at
+ * start means the previous alpd crashed, around the marker's last touch.
+ */
+async function previousExit(marker: string): Promise<{ kind: 'clean' | 'crash'; at?: string }> {
+  const info = await stat(marker).catch(() => undefined);
+  return info ? { kind: 'crash', at: info.mtime.toISOString() } : { kind: 'clean' };
 }
 
 async function run(home: string) {
@@ -54,7 +64,17 @@ async function run(home: string) {
   // Review copies of interrupted assignments hold nothing to keep.
   const copyDir = path.join(home, 'copies');
   await reclaimCopies(copyDir).catch(() => 0);
-  const runtime = createAlpRuntime({ templates, runLogDir, worktreeDir, copyDir, boardDir: path.join(home, 'boards'), libraryDir: home, recallFile: path.join(home, 'state', 'recall.json'), pauseFile: path.join(home, 'state', 'pause.json'), autoResume: await autoResume(home) });
+  const marker = path.join(home, 'state', 'alpd.running');
+  const exit = await previousExit(marker);
+  if (exit.kind === 'crash') console.log(`${new Date().toISOString()} the previous alpd stopped unexpectedly around ${exit.at}`);
+  await mkdir(path.dirname(marker), { recursive: true, mode: 0o700 });
+  await writeFile(marker, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }), { mode: 0o600 });
+  const settings = await userSettings(home);
+  const runtime = createAlpRuntime({
+    templates, runLogDir, worktreeDir, copyDir, boardDir: path.join(home, 'boards'), libraryDir: home,
+    recallFile: path.join(home, 'state', 'recall.json'), pauseFile: path.join(home, 'state', 'pause.json'), liveFile: path.join(home, 'state', 'live.json'),
+    autoResume: settings?.limits?.autoResume === true, recoveryResume: settings?.recovery?.autoResume !== false, previousExit: exit,
+  });
   const store = createStore(path.join(home, 'state'));
   let stopping: Promise<void> | undefined;
   const shutdown = (code = 0) => {
@@ -65,15 +85,19 @@ async function run(home: string) {
       await server.close().catch(() => {});
       await runtime.shutdown().catch(() => {});
       await store.flush();
+      // Last: what remains is a clean stop.
+      await unlink(marker).catch(() => {});
       await releaseLock(home);
       console.log(`${new Date().toISOString()} alpd stopped`);
       process.exit(code);
     })();
     return stopping;
   };
-  const server = createDaemonServer({ runtime, socketPath: socket, version: VERSION, store, runLogDir, onShutdown: () => void shutdown() });
+  const server = createDaemonServer({ runtime, socketPath: socket, version: VERSION, store, runLogDir, previousExit: exit, onShutdown: () => void shutdown() });
   const beat = setInterval(() => {
     void heartbeat(home).then(owned => { if (!owned) void shutdown(1); });
+    const now = new Date();
+    void utimes(marker, now, now).catch(() => {});
   }, 30_000);
   beat.unref();
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => void shutdown());

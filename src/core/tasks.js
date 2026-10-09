@@ -515,6 +515,19 @@ export function releaseTask(projectRoot, id, { assignment, handoff, agent, reaso
 }
 
 /**
+ * After alpd restarted: the assignment that held a task continues it in the new
+ * alpd, so the task records that process. Refused when the assignment no longer
+ * holds the task.
+ */
+export function retakeTask(projectRoot, id, { assignment, pid, epoch }, by) {
+  return mutate(projectRoot, id, task => {
+    if (!heldBy(task, assignment)) fail('TASK_TAKEN', `${id} is no longer held by assignment ${assignment}`);
+    task.assignee = { ...task.assignee, ...(pid !== undefined ? { pid } : {}), ...(epoch !== undefined ? { epoch } : {}) };
+    addLog(task, by, 'resumed', { assignment });
+  });
+}
+
+/**
  * After alpd stopped while assignments worked: puts back to open the tasks whose
  * assignment `isOrphan` says is gone, noting what `describe` says became of its
  * work. Their last handoff stays. Touches nothing when no task is in progress.

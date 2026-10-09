@@ -121,6 +121,19 @@ export async function createWorktree(workdir: string, root: string, id: string, 
   return { checkout, path: target, workdir: path.join(target, relative), branch, base, ...(fingerprint ? { fingerprint } : {}) };
 }
 
+/**
+ * Checks out an assignment's existing branch again at its worktree's place, after
+ * reclaimWorktrees committed and removed it, so the assignment continues there.
+ */
+export async function reattachWorktree(worktree: Worktree): Promise<Worktree> {
+  if (!await branchExists(worktree.checkout, worktree.branch)) throw new Error(`Branch ${worktree.branch} of the worktree no longer exists`);
+  if (await stat(worktree.path).catch(() => undefined)) return worktree;
+  await mkdir(path.dirname(worktree.path), { recursive: true, mode: 0o700 });
+  await git(worktree.checkout, ['worktree', 'prune']);
+  await checked(worktree.checkout, ['worktree', 'add', '--quiet', worktree.path, worktree.branch]);
+  return worktree;
+}
+
 /** A digest of a checkout's state: HEAD, its uncommitted changes, and the names of untracked files. */
 export async function checkoutFingerprint(checkout: string) {
   const head = await git(checkout, ['rev-parse', '--verify', 'HEAD']);
