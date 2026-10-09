@@ -93,10 +93,16 @@ Use `resolveAgent(projectRoot, { agent: 'your-agent' })` from `src/core/resolver
 node src/cli.js daemon start          # or: status | stop | restart
 node src/cli.js run --workflow supervised "Your task"   # streams the agent tree; Ctrl-C interrupts
 node src/cli.js ps [--all]            # live sessions as a tree; --all adds closed ones
+node src/cli.js top [session]         # live dashboard: who runs, who waits, questions, worktrees, leases
 node src/cli.js attach <session>      # follow a running tree, or print a closed one
-node src/cli.js send <session> "More context"   # resumes a closed root first
+node src/cli.js send <session> "More context"   # resumes a closed root first; to an agent, mail from you
+node src/cli.js questions             # questions agents asked you
+node src/cli.js answer <question> "Your answer"   # or: --dismiss [--reason R]
+node src/cli.js log <session>         # delegations, mail, handoffs, worktrees and questions of a tree
 node src/cli.js interrupt <session>
 ```
+
+Any agent can ask you a question with `alp_ask` and `to: "user"`, without ending its turn. `run`, `attach` and `send` show the question and, in a terminal, read the answer; `alp answer` answers from anywhere by question id or a unique prefix. In Paseo the question appears as a question prompt on the root agent.
 
 `ALP_HOME` selects the daemon's directory (default `~/.alp`); `ALP_RUN_LOG_DIR` overrides where assignment logs go (default `$ALP_HOME/runs`). alpd records sessions, their timelines, and prompt receipts under `$ALP_HOME/state`, and its own location in `$ALP_HOME/alpd.json`. After a restart, or a crash, a root can be resumed with `send` or imported into Paseo; work that was running is marked `daemon_restarted`. The Paseo plugin starts the same daemon automatically.
 

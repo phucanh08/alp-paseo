@@ -95,3 +95,7 @@ Migration is incremental, with existing e2e evidence kept green at each step: (1
 ## D13 — Parallel writers through worktrees and checkout leases
 
 Built on 2026-10-09 as phase C in alpd, at the user's request to proceed on the proposed design. Writing assignments run in parallel only when each has its own git worktree (`isolation: "worktree"`); the requester applies a finished change to its checkout with `alp_merge` (uncommitted, conflicts left as markers) or drops it with `alp_discard`. In a shared checkout, alpd grants one write lease per checkout to assignments across all trees, shared with assignments nested under the holder. Work is never deleted silently: unmerged or interrupted work stays on its `alp/<assignment>` branch. Advisory per-path leases within a shared checkout are deferred. Details: [alpd §16](ALPD.md).
+
+## D14 — The user as a participant in the tree
+
+Built on 2026-10-09 as phase D, at the user's request to proceed. Any agent may ask the user with `alp_ask` and `to: "user"` and wait for the answer without ending its turn. Assignments are told to ask the user only for decisions that neither they nor their requester can make. Routing between agents still goes through requesters (D11); the user is the one participant every agent can reach, and the user can mail any agent. Questions appear in Paseo as question prompts on the root agent and in the CLI; trees are observable with `alp top` and `alp log`. Details: [alpd §17](ALPD.md).

@@ -77,6 +77,31 @@ leased. Work is never deleted silently: changes not merged when their requester
 closes stay on their branch, and after a crash alpd commits work left in worktrees
 to their branches and removes the directories.
 
+## Talking to the user
+
+`alp_ask` asks the requester by default. With `to: "user"` (the default for a
+root session, which has no requester) it asks the user and waits, up to 30
+minutes, without ending the turn; `options` suggests answers. Assignments are
+told to ask the user only for decisions that neither they nor their requester
+can make. The question appears in Paseo as a question prompt on the root agent,
+and in `alp run`/`attach`/`send`, `alp questions` and `alp top`; `alp answer`
+answers or dismisses it. The agent receives `answered` with the answer,
+`dismissed`, or `unanswered` on timeout, and the watchdog does not count the
+wait as silence. A question ends with the turn that asked it.
+
+The user can also write to a running assignment directly: `alp send <agent
+session> <text>` delivers mail sent by `user`, which the agent follows as a user
+instruction, into its running turn.
+
+## Observing a tree
+
+`alp top` shows every live tree, refreshed every second: each agent's state
+(`running`, `waiting` for assignments or mail, `waiting_parent`, `waiting_user`,
+`idle`), idle time, model and mode, worktree, unread mail, open questions,
+unmerged worktree changes and write leases. `alp log <session>` prints the
+tree's assignment log: delegations, results with handoffs, mail, worktree
+events, and questions to the user with their answers.
+
 ## Assignment and model selection
 
 `alp_delegate` accepts `agent`, `task`, and optional `mode`, `model`, `thinking`,

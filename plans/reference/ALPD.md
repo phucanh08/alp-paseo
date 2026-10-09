@@ -20,7 +20,7 @@ Non-goals for v1 (explicitly deferred):
 - Resuming an in-flight turn after a daemon crash (native runtimes cannot).
 - Interactive permission approvals (today they are unsupported; the event schema reserves them, §6.4).
 - File leases / worktrees (phase C, built on top of v1).
-- Human mail channel and dashboards (phase D).
+- Human mail channel and dashboards (phase D; built, §17).
 - Windows named pipes (keep the transport abstract so it can be added).
 
 ## 2. Process model
@@ -307,7 +307,7 @@ Each step ends with all existing unit tests and live e2e green.
 1. **Extract runtime in-process.** *(Done 2026-10-08 on `feat/alpd-runtime-extraction`: `src/runtime` with `createAlpRuntime`, events with per-session `seq`; the plugin projects them. Existing team tests stay on the plugin as the regression net; `test/runtime.test.js` covers the runtime API and its import boundary.)* Move transports, `nativeSessionConfig`, mail, delegation, and tool dispatch into `src/runtime` behind `SessionManager` + the §4 event model. The plugin calls it directly and projects events to Paseo (§8 mapping, without a socket). Port `test/team.test.js` to the runtime API; keep a projection subset in the plugin. *Acceptance:* no `@getpaseo` import under `src/runtime`; Paseo e2e (`team`, `mailbox`, `workflow`) unchanged and green.
 2. **Daemon + socket + CLI.** *(Built 2026-10-08 on the same branch; the API as built is in §14.)* Host `SessionManager` in `alpd`; plugin switches to `src/client`; add `alp run/ps/attach`. *Acceptance:* a CLI-only e2e runs main → lead → peer with no Paseo daemon; the same Paseo e2e passes through alpd; closing Paseo mid-delegation does not stop the tree.
 3. **Persistence + reconciliation + import.** *(Built 2026-10-08 on the same branch; deltas in §15.)* Session records, timelines, receipts, crash reconciliation, `session.list`, v1 → v2 handle migration. *Acceptance:* kill -9 alpd mid-turn → restart → records reconciled, root resumable; a CLI-created root imports into Paseo and replays its children.
-4. **Phase C on top** (leases/worktrees), then D. *(Phase C built 2026-10-09 on the same branch; see §16.)*
+4. **Phase C on top** (leases/worktrees), then D. *(Phase C built 2026-10-09 on the same branch; see §16. Phase D built the same day; see §17.)*
 
 ## 12. What we borrow from Paseo and what we do not
 
@@ -403,4 +403,22 @@ Goal: several writing assignments at once without sharing a checkout, and no two
 **Not built.** Advisory file leases inside a shared checkout (parallel shared writers on disjoint paths); untracked files in the worktree base; isolation for agents other than peers running in parallel (any writing agent may use a worktree, but only peers run beside others); a CLI command to list kept branches (use `git branch --list 'alp/*'`).
 
 **Evidence.** `test/worktree.test.js` covers parallel merge, conflicts, discard, the lease across trees, close and crash recovery, and non-git projects. `scripts/worktree-e2e.mjs` runs main with two real writing peers in parallel worktrees and merges both, passing on Codex and Claude.
+
+## 17. Phase D as built (2026-10-09)
+
+Goal: the user can be reached by, and can reach, any agent of a tree; and anyone can see what a tree is doing.
+
+**Questions to the user.** `alp_ask` takes `to: 'parent' | 'user'` and, for the user, up to ten `options`. Every session now gets `alp_ask`; a root asks the user (it has no requester), an assignment asks its requester unless it passes `to: 'user'`. One question per session at a time. The runtime emits `question { id, sessionId, rootId, agent, body, options?, askedAt }` on the asking session and later `question.resolved { questionId, outcome: answered | dismissed | timeout | canceled, answer? }`. It logs `human.question` and `human.answer` to the run log. The tool result is `{ status: 'answered', from: 'user', answer }`, `{ status: 'dismissed', reason? }` or `{ status: 'unanswered' }`. The wait is bounded by `userAskTimeoutMs` (default 30 minutes) and does not count toward the assignment watchdog. A question ends with its turn or session (`canceled`).
+
+**Answering.** `runtime.answer(id, { text } | { dismiss, reason })`. alpd adds `question.list { projectRoot? }` and `question.answer { questionId, text? , dismiss?, reason? }`, where the id may be a unique prefix. Questions are not replayed from stored logs: on attach, alpd announces the questions still waiting in that tree. The Paseo plugin negotiates the `permission` capability and shows each question as a `kind: 'question'` permission request on the root agent ("<agent> asks you", the options, free text allowed), because subagents in Paseo cannot take input. `allow` with `updatedInput.answers.Answer` answers, and `deny` dismisses, with its message as the reason. Per-tool approval (`permission.tool_policy`) stays unsupported.
+
+**Mail from the user.** `runtime.message(sessionId, text)` and `session.message` post a `note` sent by `user` to any live session; the mail header tells the agent to follow it as a user instruction. `alp send` uses it for assignment sessions; roots are still prompted.
+
+**Status.** `runtime.status(sessionId)` and `session.status` return the live tree (`TreeStatus`). This includes sessions with `state` (`running`, `waiting`, `waiting_parent`, `waiting_user`, `idle`), `idleMs`, `workdir` and `unreadMail`, plus assignments with requester, isolation, worktree and idle time, open questions, unmerged worktrees and leases. `session.log` returns the tree's run log. `daemon.status` counts open questions.
+
+**CLI.** `alp top [session] [--once]` (a dashboard refreshed every second; one frame when not a terminal), `alp questions`, `alp answer`, `alp log`, and question lines in the `run`/`attach`/`send` stream with answers read from the terminal. In `--json` the events are printed as they are.
+
+**Not built.** A web dashboard; notifications outside Paseo and the terminal; persisting open questions across a daemon restart (the asking turn ends with the daemon); direct sibling mail (next).
+
+**Evidence.** `test/human.test.js` covers the runtime, alpd and the Paseo bridge. `scripts/human-e2e.mjs cli|paseo` has a real peer ask the user for a code word; the CLI answers it with `alp answer` by prefix, or Paseo with its question prompt, and the word reaches main. It passes on Codex and Claude in both modes.
 
