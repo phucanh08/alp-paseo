@@ -264,7 +264,7 @@ test('main changes tasks with alp_task; assignments and the supervisor only read
   const [main, supervisor] = runtimes;
 
   const mainTool = tool(main, 'alp_task');
-  assert.deepEqual(mainTool.inputSchema.properties.action.enum, ['create', 'update', 'link', 'start', 'close', 'reopen', 'gate', 'clear', 'show', 'list', 'ready']);
+  assert.deepEqual(mainTool.inputSchema.properties.action.enum, ['create', 'update', 'link', 'start', 'close', 'reopen', 'gate', 'clear', 'pour', 'formulas', 'show', 'list', 'ready']);
   assert.deepEqual(Object.keys(mainTool.inputSchema.properties).sort(), Object.keys(claudeToolShapes.alp_task).sort());
   assert.match(main.config.developerInstructions, /Tasks: the project's task graph lives in \.alp\/tasks[\s\S]*Only you and the user create or change tasks/);
   assert.deepEqual(tool(supervisor, 'alp_task').inputSchema.properties.action.enum, ['show', 'list']);

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { access } from 'node:fs/promises';
+import { access, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
@@ -9,6 +9,9 @@ import { parseArgs } from 'node:util';
 import { initProject } from './core/init.js';
 import { upgradeProject } from './core/upgrade.js';
 import { seedLibrary } from './core/library.js';
+import { exportBeads, importBeads, parseJsonl } from './core/beads.js';
+import { findFormula, formulaDirs, listFormulas, pourFormula } from './core/formulas.js';
+import { parse as toml } from 'smol-toml';
 import { addGate, blockersOf, checkGates, childrenOf, closeTask, compactTasks, createTask, describeGate, gateOpen, gatesOf, linkTask, listTasks, loadTasks, readyTasks, reopenTask, resolveGate, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
 import { alpHome, connect, ensureDaemon, lockAlive, readLock } from './client/index.js';
 
@@ -27,6 +30,9 @@ const USAGE = `Usage:
   alp tasks [ready] [--all] [--status S] [--label L] [--project DIR] [--json]
   alp tasks gates [--json]                 open gates; checks GitHub ones
   alp tasks compact [--days 30] [--dry-run]
+  alp tasks export [-o file.jsonl]          as beads JSONL
+  alp tasks import [file.jsonl] [--dry-run]  beads JSONL; default .beads/issues.jsonl
+  alp formula list | show <name> | pour <name> [--var k=v]... [--parent ID] [--dry-run]
   alp task add <title> [-d text] [-p 0-4] [-t task|bug|feature|chore|epic] [--parent ID] [--after ID]... [-l label]... [--path P]... [--from ID]
   alp task show <id> [--json]
   alp task edit <id> [--title T] [-d text] [-p N] [-t type] [-l label]... [--path P]... [-m note]
@@ -500,6 +506,7 @@ function warnUnreadable(errors) {
 /** The project's tasks: open, in progress and in review by default; ready lists what nothing blocks. */
 async function tasksCommand(args) {
   if (args[0] === 'gates' || args[0] === 'compact') return taskMaintenance([args[0]], args.slice(1));
+  if (args[0] === 'export' || args[0] === 'import') return beads(args[0], args.slice(1));
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
     all: { type: 'boolean' }, status: { type: 'string' }, label: { type: 'string' }, project: { type: 'string' }, json: { type: 'boolean' },
   } });
@@ -551,6 +558,78 @@ async function taskMaintenance([command], args) {
     const state = checked.pending.find(entry => entry.task === task.id && entry.gate === gate.id)?.detail;
     console.log(`⏸ ${task.id} ${describeGate(gate)}${state ? ` (${state})` : ''}  ${task.title}`);
   }
+}
+
+/** alp tasks export / import: interchange with beads through its JSONL issue format. */
+async function beads(command, args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
+    project: { type: 'string' }, output: { type: 'string', short: 'o' }, 'dry-run': { type: 'boolean' }, json: { type: 'boolean' },
+  } });
+  const root = await taskProject(values.project);
+  if (command === 'export') {
+    if (positionals.length || values['dry-run']) throw new UsageError();
+    const { tasks, errors } = await loadTasks(root);
+    warnUnreadable(errors);
+    const text = exportBeads(tasks).map(record => JSON.stringify(record)).join('\n') + (tasks.length ? '\n' : '');
+    if (values.output) {
+      await writeFile(values.output, text);
+      console.error(`Exported ${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'} to ${values.output}`);
+    } else {
+      process.stdout.write(text);
+    }
+    return;
+  }
+  if (positionals.length > 1 || values.output) throw new UsageError();
+  const file = positionals[0] ?? path.join(root, '.beads', 'issues.jsonl');
+  const { records, errors } = parseJsonl(await readFile(file, 'utf8'));
+  const report = await importBeads(root, records, { dryRun: values['dry-run'], by: 'user' });
+  report.skipped.push(...errors);
+  if (values.json) { console.log(JSON.stringify(report)); return; }
+  const verb = values['dry-run'] ? 'Would import' : 'Imported';
+  for (const { id, from } of report.created) console.log(`+ ${id}${id !== from ? ` (from ${from})` : ''}`);
+  for (const { id, from } of report.updated) console.log(`~ ${id}${id !== from ? ` (from ${from})` : ''}`);
+  for (const { line, reason } of report.skipped.sort((a, b) => a.line - b.line)) console.error(`alp: skipped line ${line}: ${reason}`);
+  for (const warning of report.warnings) console.error(`alp: ${warning}`);
+  console.log(`${verb} ${file}: ${report.created.length} created, ${report.updated.length} updated, ${report.skipped.length} skipped`);
+}
+
+/** alp formula: workflow templates that pour into an epic with a task per step. */
+async function formulaCommand([action, ...args]) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
+    project: { type: 'string' }, var: { type: 'string', multiple: true }, parent: { type: 'string' }, 'dry-run': { type: 'boolean' }, json: { type: 'boolean' },
+  } });
+  const root = await taskProject(values.project);
+  const home = alpHome();
+  if (action === 'list') {
+    if (positionals.length) throw new UsageError();
+    const found = await listFormulas(root, home, { toml });
+    if (values.json) { console.log(JSON.stringify(found)); return; }
+    if (!found.length) { console.log(`No formulas in ${formulaDirs(root, home).join(', ')}`); return; }
+    for (const entry of found) console.log(entry.error ? `✗ ${entry.name}  ${entry.file}: ${entry.error}` : `${entry.name}  ${entry.formula.steps.length} steps${entry.formula.description ? `  ${entry.formula.description.split('\n')[0]}` : ''}`);
+    return;
+  }
+  if (positionals.length !== 1) throw new UsageError();
+  const { formula, file } = await findFormula(root, home, positionals[0], { toml });
+  if (action === 'show') {
+    if (values.json) { console.log(JSON.stringify(formula)); return; }
+    console.log(`${formula.formula}${formula.version ? ` v${formula.version}` : ''}  ${file}`);
+    if (formula.description) console.log(`  ${formula.description}`);
+    for (const [name, spec] of Object.entries(formula.vars)) console.log(`  --var ${name}=…${spec.required ? ' (required)' : spec.default !== undefined ? ` (default ${spec.default})` : ''}${spec.description ? `  ${spec.description}` : ''}`);
+    for (const step of formula.steps) console.log(`  ${step.id}${step.type === 'human' ? ' [you]' : step.type !== 'task' ? ` [${step.type}]` : ''}: ${step.title}${step.needs.length ? `  after ${step.needs.join(', ')}` : ''}`);
+    return;
+  }
+  if (action !== 'pour') throw new UsageError();
+  const given = {};
+  for (const entry of values.var ?? []) {
+    const at = entry.indexOf('=');
+    if (at < 1) throw new UsageError();
+    given[entry.slice(0, at)] = entry.slice(at + 1);
+  }
+  const { epic, tasks } = await pourFormula(root, formula, given, 'user', { dryRun: values['dry-run'], ...(values.parent ? { parent: values.parent } : {}) });
+  if (values.json) { console.log(JSON.stringify({ epic, tasks })); return; }
+  console.log(`${values['dry-run'] ? 'Would pour' : 'Poured'} ${formula.formula} as ${epic.id}  ${epic.title}`);
+  const all = [epic, ...tasks];
+  for (const task of tasks) console.log(`  ${taskRow(task, all)}`);
 }
 
 const repeated = { type: 'string', multiple: true };
@@ -653,7 +732,7 @@ async function interrupt(args) {
   console.log('Interrupted');
 }
 
-const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, interrupt };
+const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, interrupt };
 const [command, ...args] = process.argv.slice(2);
 try {
   if (!Object.hasOwn(commands, command)) throw new UsageError();

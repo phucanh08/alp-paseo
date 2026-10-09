@@ -62,7 +62,7 @@ export const toolShapes: Record<string, Record<string, z.ZodType>> = {
     labels: z.array(z.string().min(1).max(50)).max(10).optional(),
   },
   alp_task: {
-    action: z.enum(['create', 'update', 'link', 'start', 'close', 'reopen', 'gate', 'clear', 'show', 'list', 'ready']),
+    action: z.enum(['create', 'update', 'link', 'start', 'close', 'reopen', 'gate', 'clear', 'pour', 'formulas', 'show', 'list', 'ready']),
     id: z.string().min(1).optional(),
     title: z.string().min(1).max(200).optional(),
     description: z.string().max(8000).optional(),
@@ -80,6 +80,8 @@ export const toolShapes: Record<string, Record<string, z.ZodType>> = {
     until: z.string().min(1).optional(),
     ref: z.string().min(1).optional(),
     gate: z.string().min(1).optional(),
+    formula: z.string().min(1).optional(),
+    vars: z.record(z.string(), z.string()).optional(),
     summary: z.string().min(1).max(2000).optional(),
     note: z.string().min(1).max(2000).optional(),
     status: z.enum(TASK_STATUSES as [string, ...string[]]).optional(),

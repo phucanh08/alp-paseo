@@ -14,6 +14,8 @@ import type { AlpEvent, AssignmentSnapshot, Envelope, SessionSnapshot, TreeStatu
 import { BOARD_KEEP, live, normalizePaths, overlapping, PIN_BODY_CHARS, PIN_KINDS, renderBoard, renderPin, type Pin, type PinKind } from './board.js';
 import { checkoutKey, commitWorktree, createWorktree, mergeWorktree, removeWorktree, type Worktree, type WorktreeChange } from './workspace.js';
 import { ALP_REPO, gh, projectRepo, type GitHubRunner } from './github.js';
+import { parse as toml } from 'smol-toml';
+import { findFormula, formulaDirs, listFormulas, pourFormula } from '../core/formulas.js';
 import { CLOSE_REASONS, GATE_KINDS, addGate, checkGates, resolveGate, TASK_STATUSES, TASK_TYPES, TASKS_DIR, blockersOf, childrenOf, closeTask, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, releaseTask, reopenTask, startRefusal, startTask, submitTask, summarize, taskDigest, updateTask, type Task } from '../core/tasks.js';
 
 export type RuntimeTransport = {
@@ -408,9 +410,9 @@ const ISSUE_TOOL = {
   },
 };
 
-const TASK_ACTIONS = ['create', 'update', 'link', 'start', 'close', 'reopen', 'gate', 'clear', 'show', 'list', 'ready'] as const;
+const TASK_ACTIONS = ['create', 'update', 'link', 'start', 'close', 'reopen', 'gate', 'clear', 'pour', 'formulas', 'show', 'list', 'ready'] as const;
 type TaskAction = typeof TASK_ACTIONS[number];
-const TASK_PAST: Record<string, string> = { create: 'created', update: 'updated', link: 'linked', start: 'started', close: 'closed', reopen: 'reopened', gate: 'gated', clear: 'cleared a gate of', delegate: 'delegated', submit: 'submitted', release: 'released' };
+const TASK_PAST: Record<string, string> = { create: 'created', update: 'updated', link: 'linked', start: 'started', close: 'closed', reopen: 'reopened', gate: 'gated', clear: 'cleared a gate of', delegate: 'delegated', submit: 'submitted', release: 'released', pour: 'poured' };
 const TASK_FIELDS: Record<TaskAction, string[]> = {
   create: ['title', 'description', 'type', 'priority', 'labels', 'paths', 'parent', 'blockedBy', 'discoveredFrom'],
   update: ['id', 'title', 'description', 'type', 'priority', 'labels', 'paths', 'note'],
@@ -420,6 +422,8 @@ const TASK_FIELDS: Record<TaskAction, string[]> = {
   reopen: ['id', 'note'],
   gate: ['id', 'kind', 'note', 'until', 'ref'],
   clear: ['id', 'gate', 'note'],
+  pour: ['formula', 'vars', 'parent'],
+  formulas: [],
   show: ['id'],
   list: ['status', 'label', 'limit'],
   ready: ['limit'],
@@ -449,7 +453,7 @@ function taskTool(actions: TaskAction[]) {
     type: 'function',
     name: 'alp_task',
     description: edits
-      ? `The project's task graph in ${TASKS_DIR}, shared with the user. ready lists open tasks nothing blocks or gates, most urgent first. gate holds a task back until the user approves (human), a time passes (timer), a pull request merges (gh:pr) or a workflow run succeeds (gh:run); ALP checks GitHub gates at the start of your turns, and clear clears one by hand. create records work to track (discoveredFrom: the task during which you found it); start takes a ready task for yourself; close it with a reason and summary once verified; link adds or removes blockedBy, related and parent; reopen puts a task back to open.`
+      ? `The project's task graph in ${TASKS_DIR}, shared with the user. ready lists open tasks nothing blocks or gates, most urgent first. gate holds a task back until the user approves (human), a time passes (timer), a pull request merges (gh:pr) or a workflow run succeeds (gh:run); ALP checks GitHub gates at the start of your turns, and clear clears one by hand. formulas lists workflow templates; pour turns one into an epic with a task per step, the steps ordered by blockedBy. create records work to track (discoveredFrom: the task during which you found it); start takes a ready task for yourself; close it with a reason and summary once verified; link adds or removes blockedBy, related and parent; reopen puts a task back to open.`
       : `Read the project's task graph in ${TASKS_DIR}. Only main and the user create or change tasks; report work you find outside your scope to your requester.`,
     inputSchema: {
       type: 'object',
@@ -473,6 +477,8 @@ function taskTool(actions: TaskAction[]) {
           until: { type: 'string', description: 'For a timer gate: an ISO time, or +30m, +2h, +3d.' },
           ref: { type: 'string', description: 'For a gh:pr or gh:run gate: 123, or owner/repo#123.' },
           gate: { type: 'string', description: 'For clear: the gate id, such as g1. You cannot clear a human gate; the user does.' },
+          formula: { type: 'string', description: 'For pour: the formula name, from action formulas.' },
+          vars: { type: 'object', additionalProperties: { type: 'string' }, description: 'For pour: values of the formula variables.' },
           summary: { type: 'string', description: 'For close: the outcome and its evidence.' },
           note: { type: 'string', description: 'For update and reopen: why.' },
         } : {}),
@@ -1192,12 +1198,21 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
     const extra = Object.keys(args).filter(key => key !== 'action' && !TASK_FIELDS[action].includes(key));
     if (extra.length) return toolResult(false, { error: `${action} does not take ${extra.join(', ')}` });
-    if (!['create', 'list', 'ready'].includes(action) && typeof args.id !== 'string') return toolResult(false, { error: `${action} needs id` });
+    if (!['create', 'list', 'ready', 'pour', 'formulas'].includes(action) && typeof args.id !== 'string') return toolResult(false, { error: `${action} needs id` });
     if (args.limit !== undefined && (!Number.isSafeInteger(args.limit) || args.limit < 1)) return toolResult(false, { error: 'limit must be a positive integer' });
     const project = session.mapping.agent.projectRoot;
     const by = session.mapping.agent.name;
     const limit = Math.min(args.limit ?? 20, 100);
     try {
+      if (action === 'formulas') {
+        const found = await listFormulas(project, options.libraryDir, { toml });
+        return toolResult(true, {
+          formulas: found.map(entry => entry.formula
+            ? { name: entry.name, ...(entry.formula.description ? { description: entry.formula.description } : {}), vars: entry.formula.vars, steps: entry.formula.steps.map(step => `${step.id}${step.type === 'human' ? ' (the user)' : ''}: ${step.title}`) }
+            : { name: entry.name, error: entry.error }),
+          searched: formulaDirs(project, options.libraryDir),
+        });
+      }
       if (action === 'show' || action === 'list' || action === 'ready') {
         const { tasks, errors } = await loadTasks(project);
         const warnings = errors.length ? { unreadable: errors } : {};
@@ -1211,14 +1226,19 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         return toolResult(true, { tasks: rows.slice(0, limit).map(task => summarize(task, tasks)), ...(rows.length > limit ? { more: rows.length - limit } : {}), ...warnings });
       }
       const { action: _action, id, note, reason, summary, add, remove, ...input } = args;
-      const { kind, until, ref, gate, ...fields } = input;
+      if (action === 'pour' && (typeof input.formula !== 'string' || (input.vars !== undefined && (!input.vars || typeof input.vars !== 'object' || Array.isArray(input.vars) || !Object.values(input.vars).every(value => typeof value === 'string'))))) {
+        return toolResult(false, { error: 'pour needs formula, and vars as an object of text values' });
+      }
+      const { kind, until, ref, gate, formula: _formula, vars: _vars, ...fields } = input;
       if (action === 'clear') {
         const current = (await loadTasks(project)).tasks.find(candidate => candidate.id === id);
         if (current?.gates.find(entry => entry.id === gate)?.kind === 'human') return toolResult(false, { error: 'Only the user clears a human gate; ask them, and they approve it with alp task gate clear or in Paseo' });
       }
+      let poured: Awaited<ReturnType<typeof pourFormula>> | undefined;
       const task =
         action === 'create' ? await createTask(project, fields as any, by)
         : action === 'update' ? await updateTask(project, id, { ...fields, note }, by)
+        : action === 'pour' ? (poured = await pourFormula(project, (await findFormula(project, options.libraryDir, input.formula, { toml })).formula, input.vars, by, input.parent ? { parent: input.parent } : {})).epic
         : action === 'gate' ? await addGate(project, id, { kind, note, until, ref }, by)
         : action === 'clear' ? await resolveGate(project, id, gate, { by, note })
         : action === 'link' ? await linkTask(project, id, { add, remove }, by)
@@ -1227,7 +1247,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         : await reopenTask(project, id, { note }, by);
       touchTask(rootOf(sessionId), task.id);
       runLog(rootOf(sessionId), { event: 'task', action, agent: by, id: task.id, title: task.title, status: task.status, ...(summary ?? note ? { detail: summary ?? note } : {}) });
-      return toolResult(true, { task: summarize(task, (await loadTasks(project)).tasks), rev: task.rev });
+      const { tasks } = await loadTasks(project);
+      return toolResult(true, { task: summarize(task, tasks), rev: task.rev, ...(poured ? { steps: poured.tasks.map(step => summarize(step, tasks)) } : {}) });
     } catch (error) {
       return toolResult(false, { error: errorData(error).message });
     }

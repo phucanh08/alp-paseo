@@ -237,6 +237,77 @@ the open gates. Main's turn context lists tasks that only a gate holds back.
 A compacted task records when, by whom and its former size, and is not
 compacted again. Only the user compacts.
 
+### Formulas
+
+A formula is a workflow template, after beads formulas. It is a file named
+`<name>.formula.toml` or `<name>.formula.json`, found in the project's
+`.alp/formulas`, then `$ALP_HOME/formulas`, then the project's `.beads/formulas`;
+the first file of a name wins.
+
+```toml
+formula = "release"
+description = "Ship {{version}}"
+version = 1
+
+[vars.version]
+description = "The version to ship"
+required = true
+
+[[steps]]
+id = "changelog"
+title = "Write the changelog for {{version}}"
+paths = ["CHANGELOG.md"]
+
+[[steps]]
+id = "approve"
+title = "Approve the {{version}} changelog"
+type = "human"          # the user's step
+needs = ["changelog"]
+
+[[steps]]
+id = "publish"
+title = "Publish {{version}}"
+needs = ["approve"]
+```
+
+Pouring it creates an epic labelled `formula:release` and one child per step,
+in step order (`<epic>.1`, `<epic>.2`, …). `needs` become `blockedBy`, `{{var}}`
+is filled in titles and descriptions, and steps may set `type`, `priority`,
+`labels`, `paths` and `description`. A `human` step waits on a human gate; when
+the user approves it, the step closes. A formula is checked before it pours:
+unknown `needs`, cycles, duplicate step ids, unknown variables and missing
+required ones refuse it, and nothing is written.
+
+```sh
+alp formula list
+alp formula show release
+alp formula pour release --var version=0.4.0 [--parent t-77e0] [--dry-run]
+```
+
+Main lists formulas with `alp_task` action `formulas` and pours one with `pour
+{ formula, vars, parent? }`.
+
+### beads import and export
+
+`alp tasks export [-o file]` writes the tasks as beads JSONL, one issue per
+line, which `bd import` reads. `alp tasks import [file] [--dry-run]` reads what
+`bd export` writes; the default file is the project's `.beads/issues.jsonl`.
+
+- Relations map to beads dependencies: `blockedBy` is `blocks`, `parent` is
+  `parent-child`, and `discoveredFrom` and `related` keep their names.
+- beads has no `review`: a task in review is exported as `in_progress`. Paths,
+  gates, handoffs and formula details ride in `metadata.alp`, so a task that
+  goes to beads and back keeps them. An open timer gate is also `defer_until`.
+- Import is an upsert. An issue whose id is an ALP task id, or that ALP imported
+  before, updates that task; any other gets a new ALP id, numbered under its
+  parent, and remembers its beads id. Nothing is deleted.
+- Tombstones, ephemeral issues and lines without a title are skipped. An issue
+  in progress in beads is imported as open, since no ALP agent holds it, and
+  unknown issue types become `task` with a `beads:<type>` label.
+  `design`, `acceptance_criteria` and `notes` join the description.
+- Each warning names the issue: a missing dependency target, a dependency type
+  ALP does not have, or a link that would make a cycle.
+
 ### The Tasks panel in Paseo
 
 The plugin adds a **Tasks** panel to every workspace, also reachable from the

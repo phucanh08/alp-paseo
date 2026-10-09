@@ -103,6 +103,7 @@ node src/cli.js log <session>         # delegations, mail, handoffs, worktrees, 
 node src/cli.js board [--project DIR] # the project board: claims, decisions and findings
 node src/cli.js tasks [ready]         # the project's tasks; ready: what nothing blocks
 node src/cli.js task add "Title" -p 1 --after t-91c2   # also: show | edit | close | reopen | dep
+node src/cli.js formula pour release --var version=0.4.0   # also: list | show; tasks export | import for beads
 node src/cli.js interrupt <session>
 ```
 
@@ -117,6 +118,8 @@ A gate holds a task back until it clears:
 - `timer`: a time passes.
 - `gh:pr`: a pull request merges.
 - `gh:run`: a workflow run succeeds.
+
+Formulas are workflow templates, as in beads: a `<name>.formula.toml` (or `.json`) file in `.alp/formulas`, `$ALP_HOME/formulas` or `.beads/formulas` lists steps with `needs` and `{{vars}}`. `alp formula pour release --var version=0.4.0`, or main with `alp_task pour`, turns one into an epic with a task per step; a `human` step waits for your approval. `alp tasks export` and `alp tasks import` move tasks to and from beads' JSONL (`bd export` / `bd import`, default `.beads/issues.jsonl`).
 
 `alp tasks gates` and main's turns check the GitHub gates. `alp tasks compact` shrinks tasks closed more than 30 days ago. In Paseo, each workspace has a **Tasks** panel: you approve gates, add tasks, and accept or reopen them there. The CLI writes the files directly, so it works without alpd.
 
