@@ -515,12 +515,7 @@ A role's schema lists only its actions and fields, and the Claude transport narr
 
 **CLI.** `alp tasks [ready] [--all] [--status S] [--label L] [--json]`, and `alp task add|show|edit|close|reopen|dep add|dep rm` with `--project DIR`. The CLI writes the files directly as `user` and needs no daemon. It requires an `.alp` directory and reports unreadable files on stderr.
 
-**Not yet (step 2).**
-- `alp_delegate { taskId }`.
-- Handoff moving a task to `review`, and an ended assignment reopening it.
-- Board claims that carry the task id, and claims from a task's `paths`.
-- The ready list in main's turn context, with supervisor checks.
-- Paseo `todo` items.
+Step 2 is in §21.
 
 **Evidence.** `test/tasks.test.js` covers:
 - Ids and children, validation, `.gitignore`, and no leftover files.
@@ -531,3 +526,55 @@ A role's schema lists only its actions and fields, and the Claude transport narr
 - The CLI, end to end.
 - Five CLI processes adding children of one epic at once, which get distinct ids.
 - `alp_task` for main, a peer and the supervisor, including the digest lines. On 2026-10-09 there was a live `alp run --profile pho` with real Claude models, in an isolated `ALP_HOME`, on three tasks the user added with the CLI. Main ran `alp_task ready` and picked the P1 task. It started the task, claimed `greet.js` and wrote it. It verified the file with node, and reviewer accepted it. Main then closed the task with a summary of the evidence. That left the task's blocked follow-up ready. The supervisor judged the turn sound.
+
+## 21. Tasks in delegation as built, step 2 (2026-10-09)
+
+Goal: tasks move with the work: main gives one to an assignment, the assignment's handoff brings it back for acceptance, and main, the supervisor and Paseo see where every task stands (D18).
+
+**Delegating a task.** Root main's `alp_delegate` schema adds `taskId` (lead's does not). Before any check that must not yield:
+- `runDelegation` refuses a `taskId` from anyone but root main, and to read-only advisors.
+- It reloads the tasks and refuses a missing task, or one that `startRefusal` rejects: an epic, in progress (naming the holder), closed, or blocked (naming the blockers).
+- For a writing assignment of a task with `paths`, it refuses when `claimConflicts` finds claims outside the requester's line of delegation, returning them.
+
+Then, inside the start's `try`:
+- `startTask` takes the task for `{ agent, assignment: childId }` under the task lock, sets `assignment.taskId`, and logs `task` / `delegate`.
+- Once the child session exists, a writing assignment pins a claim on the task's paths as the child (`task` set, body `Task <id>: <title>`). A claim that appeared meanwhile fails the delegation, which releases the task.
+- The brief begins with `taskBrief`: id, type, priority, title, description, paths (and that ALP claimed them), and that the handoff moves the task to review and discovered work goes under `discovered`.
+- `assignment.started` carries `taskId`.
+
+**Claims.** Pins have an optional `task`. A claim made with `alp_pin` takes the task of the nearest assignment in the session's lineage, so lead's peers' claims carry lead's task. `renderPin`, `alp top` and `alp log` show it. `claimConflicts` and `addPin` are shared by `alp_pin` and delegation.
+
+**Settling.** `finishAssignment` calls `settleTask` for an assignment with a task. It first releases the assignment's claims, even if its session never opened. Then:
+- With a `complete` or `partial` handoff and the state `completed`, `submitTask` moves the task to `review`. The task keeps the handoff's fields with its agent and time.
+- Otherwise `releaseTask` opens the task again, clears `assignee`, keeps any handoff, and logs the reason (`handoff blocked`, `assignment canceled without a handoff`, …).
+- Both act only while the task is still `in_progress` for that assignment, so a task the user or main moved meanwhile is left alone.
+- The result mail to the requester gets `task: { id, status, next? }`, and the run log gets `task` / `submit` or `release`.
+- `startTask` also takes a task in `review` back for rework (logged `reworked`).
+
+**Handoff.** `discovered` joins the handoff lists. `assignment.finished` lines in the supervisor's digest append the discovered items.
+
+**Main's turn context.** On every turn of root main that is not a steer, `startPrompt` adds `taskDigest` after the catalog snapshot. It lists tasks in review (with agent and outcome), then in progress (with assignee), then up to 8 ready tasks, then counts of more ready, blocked and unreadable tasks, in at most 2000 characters. It is empty when no task is open and no file is unreadable.
+
+**Todo list.** A root records the tasks its tree created, started, delegated, changed, submitted or released (`touchTask`). When a root's turn ends, `showTasks` emits a timeline item `{ kind: 'todo', id, items: [{ id, text, status }] }` if the list changed since it was last shown. Status maps open to pending, `in_progress` and `review` to in progress ("awaiting acceptance" in the text), and closed to completed. The Paseo provider maps the item to Paseo's `todo` item (with `completed`), and `alp run` prints it.
+
+**Instructions.** Main's instructions and AGENT.md cover `taskId`, accepting or reworking a task in review, and recording discovered work. Peer and lead file discovered work under `discovered`. The supervisor's AGENT.md adds the task checks: a close without verification, dropped discovered work, a task left in review, work delegated without its `taskId`, a blocker removed just to start a task, and tasks for work finished in the same turn.
+
+**Evidence.** `test/tasks.test.js` adds tests for:
+- `submitTask` and `releaseTask` acting only for the holding assignment, and rework.
+- The digest's order, limits and counts.
+- Delegating with `taskId`:
+  - the refusals
+  - the brief, the start and the claim
+  - a second delegation refused
+  - a peer's claim carrying the task
+  - a handoff moving the task to review, with the result's `task` and the claim released
+  - closing to accept
+  - the todo list shown once
+  - the digest lines
+- Blocked, missing, partial and complete handoffs, and rework.
+- Claims from another tree refusing a delegation with nothing changed.
+- Cafe: lead's schema without `taskId`, its refusal, and its peer's claim carrying the task.
+
+`test/paseo.test.js` checks a todo item through Paseo's provider event schema. On 2026-10-09 two live `alp run` sessions used real Claude models in an isolated `ALP_HOME`:
+- **Phở:** main passed `taskId` to a peer on Sonnet 4.6. ALP claimed `greet.js` for the peer. The peer's complete handoff moved the task to review. Main verified the change and closed the task, and the run printed the todo list. The supervisor checked the task lifecycle and judged the turn sound.
+- **Cafe, an epic with two children:** main gave the ready child to lead with `taskId`. ALP pinned lead's claim for that task on its two paths, and lead had a peer implement it. Lead's handoff moved the task to review, and main closed it after re-running the tests. The second child, which the first had blocked, then became ready. The supervisor judged the turn sound.
