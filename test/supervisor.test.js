@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -151,14 +151,12 @@ test('a supervisor note waits for main\'s running turn, and a turn that ends dur
   assert.doesNotMatch(supervisor.started[1].params.input.at(-1).text, /First task/);
 });
 
-test('a project from before the supervisor gets only its files, not agents the user deleted', async t => {
+test('a project without agent copies runs the built-in supervisor and gets no copies', async t => {
   const { root, runtime, runtimes } = await setup(t);
-  await rm(path.join(root, '.alp/agents/supervisor'), { recursive: true });
-  await rm(path.join(root, '.alp/agents/lead'), { recursive: true });
   await runtime.open('root', { cwd: root });
   await until(() => runtimes.length === 2 && runtimes[1].calls.some(call => call.method === 'thread/start'));
-  assert.match(await readFile(path.join(root, '.alp/agents/supervisor/AGENT.md'), 'utf8'), /Supervisor — process reviewer/);
-  await assert.rejects(readFile(path.join(root, '.alp/agents/lead/AGENT.md'), 'utf8'), { code: 'ENOENT' });
+  assert.match(runtimes[1].config.developerInstructions, /Supervisor — process reviewer/);
+  await assert.rejects(readdir(path.join(root, '.alp/agents')), { code: 'ENOENT' });
 });
 
 test('no supervisor when settings turn it off or the project uses a custom graph', async t => {

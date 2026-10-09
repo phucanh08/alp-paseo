@@ -1,17 +1,15 @@
 import { mkdir, writeFile, lstat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-const starterAgents = ['main', 'lead', 'peer', 'oracle', 'reviewer', 'supervisor'];
-
 /**
- * Fill missing scaffold files without replacing existing user content.
- * Skills live in the user's library (library.js); an agent's skills/ directory
- * starts empty and holds only skills meant for this project.
- * `agents` limits the starter agents to fill, for a project that only lacks a newer one.
+ * Fill missing scaffold files without replacing existing user content: ALP.md and
+ * .alp/settings.json. Agents, skills, MCP servers and hooks come from ALP's built-ins
+ * and the user's library (ALPD §41); a project adds its own under .alp/ only to
+ * override them.
  * @param {string} projectRoot
- * @param {{ templateRoot?: URL, templates?: Record<string, string>, agents?: string[] }} [options]
+ * @param {{ templateRoot?: URL, templates?: Record<string, string> }} [options]
  */
-export async function initProject(projectRoot, { templateRoot, templates, agents = starterAgents } = {}) {
+export async function initProject(projectRoot, { templateRoot, templates } = {}) {
   const root = path.resolve(projectRoot);
   const sourceRoot = () => templateRoot ?? new URL('../../templates/', import.meta.url);
   const template = name => templates ? Promise.resolve(templates[name]) : readFile(new URL(name, sourceRoot()), 'utf8');
@@ -20,13 +18,7 @@ export async function initProject(projectRoot, { templateRoot, templates, agents
     'ALP.md': await template('ALP.md'),
     '.alp/settings.json': JSON.stringify({ defaultAgent: 'main', workflow: { mode: 'pho', maxPeers: 2 } }, null, 2) + '\n',
   };
-  const directories = ['.alp', '.alp/agents'];
-  for (const name of starterAgents.filter(agent => agents.includes(agent))) {
-    const directory = `.alp/agents/${name}`;
-    directories.push(directory, `${directory}/skills`, `${directory}/hooks`);
-    files[`${directory}/AGENT.md`] = await template(`agents/${name}/AGENT.md`);
-    files[`${directory}/.mcp.json`] = '{\n  "mcpServers": {}\n}\n';
-  }
+  const directories = ['.alp'];
   const created = [];
   const preserved = [];
   await mkdir(root, { recursive: true });

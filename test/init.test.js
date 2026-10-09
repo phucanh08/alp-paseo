@@ -25,24 +25,23 @@ async function entries(root, prefix = '') {
   return result.sort();
 }
 
-test('clean project contains exactly six starter agents with empty skill directories and valid JSON', async t => {
+test('clean project gets only ALP.md and settings; the built-in agents resolve from the package', async t => {
   const root = await fixture(t);
   const library = await fixture(t);
   await seedLibrary(library);
-  assert.equal((await initProject(root)).created.length, 14);
-  assert.deepEqual(await entries(root), [
-    'ALP.md', '.alp/', '.alp/settings.json', '.alp/agents/',
-    ...['main', 'lead', 'peer', 'oracle', 'reviewer', 'supervisor'].flatMap(name => ['', 'AGENT.md', '.mcp.json', 'skills/', 'hooks/'].map(file => `.alp/agents/${name}/${file}`)),
-  ].sort());
+  assert.deepEqual((await initProject(root)).created, ['ALP.md', '.alp/settings.json']);
+  assert.deepEqual(await entries(root), ['ALP.md', '.alp/', '.alp/settings.json'].sort());
   assert.deepEqual(JSON.parse(await readFile(path.join(root, '.alp/settings.json'), 'utf8')), { defaultAgent: 'main', workflow: { mode: 'pho', maxPeers: 2 } });
   assert.deepEqual(await discoverAgents(root), ['lead', 'main', 'oracle', 'peer', 'reviewer', 'supervisor']);
   for (const agent of ['main', 'lead', 'peer']) {
     const resolved = await resolveAgent(root, { agent, library });
     assert.equal(resolved.name, agent);
+    assert.equal(resolved.source, 'builtin');
+    assert.equal(resolved.instructions.agent, await readFile(new URL(`../templates/agents/${agent}/AGENT.md`, import.meta.url), 'utf8'));
     assert.deepEqual(resolved.mcp, { mcpServers: {} });
+    assert.deepEqual(resolved.hooks, []);
     assert.ok(resolved.skills.some(skill => skill.name === 'xia'));
     assert.equal(resolved.skills.some(skill => skill.name === 'ask-alp'), false);
-    assert.deepEqual(await readdir(path.join(root, `.alp/agents/${agent}/hooks`)), []);
   }
 });
 
@@ -50,7 +49,6 @@ test('partial initialization and repeated runs preserve all user content', async
   const root = await fixture(t);
   const custom = {
     'ALP.md': 'My project\r\n',
-    '.alp/settings.json': '{"defaultAgent":"custom"}',
     '.alp/agents/main/AGENT.md': 'My main instructions',
     '.alp/agents/main/.mcp.json': '{"mcpServers":{"local":{"command":"demo"}}}',
     '.alp/agents/main/skills/custom/SKILL.md': 'My skill',
@@ -60,14 +58,14 @@ test('partial initialization and repeated runs preserve all user content', async
     await mkdir(path.dirname(path.join(root, name)), { recursive: true });
     await writeFile(path.join(root, name), content);
   }
-  await rm(path.join(root, '.alp/agents/main/.mcp.json'));
-  assert.deepEqual((await initProject(root)).created, ['.alp/agents/main/.mcp.json', '.alp/agents/lead/AGENT.md', '.alp/agents/lead/.mcp.json', '.alp/agents/peer/AGENT.md', '.alp/agents/peer/.mcp.json', '.alp/agents/oracle/AGENT.md', '.alp/agents/oracle/.mcp.json', '.alp/agents/reviewer/AGENT.md', '.alp/agents/reviewer/.mcp.json', '.alp/agents/supervisor/AGENT.md', '.alp/agents/supervisor/.mcp.json']);
-  await writeFile(path.join(root, '.alp/agents/main/.mcp.json'), custom['.alp/agents/main/.mcp.json']);
+  assert.deepEqual(await initProject(root), { created: ['.alp/settings.json'], preserved: ['ALP.md'] });
   assert.deepEqual((await initProject(root)).created, []);
   for (const [name, content] of Object.entries(custom)) {
     assert.equal(await readFile(path.join(root, name), 'utf8'), content);
   }
-  assert.deepEqual(await readdir(path.join(root, '.alp/agents/main/hooks')), []);
+  const main = await resolveAgent(root);
+  assert.equal(main.source, 'project');
+  assert.equal(main.instructions.agent, 'My main instructions');
 });
 
 test('conflicting directory path fails without replacing the existing file', async t => {
@@ -93,7 +91,7 @@ test('CLI supports cwd and explicit new directory, and rejects invalid usage', a
   assert.match(run('init').stdout, /Skill library .*: \d+ files added/);
   assert.ok(JSON.parse(await readFile(path.join(home, 'role-skills.json'), 'utf8')).main.includes('xia'));
   const again = run('init');
-  assert.match(again.stdout, /0 files created, 14 existing files preserved/);
+  assert.match(again.stdout, /0 files created, 2 existing files preserved/);
   assert.doesNotMatch(again.stdout, /Skill library/);
   assert.equal(run('init', 'nested project').status, 0);
   assert.equal(JSON.parse(await readFile(path.join(root, 'nested project/.alp/settings.json'), 'utf8')).defaultAgent, 'main');

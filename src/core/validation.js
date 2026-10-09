@@ -101,6 +101,54 @@ export function validateUserSettings(settings, source) {
   return settings;
 }
 
+/** Keys of an agent's agent.json (ALPD §41). */
+export const AGENT_SETTINGS = ['$schema', 'description', 'provider', 'model', 'thinking', 'mode', 'skills', 'mcp', 'hooks'];
+const AGENT_MODES = ['read-only', 'workspace-write', 'full-access'];
+const entryName = value => typeof value === 'string' && /^[\w.-]+$/.test(value) && value !== '.' && value !== '..';
+
+export const HOOK_SETTINGS = ['$schema', 'description', 'event', 'command', 'blocking', 'timeoutSec', 'match'];
+/** The events ALP runs hooks at (ALPD §41); only those before an action can refuse it. */
+export const HOOK_EVENTS = ['session.start', 'turn.end', 'assignment.start', 'assignment.end', 'handoff', 'task.close', 'merge'];
+export const BLOCKING_HOOK_EVENTS = ['handoff', 'task.close', 'merge'];
+
+/** Checks a hook definition, hooks/<name>.json: a shell command ALP runs at one of its events. */
+export function validateHook(config, source) {
+  const check = (ok, message) => requireValue(ok, 'INVALID_HOOK', source, message);
+  check(object(config), 'expected an object');
+  const { unknown } = settingsKeys(config, HOOK_SETTINGS);
+  check(!unknown.length, unknown.length ? unknownMessage(unknown[0], HOOK_SETTINGS) : '');
+  if (config.description !== undefined) check(typeof config.description === 'string', 'description must be a string');
+  check(HOOK_EVENTS.includes(config.event), `event must be one of ${HOOK_EVENTS.join(', ')}`);
+  check(nonempty(config.command), 'command must be a nonempty string');
+  if (config.blocking !== undefined) {
+    check(typeof config.blocking === 'boolean', 'blocking must be true or false');
+    check(!config.blocking || BLOCKING_HOOK_EVENTS.includes(config.event), `only ${BLOCKING_HOOK_EVENTS.join(', ')} hooks can block`);
+  }
+  if (config.timeoutSec !== undefined) check(Number.isInteger(config.timeoutSec) && config.timeoutSec >= 1 && config.timeoutSec <= 3600, 'timeoutSec must be a whole number of seconds from 1 to 3600');
+  if (config.match !== undefined) {
+    check(object(config.match) && Object.keys(config.match).every(key => ['agent', 'label'].includes(key)), 'match may hold only agent and label');
+    for (const key of ['agent', 'label']) if (config.match[key] !== undefined) check(nonempty(config.match[key]), `match.${key} must be a nonempty string`);
+  }
+  return config;
+}
+
+/** Checks an agent's agent.json: what it runs on, its default mode, and the skills, MCP servers and hooks it names. */
+export function validateAgentConfig(config, source) {
+  const check = (ok, message) => requireValue(ok, 'INVALID_AGENT_CONFIG', source, message);
+  check(object(config), 'expected an object');
+  const { unknown } = settingsKeys(config, AGENT_SETTINGS);
+  check(!unknown.length, unknown.length ? unknownMessage(unknown[0], AGENT_SETTINGS) : '');
+  if (config.description !== undefined) check(typeof config.description === 'string', 'description must be a string');
+  for (const key of ['provider', 'model', 'thinking']) if (config[key] !== undefined) check(nonempty(config[key]), `${key} must be a nonempty string`);
+  if (config.mode !== undefined) check(AGENT_MODES.includes(config.mode), `mode must be one of ${AGENT_MODES.join(', ')}`);
+  for (const key of ['skills', 'mcp', 'hooks']) {
+    if (config[key] === undefined) continue;
+    check(Array.isArray(config[key]) && config[key].every(entryName), `${key} must list names of letters, digits, '.', '_' or '-'`);
+    check(new Set(config[key]).size === config[key].length, `${key} lists a name twice`);
+  }
+  return config;
+}
+
 export function normalizeMcp(raw, directory, source) {
   const check = (ok, message) => requireValue(ok, 'INVALID_MCP', source, message);
   check(object(raw), 'expected an object');

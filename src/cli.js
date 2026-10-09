@@ -17,7 +17,7 @@ import { diagnose, repair } from './client/doctor.js';
 import { ago, duration, renderLog, renderPs } from './client/render.js';
 import { installedProgram, installService, serviceFor, uninstallService } from './client/service.js';
 import { holdDaemon, startDaemon } from './client/supervise.js';
-import { discoverAgents } from './core/resolver.js';
+import { discoverAgents, libraryEntries } from './core/resolver.js';
 import { parse as toml } from 'smol-toml';
 import { addGate, blockersOf, checkGates, childrenOf, closeTask, compactTasks, createTask, describeGate, gateOpen, epicReport, gatesOf, getTask, isTaskId, linkTask, recordVerification, listTasks, loadTasks, readyTasks, reopenTask, resolveGate, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
 import { alpHome, connect, lockAlive, readLock } from './client/index.js';
@@ -36,6 +36,7 @@ const USAGE = `Usage:
   alp answer <question> <text> | alp answer <question> --dismiss [--reason R]
   alp log <session> [--json]
   alp board [--project DIR] [--json]
+  alp <agents|skills|mcp|hooks> [--project DIR] [--json]   the library: built-in, ~/.alp and project entries
   alp permissions [--project DIR] [--json]   each agent's permission profile
   alp permissions check <agent> "<command>"  what that agent's profile says about a command
   alp tasks [ready] [--all] [--status S] [--label L] [--project DIR] [--json]
@@ -73,7 +74,10 @@ async function project(command, args) {
     if ('updated' in result) {
       console.log(`ALP upgraded: ${result.updated.length} files updated.${result.backup ? ` Backup: ${result.backup}` : ''}`);
       if (result.customInstructions.length) console.log(`Custom instructions preserved; reconcile with templates if needed: ${result.customInstructions.join(', ')}`);
-      if (result.removed.length) console.log(`Retired skills archived: ${result.removed.join(', ')}`);
+      const copies = result.removed.filter(name => /^\.alp\/agents\/[^/]+$/.test(name));
+      const skills = result.removed.filter(name => !copies.includes(name));
+      if (skills.length) console.log(`Retired skills archived: ${skills.join(', ')}`);
+      if (copies.length) console.log(`Unedited agent copies put away; the project now uses ALP's built-ins: ${copies.join(', ')}`);
       if (result.customSkills.length) console.log(`Customized retired skills preserved for review: ${result.customSkills.join(', ')}`);
     }
   } catch (error) {
@@ -514,13 +518,34 @@ async function permissionsCommand(args) {
   }
   if (positionals.length) throw new UsageError();
   const rows = [];
-  for (const agent of await discoverAgents(root)) rows.push({ agent, profile: await profileFor(root, alpHome(), agent) });
+  for (const agent of await discoverAgents(root, { library: alpHome() })) rows.push({ agent, profile: await profileFor(root, alpHome(), agent) });
   if (values.json) { console.log(JSON.stringify(rows)); return; }
   for (const { agent, profile } of rows) {
     console.log(profile ? `${agent}  profile ${profile.name}, at most ${profile.base}${profile.beyondMode === 'ask' ? '; asks the user beyond it' : ''}` : `${agent}  no profile: the mode its requester or the user chooses`);
     if (profile?.allow.length) console.log(`  allow: ${profile.allow.join(', ')}`);
     if (profile?.ask.length) console.log(`  ask:   ${profile.ask.join(', ')}`);
     if (profile?.deny.length) console.log(`  deny:  ${profile.deny.join(', ')}`);
+  }
+}
+
+/** Lists one library kind: where each entry comes from, what it overrides, and who uses it. */
+async function libraryCommand(kind, args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { project: { type: 'string' }, json: { type: 'boolean' } } });
+  if (positionals.length) throw new UsageError();
+  // Outside a project only the built-ins and the library apply.
+  const root = path.resolve(values.project ?? process.cwd());
+  const rows = await libraryEntries(kind, root, { library: alpHome() });
+  if (values.json) { console.log(JSON.stringify(rows)); return; }
+  if (!rows.length) { console.log(`No ${kind} in ${path.join(alpHome(), kind)} or ${path.join(root, '.alp', kind)}`); return; }
+  const width = Math.max(...rows.map(row => row.name.length));
+  for (const row of rows) {
+    const where = row.source === 'builtin' ? 'built-in' : row.source;
+    const notes = [
+      row.overrides ? `overrides the ${row.overrides === 'builtin' ? 'built-in' : row.overrides} one` : '',
+      row.usedBy ? `used by ${row.usedBy.join(', ')}` : '',
+      row.description ?? '',
+    ].filter(Boolean);
+    console.log(`${row.name.padEnd(width)}  ${where.padEnd(8)}${notes.length ? `  ${notes.join('; ')}` : ''}`);
   }
 }
 
@@ -884,7 +909,7 @@ async function interrupt(args) {
   console.log('Interrupted');
 }
 
-const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, doctor, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, verify, recall, pause, resume, interrupt };
+const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, doctor, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, agents: args => libraryCommand('agents', args), skills: args => libraryCommand('skills', args), mcp: args => libraryCommand('mcp', args), hooks: args => libraryCommand('hooks', args), verify, recall, pause, resume, interrupt };
 const [command, ...args] = process.argv.slice(2);
 try {
   if (!Object.hasOwn(commands, command)) throw new UsageError();

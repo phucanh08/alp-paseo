@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { upgradeProject } from '../src/core/upgrade.js';
+import { resolveAgent } from '../src/core/resolver.js';
 
 async function fixture(t, main = '# Main agent\n\nHelp with tasks in this project.\n') {
   const root = await mkdtemp(path.join(tmpdir(), 'alp-upgrade-'));
@@ -17,8 +18,13 @@ async function fixture(t, main = '# Main agent\n\nHelp with tasks in this projec
 test('upgrade backs up original scaffold, enables routing, and preserves runtime settings', async t => {
   const root = await fixture(t);
   const result = await upgradeProject(root);
-  assert.deepEqual(result.updated, ['ALP.md', '.alp/agents/main/AGENT.md', '.alp/settings.json']);
-  assert.match(await readFile(path.join(root, '.alp/agents/main/AGENT.md'), 'utf8'), /active supervisor/);
+  assert.deepEqual(result.updated, ['ALP.md', '.alp/settings.json']);
+  // main's copy was as shipped: it is put away, and the project uses the built-in main.
+  assert.deepEqual(result.removed, ['.alp/agents/main']);
+  assert.equal(await readFile(path.join(result.backup, '.alp/agents/main/AGENT.md'), 'utf8'), '# Main agent\n\nHelp with tasks in this project.\n');
+  const main = await resolveAgent(root);
+  assert.equal(main.source, 'builtin');
+  assert.match(main.instructions.agent, /active supervisor/);
   assert.equal(await readFile(path.join(result.backup, '.alp/settings.json'), 'utf8'), '{"defaultAgent":"main","runtime":{"model":"my-model"}}');
   const settings = JSON.parse(await readFile(path.join(root, '.alp/settings.json'), 'utf8'));
   assert.equal(settings.runtime.model, 'my-model');

@@ -22,7 +22,7 @@ test('main fallback and absent optional resources', async t => {
 });
 test('filesystem discovery and explicit > configured > main precedence', async t => {
   const root = await fixture(t, { '.alp/settings.json': '{"defaultAgent":"writer"}', '.alp/agents/writer/AGENT.md': 'Write', '.alp/agents/checker/AGENT.md': 'Check', 'ALP.md': 'Project' });
-  assert.deepEqual(await discoverAgents(root), ['checker', 'main', 'writer']);
+  assert.deepEqual(await discoverAgents(root), ['checker', 'lead', 'main', 'oracle', 'peer', 'reviewer', 'supervisor', 'writer']);
   assert.equal((await resolveAgent(root)).name, 'writer');
   const result = await resolveAgent(root, { agent: 'checker' }); assert.equal(result.name, 'checker'); assert.equal(result.instructions.project, 'Project');
 });
