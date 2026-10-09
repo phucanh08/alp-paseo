@@ -50,9 +50,32 @@ changing it through an in-session settings control. No custom Desktop UI is adde
 
 Default maximum simultaneous peers is **2**. Increase `workflow.maxPeers` only at
 the user's request, then start a new session. Peer limits count across the root
-session's live tree. Advisors and lead do not consume peer slots. Concurrent peer
-assignments must be read-only: writing assignments in the shared checkout are
-serialized. There is no automatic worktree isolation or parallel writer support.
+session's live tree. Advisors and lead do not consume peer slots. Concurrent peers
+must be read-only or isolated.
+
+## Parallel writers
+
+In a git repository, `alp_delegate` with `mode: "workspace-write"` and
+`isolation: "worktree"` gives a writing assignment its own git worktree, so several
+writing peers can run at once. The worktree starts from the requester's current
+state: `HEAD` plus uncommitted changes to tracked files (untracked files are not
+copied). The assignment's sandbox can write only inside its worktree.
+
+When it ends, alpd commits its work to the branch `alp/<assignment id>` and the
+result lists the branch, the changed files and a diff summary. The requester then
+calls `alp_merge` to apply the change to its own checkout, uncommitted, or
+`alp_discard` to drop it. A merge applies the patch as is when it fits; otherwise
+each file is merged three ways against the requester's current file and conflicts
+are left as markers, with the branch kept. A deleted or binary file that conflicts
+keeps the requester's version. An assignment without changes leaves nothing behind.
+
+Writers in the shared checkout (the default, `isolation: "shared"`) hold the
+checkout's write lease: alpd allows one at a time per checkout across all sessions,
+except for assignments nested under the holder. A second session's shared writer
+is refused with a hint to wait or use a worktree. Root sessions themselves are not
+leased. Work is never deleted silently: changes not merged when their requester
+closes stay on their branch, and after a crash alpd commits work left in worktrees
+to their branches and removes the directories.
 
 ## Assignment and model selection
 

@@ -6,8 +6,9 @@ Filesystem-defined agents backed by local Codex or Claude Code, with two workflo
 - **Supervised**: main supervises lead, which implements or delegates to peer.
 
 Both workflows support read-only oracle and reviewer agents. New projects default
-to Smart and a maximum of two concurrent peers. Writing assignments in a shared
-checkout remain serialized.
+to Smart and a maximum of two concurrent peers. Writing assignments in the shared
+checkout run one at a time; in a git repository, writing peers can run in parallel,
+each in its own worktree, and their changes are merged back with `alp_merge`.
 
 ## Install
 

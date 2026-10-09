@@ -161,7 +161,8 @@ New projects default to Smart: main works directly or delegates to peer. Supervi
 keeps main as supervisor while lead implements or delegates. Both use read-only
 oracle/reviewer. Select at session creation with `options.workflow`, or set
 `.alp/settings.json` → `workflow.mode`. The default concurrent peer limit is 2;
-raise `workflow.maxPeers` only at the user's request. Shared-checkout writers remain
-serialized. Oracle requires an explicit premium model choice and effort, without
+raise `workflow.maxPeers` only at the user's request. Writers in the shared checkout
+run one at a time, across all sessions; writing peers can run in parallel in their own
+git worktrees (`isolation: "worktree"`) and are merged with `alp_merge`. Oracle requires an explicit premium model choice and effort, without
 hardcoded model names. Runtime catalog and available plan/usage snapshots inform
 coordination. See [workflow configuration and migration](docs/alp/team-workflow.md).
