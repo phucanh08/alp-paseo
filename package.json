@@ -35,6 +35,7 @@
     "test:e2e:persistence": "node scripts/build-paseo.mjs && node scripts/persistence-e2e.mjs",
     "test:e2e:import": "node scripts/import-e2e.mjs",
     "test:e2e:worktree": "node scripts/build-paseo.mjs && node scripts/worktree-e2e.mjs",
+    "test:e2e:human": "node scripts/human-e2e.mjs cli && node scripts/human-e2e.mjs paseo",
     "test:daemon": "node scripts/build-paseo.mjs && node --test test/daemon.test.js",
     "prepack": "node scripts/build-paseo.mjs"
   },
