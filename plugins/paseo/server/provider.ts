@@ -18,8 +18,7 @@ import { createAlpRuntime, type RuntimeOptions, type SessionSnapshot, type Timel
 import { createDaemonServer, type DaemonConnection } from '../../../src/daemon/server.js';
 import { alpHome, connect, lockAlive, readLock } from '../../../src/client/index.js';
 import { daemonHeld, startDaemon } from '../../../src/client/supervise.js';
-import { alpdSessionOf, configModels, DEFAULT_PROFILE, handleFor, modes, profileFor, profileModels, templates, toSessionSpec } from './mapping.js';
-import { profiles } from '../../../src/core/workflow.js';
+import { alpdSessionOf, configModels, DEFAULT_TEAM, handleFor, modes, teamModels, templates, toSessionSpec } from './mapping.js';
 
 /**
  * Paseo is a viewer of alpd: this provider translates Paseo inputs into daemon
@@ -349,10 +348,10 @@ export function createProvider(options: Options = {}): ProviderRegistration {
             type: 'catalog',
             requestId: input.requestId,
             catalog: {
-              models: profileModels,
+              models: await teamModels(input.cwd),
               modes,
               thinkingOptions: [],
-              defaultModel: DEFAULT_PROFILE,
+              defaultModel: DEFAULT_TEAM,
               defaultMode: 'full-access',
             },
           });
@@ -372,7 +371,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
                 persistence: handleFor(session),
                 cwd: session.projectRoot,
                 title: session.title ? `${session.agent}: ${session.title}` : `ALP ${session.agent}`,
-                description: `${profiles[profileFor(session.workflow?.mode) as keyof typeof profiles]?.label ?? 'ALP'} · ${session.runtime}:${session.model} · ${session.status}`,
+                description: `${session.teamLabel ?? 'ALP'} · ${session.runtime}:${session.model} · ${session.status}`,
                 ...(session.updatedAt ? { updatedAt: session.updatedAt } : {}),
               })),
           });
@@ -433,7 +432,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
 
         // The daemon checks that the session is open, in order with earlier inputs.
         if (input.type === 'session.configure') {
-          if (input.changes.model !== undefined || input.changes.settings?.workflow !== undefined) throw new Error('The profile is fixed for this session; choose Phở or Cafe when creating a new session');
+          if (input.changes.model !== undefined || input.changes.settings?.workflow !== undefined) throw new Error('The team is fixed for this session; choose another team when creating a new session');
           if (Object.keys(input.changes).some(key => key !== 'mode')) throw new Error('Only permission mode can be changed in an existing ALP session');
           await wake(input.sessionId);
           await client.request('session.configure', { sessionId: toAlpd(input.sessionId), mode: input.changes.mode === undefined ? undefined : input.changes.mode ?? 'read-only' });

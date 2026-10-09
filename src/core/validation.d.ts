@@ -13,3 +13,4 @@ export const HOOK_SETTINGS: string[];
 export const HOOK_EVENTS: string[];
 export const BLOCKING_HOOK_EVENTS: string[];
 export function validateHook(config: unknown, source: string): { description?: string; event: string; command: string; blocking?: boolean; timeoutSec?: number; match?: { agent?: string; label?: string } };
+export function unknownMessage(unknown: { key: string; suggestion?: string }, known: string[]): string;

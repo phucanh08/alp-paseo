@@ -1,12 +1,7 @@
 /** Models, modes and thinking options the runtime accepts; viewers render them as-is. */
 export const DEFAULT_MODEL = 'gpt-5.6-sol';
 export const DEFAULT_CLAUDE_MODEL = 'sonnet';
-/** Main's model and effort in both profiles, unless settings or the caller choose another. */
-export const MAIN_MODEL = 'claude:claude-opus-5-5';
-export const MAIN_THINKING = 'high';
-/** The supervisor main starts in every Phở and Cafe session. */
-export const SUPERVISOR_MODEL = 'claude:claude-sonnet-4-6';
-export const SUPERVISOR_THINKING = 'medium';
+// Main's and the supervisor's models and effort come from the session's team: templates/teams/<id>/team.json (ALPD §42).
 /** Oracle runs on one of these; main may consult both for two opinions. */
 export const ORACLE_MODELS = ['claude:claude-fable-5-1', 'codex:gpt-6-astra'];
 export const ORACLE_THINKING = 'high';

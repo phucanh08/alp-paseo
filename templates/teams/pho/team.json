@@ -1,0 +1,14 @@
+{
+  "label": "Phở",
+  "description": "Main implements or delegates to peer; a supervisor reviews the process.",
+  "main": "main",
+  "members": {
+    "main": { "model": "claude:claude-opus-5-5", "thinking": "high" },
+    "peer": { "role": "peer" },
+    "oracle": { "role": "advisor" },
+    "reviewer": { "role": "reviewer" }
+  },
+  "delegation": { "main": ["peer", "oracle", "reviewer"] },
+  "maxPeers": 2,
+  "supervisor": { "agent": "supervisor", "model": "claude:claude-sonnet-4-6", "thinking": "medium" }
+}

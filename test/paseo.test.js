@@ -208,7 +208,7 @@ test('invalid permission changes leave the session mode unchanged', async t => {
     await conn.send({ type: 'session.configure', sessionId: 's', requestId, changes });
     assert.ok(events.some(e => e.type === 'request.failed' && e.requestId === requestId));
   }
-  assert.match(events.find(e => e.type === 'request.failed' && e.requestId === 'model').error.message, /profile is fixed/);
+  assert.match(events.find(e => e.type === 'request.failed' && e.requestId === 'model').error.message, /team is fixed/);
   await conn.send(prompt('still-full-access'));
   assert.equal(runtimes[0].calls.find(c => c.method === 'turn/start').params.sandboxPolicy.type, 'dangerFullAccess');
 });
@@ -261,7 +261,7 @@ test('Paseo lists alpd roots for import and reopens one under its own id', async
   assert.match(events.find(e => e.type === 'request.failed' && e.requestId === 'gone').error.message, /no longer exists/);
 });
 
-test('a profile session shows Phở and Cafe, and main starts its supervisor as a child on Sonnet 4.6', async t => {
+test('a team session shows its team, and main starts its supervisor as a child on Sonnet 4.6', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'alp-paseo-profile-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const runtimes = [];
@@ -272,7 +272,8 @@ test('a profile session shows Phở and Cafe, and main starts its supervisor as 
   assert.ok(events.some(e => e.type === 'session.ready' && e.sessionId === 's'), JSON.stringify(events));
   const rootConfig = events.find(e => e.type === 'session.config' && e.sessionId === 's').config;
   assert.equal(rootConfig.model, 'cafe');
-  assert.deepEqual(rootConfig.models.map(model => model.label), ['Phở', 'Cafe']);
+  // The team is fixed for the session, so its config offers only that team; the catalog lists every team.
+  assert.deepEqual(rootConfig.models.map(model => model.label), ['Cafe']);
   assert.deepEqual(rootConfig.settings, []);
   for (let i = 0; i < 100 && !events.some(e => e.type === 'session.ready' && e.sessionId !== 's'); i++) await new Promise(resolve => setTimeout(resolve, 5));
   const child = events.find(e => e.type === 'session.opened' && e.sessionId !== 's');

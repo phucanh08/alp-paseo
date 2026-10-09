@@ -1362,3 +1362,55 @@ Goal (D23, phase 13, step 1): agents, skills, MCP servers and hooks resolve from
   - a project skill in `.alp/skills` replaces the library's.
 - `test/support/legacy.js` builds a project as the old init made it.
 - Paseo fixtures turn the supervisor off: the built-in supervisor now always exists, and its review keeps a released tree running. The golden and digest tests are unchanged.
+
+## 42. Teams as built (2026-10-09)
+
+Goal (D23, phase 13, step 2): Phở and Cafe become teams, and the user can define more. A team holds its main, members, delegation, models and house rules.
+
+- **Templates:** `templates/teams/pho` and `templates/teams/cafe` hold `team.json` and `HOUSE_RULES.md`:
+  - The house rules are the coordination sentence `runtime.ts` hard-coded after `Profile: <mode>; fixed for this session.`, moved without rewording.
+  - Main's model and effort (`claude:claude-opus-5-5`, `high`) and the supervisor's (`claude:claude-sonnet-4-6`, `medium`) moved from `catalog.ts` into the team files.
+- **`src/core/teams.js`:**
+  - `teamSources` reads the built-ins, then `$ALP_HOME/teams/<id>/team.json`, then `.alp/teams/<id>/team.json`; a later layer replaces a team whole.
+  - `resolveTeam` adds `HOUSE_RULES.md` and accepts `smart` and `supervised`. `listTeams` orders built-in, library, project, and lists a broken team with its error.
+  - `validateTeam` checks:
+    - unknown keys, with did-you-mean suggestions;
+    - that main is a member;
+    - each member's role (`lead`, `peer`, `advisor`, `reviewer`);
+    - that delegation names only members, never targets main, and has no cycle;
+    - that `maxPeers` is valid;
+    - that `supervisor` is `false` or `{ agent, model, thinking }` with an agent outside the members.
+- **`resolveWorkflow`:**
+  - It returns `{ mode, maxPeers, supervisor, team }`; mode is the team id, or `custom` with settings' `delegation`.
+  - `maxPeers` comes from the restored session, then settings, then the team, then 2. `alp init` no longer writes `maxPeers`, so a team's limit applies.
+  - `workflow.mode` in settings accepts any team id.
+- **`resolveSession`:**
+  - It keeps `team` beside a lean `workflow`, so session snapshots and records are unchanged apart from `teamLabel`.
+  - The model order is: the caller, then settings' `runtime` (model or provider), then the team member's `model`/`thinking`, then the agent's `agent.json`, then the defaults.
+    - Settings' `runtime` now also comes before `agent.json` (§41 had it after).
+    - A resumed session keeps the team's effort only while it runs on the team's model.
+  - A custom graph uses built-in Phở's main settings and house rules, so its main is unchanged.
+  - The team's main gets `full-access` by default and records lessons. The lessons are read for main and the team's supervisor agent.
+- **Runtime:**
+  - The graph is `team.delegation`.
+  - `mainOf(mapping)` replaces the `'main'` checks for:
+    - task actions, the task tool and the task text;
+    - issues, recall by task, verification by task, `taskId` delegation, and the task list at turn start;
+    - `supervises`.
+  - `roleOf(mapping, agent)` counts peers and allows parallel peers and advisors. Without a team, roles follow the built-in names.
+  - `openSupervisor` opens the team's supervisor agent on its model, and the run log records the model it got.
+- **Paseo:**
+  - The catalog lists `teamModels(input.cwd)`: built-in, library, then project, leaving out broken teams.
+  - A root session's config offers only its own team, since the team is fixed.
+  - Session listings use `teamLabel`.
+  - The selected model is a team when it has no runtime prefix.
+- **CLI:** `alp run --team`, with `--profile` and `--workflow` as aliases. `alp teams [--project] [--json]` shows members, delegation and supervisor.
+
+**Evidence.**
+- `test/teams.test.js` checks:
+  - Phở, Cafe and a custom graph give main the exact pre-team text and Opus 5.5 high;
+  - the layers and every validation error;
+  - a project team whose main is `architect`: the team model beats `agent.json`, it gets the house rules, its graph and its peer limit, it manages tasks and issues, and a `watcher` supervisor runs on Codex;
+  - that settings and the caller come before the team;
+  - the Paseo catalog and `alp teams`.
+- Existing tests changed only messages ("team" for "profile"), the session config's model list, and init's settings.

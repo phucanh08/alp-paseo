@@ -1,7 +1,8 @@
 import path from 'node:path';
 import bundledTemplates from 'alp:templates';
 import { resolveSession, models as runtimeModels, type SessionSpec, type HostMcpServer } from '../../../src/runtime/index.js';
-import { profiles, profileOf } from '../../../src/core/workflow.js';
+import { listTeams, teamOf } from '../../../src/core/teams.js';
+import { alpHome } from '../../../src/client/index.js';
 import type { ProviderSessionConfig, ProviderPersistence } from './compat.js';
 
 export { DEFAULT_MODEL, DEFAULT_CLAUDE_MODEL, models, modes, thinkingOptions, thinkingOptionsFor, InstructionsAdapter as PaseoAdapter } from '../../../src/runtime/index.js';
@@ -9,21 +10,22 @@ export { DEFAULT_MODEL, DEFAULT_CLAUDE_MODEL, models, modes, thinkingOptions, th
 export const templates = bundledTemplates;
 
 /**
- * Paseo shows the two profiles in place of models: each fixes main's model and
- * effort (src/runtime/catalog.ts), so a session picks Phở or Cafe and nothing else.
+ * Paseo shows teams in place of models (ALPD §42): the built-ins Phở and Cafe, then
+ * the library's, then the project's. A team fixes its members' models and effort, so a
+ * session picks a team and nothing else. A team that fails to load is left out.
  */
-export const profileModels = Object.entries(profiles).map(([id, profile]) => ({ id, label: profile.label, description: profile.description, thinkingOptions: [] }));
-export const DEFAULT_PROFILE = 'pho';
+export async function teamModels(cwd?: string) {
+  const teams = await listTeams(cwd, { library: alpHome(), templates });
+  return teams.filter(team => !team.error).map(team => ({ id: team.id, label: team.label ?? team.id, ...(team.description ? { description: team.description } : {}), thinkingOptions: [] }));
+}
+export const DEFAULT_TEAM = 'pho';
 
-/** The profile a Paseo model selection names, accepting the profiles' old names. */
-export const profileFor = (model: string | null | undefined) => {
-  const profile = model ? profileOf(model) : undefined;
-  return profile && Object.hasOwn(profiles, profile) ? profile : undefined;
-};
+/** The team a Paseo model selection names: an id without a runtime prefix, accepting Phở and Cafe's old names. */
+export const teamFor = (model: string | null | undefined) => model && !model.includes(':') && !model.includes('/') ? teamOf(model) : undefined;
 
-/** The model list a session's config shows: profiles for a root, its own model for a child or a custom root. */
-export function configModels(session: { parentId?: string; runtime: string; model: string; workflow: { mode: string } }) {
-  if (!session.parentId && profileFor(session.workflow.mode)) return { model: session.workflow.mode, models: profileModels };
+/** The model list a session's config shows: its team for a root, its own model for a child or a custom root. */
+export function configModels(session: { parentId?: string; runtime: string; model: string; workflow: { mode: string }; teamLabel?: string }) {
+  if (!session.parentId && session.workflow.mode !== 'custom') return { model: session.workflow.mode, models: [{ id: session.workflow.mode, label: session.teamLabel ?? session.workflow.mode, thinkingOptions: [] }] };
   const id = `${session.runtime}:${session.model}`;
   const known = runtimeModels.find(model => model.id === id);
   return { model: id, models: [{ id, label: known?.label ?? id, ...(known ? { description: known.description } : {}), thinkingOptions: [] }] };
@@ -62,9 +64,9 @@ export function toSessionSpec(config: ProviderSessionConfig, persistence?: Provi
   if (persistence?.version === 2) alpdSessionOf(config, persistence);
   else if (persistence && (persistence.version !== 1 || !restored || typeof restored.agent !== 'string' || typeof restored.threadId !== 'string' || restored.cwd !== path.resolve(config.cwd))) throw new Error('Invalid ALP persistence or project mismatch');
   if (options.workflow !== undefined && typeof options.workflow !== 'string') throw new Error('providerOptions.workflow must be a string');
-  // The selected model is a profile; model and effort follow from it. Older clients send workflow instead.
-  const selected = [profileFor(config.model), options.workflow, config.settings.workflow].filter((value): value is string => value !== undefined).map(value => profileOf(value));
-  if (new Set(selected).size > 1) throw new Error('Conflicting profile selections');
+  // The selected model is a team; model and effort follow from it. Older clients send workflow instead.
+  const selected = [teamFor(config.model), options.workflow, config.settings.workflow].filter((value): value is string => value !== undefined).map(value => teamOf(value));
+  if (new Set(selected).size > 1) throw new Error('Conflicting team selections');
   return {
     cwd: config.cwd,
     agent: options.agent as string | undefined,

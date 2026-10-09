@@ -42,8 +42,9 @@ agent.
 }
 ```
 
-- `provider`, `model` and `thinking` come before the project's `runtime` settings. A caller's
-  explicit choice, such as `alp run --model` or a delegation's model, still comes first.
+- `provider`, `model` and `thinking` apply when nothing earlier chooses. The order is: the
+  caller (such as `alp run --model` or a delegation's model), then settings' `runtime`,
+  then the session's team for that member, then `agent.json`.
 - `mode` is the agent's default permission mode when its caller does not choose one. A
   permission profile still caps it.
 - `skills`, `mcp` and `hooks` name entries of the project, else the library. A name that
@@ -76,6 +77,46 @@ relative `cwd` is relative to the file's directory.
 
 ALP checks hook files when an agent names them. It does not run hooks yet (phase 13,
 step 5), so an agent with hooks is refused when a session starts.
+
+## Teams
+
+A team is `teams/<id>/team.json` with an optional `HOUSE_RULES.md`, in the same three
+layers: Phở (`pho`) and Cafe (`cafe`) are built in, and a library or project team of
+the same id replaces one whole.
+
+```json
+{
+  "label": "Docs",
+  "description": "An architect plans; writers write.",
+  "main": "architect",
+  "members": {
+    "architect": { "model": "claude:claude-sonnet-5-5", "thinking": "low" },
+    "writer": { "role": "peer" },
+    "reviewer": { "role": "reviewer" }
+  },
+  "delegation": { "architect": ["writer", "reviewer"] },
+  "maxPeers": 3,
+  "supervisor": { "agent": "watcher", "model": "codex:gpt-6-sol", "thinking": "low" }
+}
+```
+
+- `main` is the agent the user talks with. In a session of the team it has main's
+  powers: full access by default, the task graph, issues, lessons and a supervisor.
+- Every other member has a `role`: `lead`, `peer`, `advisor` or `reviewer`. Members
+  with role `peer` count toward `maxPeers`; peers and advisors may run in parallel.
+- `model` and `thinking` on a member come before the agent's own `agent.json`.
+  Settings' `runtime` and the caller still come first.
+- `delegation` says who may assign work to whom. It names only members, never
+  assigns to main, and must have no cycle.
+- `supervisor` is `false`, or the agent that reviews main's process after each turn
+  and what it runs on. It is not a member.
+- `HOUSE_RULES.md` is prose that every member of a session reads after
+  `Profile: <id>; fixed for this session.` Phở and Cafe's house rules are the text
+  ALP gave main before teams. A project with a custom `delegation` graph and no team
+  follows Phở's house rules, and its main runs as Phở's does.
+
+`alp teams [--project DIR] [--json]` lists them with members, delegation and
+supervisor, and Paseo offers them in its model picker.
 
 ## Listing
 

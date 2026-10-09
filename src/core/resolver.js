@@ -203,17 +203,17 @@ export async function resolveAgent(projectRoot, { agent, library, templates } = 
     servers[serverName] = server;
   }
 
-  // The agent's own provider, model and thinking come before the project's defaults.
+  // settings.json's runtime is the project's choice for every agent, so it comes before the agent's own (ALPD §42).
   const runtime = {
-    ...projectRuntime,
     ...(config.provider !== undefined ? { provider: config.provider } : {}),
     ...(config.model !== undefined ? { model: config.model } : {}),
     ...(config.thinking !== undefined ? { reasoning: config.thinking } : {}),
+    ...projectRuntime,
   };
   return validateResolvedAgent({
     name, projectRoot: root, source: source.source,
     instructions: { project: (await optionalText(path.join(root, 'ALP.md'))) ?? '', agent: instructions },
-    skills, hooks, runtime,
+    skills, hooks, runtime, projectRuntime: { ...projectRuntime },
     ...(config.mode !== undefined ? { mode: config.mode } : {}),
     ...(config.description !== undefined ? { description: config.description } : {}),
     mcp: { mcpServers: servers },

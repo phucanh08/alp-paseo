@@ -3,13 +3,14 @@ import { access, readFile, stat } from 'node:fs/promises';
 import { resolveWorkflow } from '../core/workflow.js';
 import { initProject } from '../core/init.js';
 import { resolveAgent } from '../core/resolver.js';
+import { resolveTeam } from '../core/teams.js';
 import { ensureLibrary } from '../core/library.js';
 import { compileAgent } from '../core/adapter.js';
 import { capMode, profileFor } from '../core/permissions.js';
 import { claudeSandboxAvailable } from './claude-transport.js';
 import type { ResolvedAgent } from '../core/types.js';
 import type { AlpRuntimeAdapter } from '../core/adapter.js';
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_MODEL, MAIN_MODEL, MAIN_THINKING, ORACLE_MODELS, ORACLE_THINKING, modes, thinkingOptions, thinkingOptionsFor } from './catalog.js';
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_MODEL, ORACLE_MODELS, ORACLE_THINKING, modes, thinkingOptions, thinkingOptionsFor } from './catalog.js';
 
 export type RuntimeKind = 'codex' | 'claude';
 
@@ -89,15 +90,20 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
   if (options.library) await ensureLibrary(options.library, options.templates ? { templates: options.templates } : {});
   const restored = spec.restore;
   if (restored && spec.agent !== undefined && spec.agent !== restored.agent) throw new Error('Cannot resume a thread as a different ALP agent');
-  const workflow = await resolveWorkflow(spec.cwd, spec.workflow, restored?.workflow);
+  const { team, ...workflow } = await resolveWorkflow(spec.cwd, spec.workflow, restored?.workflow, { library: options.library, templates: options.templates });
   const agent = await resolveAgent(spec.cwd, { agent: spec.agent ?? restored?.agent, library: options.library, templates: options.templates });
   if (agent.name === 'oracle' && !restored && !ORACLE_MODELS.includes(spec.model ?? '')) throw new Error(`Oracle runs on ${ORACLE_MODELS.join(' or ')}; choose one`);
   const compiled = await compileAgent(new InstructionsAdapter(), agent);
-  // Main runs on the profile's model unless settings or the caller choose one.
-  const profileModel = agent.name === 'main' && !agent.runtime.model && !agent.runtime.provider && spec.model === undefined &&
-    (restored?.model === undefined || `${restored.runtime}:${restored.model}` === MAIN_MODEL);
-  let runtimeKind = restored?.runtime ?? agent.runtime.provider ?? 'codex';
-  let model = restored?.model ?? spec.model ?? agent.runtime.model ?? (profileModel ? MAIN_MODEL : runtimeKind === 'claude' ? DEFAULT_CLAUDE_MODEL : DEFAULT_MODEL);
+  // Order (ALPD §42): the caller, then settings.json's runtime, then the team's choice for this member, then the agent's own.
+  // A resumed session keeps its model; it keeps the team's effort while it still runs on the team's model.
+  // A custom graph has no team; its main runs as Phở's does, and follows Phở's house rules, as before teams.
+  const base = team ?? await resolveTeam(undefined, 'pho', { templates: options.templates });
+  const main = base.main;
+  const member = Object.hasOwn(base.members, agent.name) && (team || agent.name === main) ? base.members[agent.name] : undefined;
+  const sameModel = (id?: string) => id === undefined || restored?.model === undefined || `${restored.runtime}:${restored.model}` === id || restored.model === id;
+  const teamChoice = member && !agent.projectRuntime?.model && !agent.projectRuntime?.provider && spec.model === undefined && sameModel(member.model) ? member : undefined;
+  let runtimeKind = restored?.runtime ?? (teamChoice?.model ? undefined : agent.runtime.provider) ?? 'codex';
+  let model = restored?.model ?? spec.model ?? teamChoice?.model ?? agent.runtime.model ?? (runtimeKind === 'claude' ? DEFAULT_CLAUDE_MODEL : DEFAULT_MODEL);
   if (model.startsWith('codex:')) { runtimeKind = 'codex'; model = model.slice('codex:'.length); }
   if (model.startsWith('claude:')) { runtimeKind = 'claude'; model = model.slice('claude:'.length); }
   if (model.startsWith('codex/')) { runtimeKind = 'codex'; model = model.slice('codex/'.length); }
@@ -106,11 +112,11 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
   if (restored?.runtime && runtimeKind !== restored.runtime) throw new Error('Cannot resume a thread with a different runtime provider');
   // Main has full access unless the caller limits it; a permission profile caps the mode at its base.
   const permissions = await profileFor(agent.projectRoot, options.library, agent.name);
-  const requested = spec.mode ?? agent.mode ?? (agent.name === 'main' ? 'full-access' : 'read-only');
+  const requested = spec.mode ?? agent.mode ?? (agent.name === main ? 'full-access' : 'read-only');
   const mode = permissions ? capMode(requested, permissions.base) : requested;
   const availableThinking = thinkingOptionsFor(runtimeKind as RuntimeKind, model);
-  const thinking = spec.thinking ?? agent.runtime.reasoning ??
-    (profileModel ? MAIN_THINKING : agent.name === 'oracle' ? ORACLE_THINKING : availableThinking.length ? 'medium' : 'none');
+  const thinking = spec.thinking ?? agent.projectRuntime?.reasoning ?? teamChoice?.thinking ?? agent.runtime.reasoning ??
+    (agent.name === 'oracle' ? ORACLE_THINKING : availableThinking.length ? 'medium' : 'none');
   if (!model.trim()) throw new Error('Model must be nonempty');
   if (!modes.some(m => m.id === mode)) throw new Error(`Unsupported mode '${mode}'`);
   // Only Claude's Bash sandbox keeps a session in a copy from writing elsewhere.
@@ -132,7 +138,8 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
   }
   // Main follows its lessons; the supervisor checks them.
   let learned = '';
-  if (['main', 'supervisor'].includes(agent.name) && workflow.supervisor) {
+  const supervisorAgent = team?.supervisor ? team.supervisor.agent : undefined;
+  if ([main, supervisorAgent].includes(agent.name) && workflow.supervisor) {
     const user = options.library ? await lessons(path.join(options.library, LESSONS_FILE)) : '';
     const project = await lessons(path.join(agent.projectRoot, '.alp', LESSONS_FILE));
     if (user || project) {
@@ -140,8 +147,9 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
         (user ? `\n\nFor every project:\n${user}` : '') + (project ? `\n\nFor this project:\n${project}` : '');
     }
   }
+  const houseRules = base.houseRules;
   return {
-    agent, workflow, runtimeKind: runtimeKind as RuntimeKind, model, mode, permissions, thinking, threadId: restored?.threadId,
+    agent, workflow, team, houseRules, runtimeKind: runtimeKind as RuntimeKind, model, mode, permissions, thinking, threadId: restored?.threadId,
     workdir: spec.workdir ?? agent.projectRoot,
     copy: Boolean(spec.copy && spec.workdir),
     ...(spec.copy && spec.copyOf ? { copyOf: spec.copyOf } : {}),

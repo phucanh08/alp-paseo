@@ -51,7 +51,7 @@ export function settingsKeys(settings, known, retired = {}) {
   return { unknown, retired: old };
 }
 
-const unknownMessage = (unknown, known) => `unknown setting '${unknown.key}'${unknown.suggestion ? `; did you mean '${unknown.suggestion}'?` : `; known settings are ${known.filter(key => !key.startsWith('$')).join(', ')}`}`;
+export const unknownMessage = (unknown, known) => `unknown setting '${unknown.key}'${unknown.suggestion ? `; did you mean '${unknown.suggestion}'?` : `; known settings are ${known.filter(key => !key.startsWith('$')).join(', ')}`}`;
 
 /** Warnings for retired keys of a settings object; unknown keys are errors instead. */
 export function settingsWarnings(settings, scope) {
@@ -68,8 +68,8 @@ export function validateSettings(settings, source) {
   if (settings.workflow !== undefined) {
     check(object(settings.workflow), 'workflow must be an object');
     check(Object.keys(settings.workflow).every(key => ['mode', 'maxPeers', 'supervisor'].includes(key)), 'unsupported workflow field');
-    // smart and supervised are the profiles' names before 0.4.
-    if (settings.workflow.mode !== undefined) check(['pho', 'cafe', 'smart', 'supervised'].includes(settings.workflow.mode), 'workflow.mode must be pho or cafe');
+    // The team sessions run in (ALPD §42); a session checks that it exists. smart and supervised are Phở and Cafe's names before 0.4.
+    if (settings.workflow.mode !== undefined) check(typeof settings.workflow.mode === 'string' && /^[\w.-]+$/.test(settings.workflow.mode) && settings.workflow.mode !== 'custom', 'workflow.mode must name a team, such as pho or cafe');
     if (settings.workflow.maxPeers !== undefined) check(Number.isSafeInteger(settings.workflow.maxPeers) && settings.workflow.maxPeers > 0, 'workflow.maxPeers must be a positive integer');
     if (settings.workflow.supervisor !== undefined) check(typeof settings.workflow.supervisor === 'boolean', 'workflow.supervisor must be true or false');
   }
