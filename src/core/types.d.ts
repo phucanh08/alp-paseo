@@ -1,7 +1,7 @@
 /** Disk configuration; no provider SDK types. */
 export interface RawSettings {
   defaultAgent?: string;
-  workflow?: { mode?: 'smart' | 'supervised'; maxPeers?: number };
+  workflow?: { mode?: 'pho' | 'cafe' | 'smart' | 'supervised'; maxPeers?: number; supervisor?: boolean };
   delegation?: Record<string, string[]>;
   runtime?: { provider?: string; model?: string; reasoning?: string };
 }

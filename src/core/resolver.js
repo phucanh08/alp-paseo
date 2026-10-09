@@ -2,6 +2,7 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { AlpError } from './errors.js';
 import { validateSettings, normalizeMcp, validateResolvedAgent } from './validation.js';
+import { librarySkills } from './library.js';
 export { AlpError } from './errors.js';
 
 export async function optionalText(file) {
@@ -28,8 +29,12 @@ export async function discoverAgents(root) {
   return (await entries(path.join(root, '.alp', 'agents'))).filter(e => e.isDirectory()).map(e => e.name);
 }
 
-/** @returns {Promise<import('./types.js').ResolvedAgent>} */
-export async function resolveAgent(projectRoot, { agent } = {}) {
+/**
+ * `library` is the user's skill library (ALP_HOME); its skills for this agent come
+ * first, and a skill inside the agent's own skills/ directory replaces one of the same name.
+ * @returns {Promise<import('./types.js').ResolvedAgent>}
+ */
+export async function resolveAgent(projectRoot, { agent, library } = {}) {
   const root = path.resolve(projectRoot);
   const settingsPath = path.join(root, '.alp', 'settings.json');
   const settings = await jsonObject(settingsPath, 'INVALID_SETTINGS');
@@ -43,14 +48,19 @@ export async function resolveAgent(projectRoot, { agent } = {}) {
   const agentPath = path.join(directory, 'AGENT.md');
   const instructions = await optionalText(agentPath);
   if (instructions === undefined) throw new AlpError('AGENT_INSTRUCTIONS_MISSING', `Missing ${agentPath}`);
-  const skills = [];
+  const skills = library ? await librarySkills(library, name) : [];
   for (const entry of await entries(path.join(directory, 'skills'))) {
     if (entry.isDirectory()) {
       const skillPath = path.join(directory, 'skills', entry.name, 'SKILL.md');
-      try { if ((await stat(skillPath)).isFile()) skills.push({ name: entry.name, path: skillPath }); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      try {
+        if (!(await stat(skillPath)).isFile()) continue;
+        const shadowed = skills.findIndex(skill => skill.name === entry.name);
+        if (shadowed >= 0) skills.splice(shadowed, 1);
+        skills.push({ name: entry.name, path: skillPath });
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
   }
+  skills.sort((a, b) => a.name.localeCompare(b.name));
   const hooks = (await entries(path.join(directory, 'hooks'))).filter(e => e.isFile()).map(e => ({ name: e.name, path: path.join(directory, 'hooks', e.name) }));
   const mcpPath = path.join(directory, '.mcp.json');
   return validateResolvedAgent({
