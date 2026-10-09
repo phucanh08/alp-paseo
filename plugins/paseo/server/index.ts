@@ -1,6 +1,8 @@
 import type { PluginServerContext } from './compat.js';
-import { createProvider } from './provider.js';
+import { createProvider, daemonEntry } from './provider.js';
 import { registerTaskRpc } from './tasks.js';
+import { alpHome } from '../../../src/client/index.js';
+import { superviseDaemon } from '../../../src/client/supervise.js';
 export { createProvider } from './provider.js';
 export { mapSession, toSessionSpec, PaseoAdapter } from './mapping.js';
 export { ClaudeTransport, claudePermissions, CodexTransport } from '../../../src/runtime/index.js';
@@ -9,5 +11,9 @@ export default function contribute(server: PluginServerContext) {
   server.registerProvider(createProvider());
   // The Tasks panel (index.client.tsx) reads and changes the project's tasks through these.
   registerTaskRpc(server);
-  return () => {};
+  // While Paseo runs, alpd runs: started now, and again whenever it goes down, unless the user stopped it (ALPD §40).
+  const stop = process.env.ALP_SUPERVISE === '0'
+    ? async () => {}
+    : superviseDaemon({ home: alpHome(), entry: () => daemonEntry(), log: message => console.error(`alp: ${message}`) });
+  return () => stop();
 }

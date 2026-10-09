@@ -52,7 +52,10 @@ test('plugin registers ALP with public SDK contract', async t => {
   const home = await mkdtemp(path.join(tmpdir(), 'alp-home-'));
   const previous = process.env.ALP_HOME;
   process.env.ALP_HOME = home;
+  let dispose = () => {};
   t.after(async () => {
+    // The plugin keeps alpd up while it is loaded; unload it first.
+    await dispose();
     const lock = await readLock(home);
     if (lock?.ready) await connect(lock.socket).then(client => client.request('daemon.shutdown').finally(() => client.close())).catch(() => {});
     for (let i = 0; i < 100 && await readLock(home); i++) await new Promise(resolve => setTimeout(resolve, 20));
@@ -60,7 +63,7 @@ test('plugin registers ALP with public SDK contract', async t => {
     await rm(home, { recursive: true, force: true });
   });
   let registration; const rpc = [];
-  contribute({ registerProvider(p) { registration = p; }, handle(contract) { rpc.push(contract.name); } });
+  dispose = contribute({ registerProvider(p) { registration = p; }, handle(contract) { rpc.push(contract.name); } });
   assert.equal(registration.id, 'alp');
   assert.deepEqual(rpc, ['alp.tasks.list', 'alp.tasks.add', 'alp.tasks.change']);
   await assert.rejects(registration.connect({ versions: [99], capabilities: [] }), /protocol/);

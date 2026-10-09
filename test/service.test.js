@@ -89,7 +89,7 @@ exit 0
   const doctor = spawnSync(process.execPath, [CLI, 'doctor', '--json'], { env }).stdout.toString();
   assert.ok(JSON.parse(doctor).checks.some(check => check.id === 'service' && check.status === 'ok'));
 
-  assert.match(alp('daemon', 'stop'), /alpd stopped; its service starts it again at login, or with alp daemon start/);
+  assert.match(alp('daemon', 'stop'), /alpd stopped; it stays stopped until alp daemon start, a prompt in Paseo, or the next login/);
   assert.match(alp('daemon', 'start'), /alpd .* running \(pid \d+\)/);
   const second = await readLock(home);
   assert.notEqual(second.pid, first.pid);
