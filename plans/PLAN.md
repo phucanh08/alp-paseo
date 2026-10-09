@@ -19,6 +19,8 @@ Build a small provider-neutral ALP core, integrate it with Paseo first, then sta
 | 8 | Session/event model stabilization | `phases/08-session-model.md` |
 | 9 | Standalone ALP ACP implementation | `phases/09-acp.md` |
 | 10 | Native `alpd` daemon (D12): runtime extraction, daemon + CLI, persistence | `reference/ALPD.md` §11 |
+| 11 | Gas City hardening (D21): crash resilience, hardening, then the next seven | `reference/DECISIONS.md` D21, `reference/ALPD.md` §31 and after |
+| 12 | Later, on demand (D21): event journal, orders, retries, review quorum, reload, PR monitor, mail dedupe, D20 leftovers | `phases/12-gascity-later.md` |
 
 ## Non-goals for early phases
 

@@ -65,7 +65,7 @@ export type SessionSummary = SessionSnapshot & {
   updatedAt?: string;
 };
 
-export function createDaemonServer({ runtime, socketPath, version, onShutdown, store, runLogDir }: {
+export function createDaemonServer({ runtime, socketPath, version, onShutdown, store, runLogDir, previousExit }: {
   runtime: AlpRuntime;
   socketPath: string;
   version: string;
@@ -74,6 +74,8 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
   store?: Store;
   /** Where crash reconciliation reports assignments it ends, as the runtime does. */
   runLogDir?: string;
+  /** How the previous alpd ended, for daemon.status. */
+  previousExit?: { kind: 'clean' | 'crash'; at?: string };
 }): DaemonServer {
   const connections = new Set<Connection>();
   /** Root of every live session. */
@@ -84,6 +86,8 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
   /** Prompt deliveries in flight, so a repeated clientMessageId waits for the first. */
   const delivering = new Map<string, Promise<object>>();
   let closing = false;
+  /** Roots alpd reopens after a restart; they stay open until their recovery has started. */
+  const recovering = new Set<string>();
   const startedAt = new Date().toISOString();
   const restored = store ? restore() : Promise.resolve();
 
@@ -116,6 +120,8 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
   }
 
   runtime.onEvent(envelope => {
+    // While alpd stops, records keep what was running, so the next alpd continues it (ALPD §31).
+    if (closing) return;
     const { sessionId, event } = envelope;
     if (event.type === 'session.opened') {
       const parent = event.session.parentId;
@@ -138,13 +144,19 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
     }
   });
 
-  /** Loads records, settles sessions a crash left working, and prunes expired trees. */
+  /**
+   * Loads records, settles sessions a crash or a stop left working, and prunes expired
+   * trees. Trees with assignments the runtime can continue, or whose root was working,
+   * are reopened afterwards (ALPD §31).
+   */
   async function restore() {
     await store!.pruneReceipts(RECEIPT_RETENTION_MS);
     const loaded = await store!.list();
     const now = Date.now();
     const ended = { code: 'daemon_restarted', message: 'alpd stopped while this session was working' };
     const epoch = `restart-${startedAt}`;
+    const continuing = new Set(runtime.recoverable().map(entry => entry.assignmentId));
+    const reopen: Array<{ record: SessionRecord; working: boolean }> = [];
     const byRoot = new Map<string, SessionRecord[]>();
     for (const record of loaded) byRoot.set(record.rootId, [...(byRoot.get(record.rootId) ?? []), record]);
     for (const [root, tree] of byRoot) {
@@ -153,6 +165,7 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
         await store!.remove(root, tree.map(record => record.id));
         continue;
       }
+      if (head && resumable(head) && (head.status === 'running' || tree.some(record => continuing.has(record.id)))) reopen.push({ record: head, working: head.status === 'running' });
       for (const record of tree as Array<SessionRecord & { activeTurnId?: string }>) {
         records.set(record.id, record);
         if (!LIVE.includes(record.status)) continue;
@@ -160,16 +173,51 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
         if (record.activeTurnId) void store!.append(root, envelope({ type: 'turn.ended', turnId: record.activeTurnId, state: 'failed', error: { message: ended.message } }));
         if (record.id === root) {
           save(record, record.status === 'idle' ? { status: 'closed', activeTurnId: undefined } : { status: 'error', lastError: ended, activeTurnId: undefined });
+        } else if (continuing.has(record.id) && reopen.some(entry => entry.record.id === root)) {
+          // The runtime reopens it under the same id; until then it is closed.
+          save(record, { status: 'closed', activeTurnId: undefined });
         } else {
           // Children never survive their runtime; their requester learns the assignment failed.
           void store!.append(root, envelope({ type: 'session.closed' }));
           save(record, { status: 'closed', lastError: ended, activeTurnId: undefined });
-          if (runLogDir) {
+          if (runLogDir && !continuing.has(record.id)) {
             const line = JSON.stringify({ ts: new Date().toISOString(), rootSessionId: root, event: 'assignment.finished', assignmentId: record.id, agent: record.session?.agent, sessionId: record.id, status: 'failed', error: ended.message, reconciled: true }) + '\n';
             await mkdir(runLogDir, { recursive: true }).then(() => appendFile(path.join(runLogDir, `${root.replace(/[^\w.-]/g, '_')}.jsonl`), line)).catch(() => {});
           }
         }
       }
+    }
+    // Assignments whose tree cannot be reopened end now, and their tasks go back to open.
+    const reopened = new Set(reopen.map(entry => entry.record.id));
+    for (const rootId of new Set(runtime.recoverable().map(entry => entry.rootId))) {
+      if (!reopened.has(rootId)) await runtime.abandon(rootId, 'its root session cannot be reopened').catch(() => {});
+    }
+    for (const { record } of reopen) recovering.add(record.id);
+    void Promise.all(reopen.map(({ record, working }) => recoverTree(record, working)));
+  }
+
+  function resumable(record: SessionRecord) {
+    return record.rootId === record.id && !!record.spec && !!record.session?.persistent && !!record.session.threadId;
+  }
+
+  /** Reopens a root nobody watches yet and continues what it and its assignments were doing. */
+  async function recoverTree(record: SessionRecord, working: boolean) {
+    const session = record.session!;
+    try {
+      logs.set(record.id, [...await treeLog(record.id)]);
+      await runtime.open(record.id, {
+        ...record.spec!,
+        persist: true,
+        restore: { agent: session.agent, threadId: session.threadId, runtime: session.runtime, model: session.model, workflow: session.workflow },
+      }, { history: 'skip', delegation: record.delegation ?? true });
+      const outcomes = await runtime.recover(record.id, { continueRoot: working });
+      console.log(`${new Date().toISOString()} recovered ${record.id}: ${outcomes.map(outcome => `${outcome.agent} ${outcome.outcome}`).join(', ') || 'root'}`);
+    } catch (error: any) {
+      console.error(`${new Date().toISOString()} could not recover ${record.id}`, error);
+      await runtime.abandon(record.id, error?.message ?? String(error)).catch(() => {});
+    } finally {
+      recovering.delete(record.id);
+      setImmediate(() => void reap(record.id));
     }
   }
 
@@ -209,7 +257,7 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
 
   /** Closes an idle root that no client watches. */
   async function reap(root: string) {
-    if (closing || attached.get(root)?.size) return false;
+    if (closing || attached.get(root)?.size || recovering.has(root)) return false;
     const session = runtime.snapshot(root);
     if (!session || session.busy) return false;
     await runtime.close(root).catch(() => {});
@@ -326,7 +374,7 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
   }
 
   const handlers: Record<string, (connection: Connection, params: any) => Promise<unknown> | unknown> = {
-    'daemon.status': () => ({ pid: process.pid, startedAt, version, protocolVersion: PROTOCOL_VERSION, sessions: runtime.list().length, questions: runtime.questions().length }),
+    'daemon.status': () => ({ pid: process.pid, startedAt, version, protocolVersion: PROTOCOL_VERSION, sessions: runtime.list().length, questions: runtime.questions().length, ...(previousExit ? { previousExit } : {}) }),
 
     'session.status'(_connection, { sessionId }) {
       if (typeof sessionId !== 'string') throw new RpcError(-32602, 'sessionId is required');

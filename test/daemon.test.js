@@ -165,6 +165,38 @@ test('alpd starts detached, publishes its socket in the lock, and shuts down cle
   await until(async () => !(await readLock(home)));
 });
 
+test('alpd tells a clean stop from a crash by the marker it keeps while running', async t => {
+  const home = await mkdtemp(path.join(tmpdir(), 'alp-home-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const entry = fileURLToPath(new URL('../dist/alpd.js', import.meta.url));
+  const marker = path.join(home, 'state', 'alpd.running');
+  const status = async () => {
+    const client = await connect(await ensureDaemon({ home, entry }));
+    try { return await client.request('daemon.status'); } finally { client.close(); }
+  };
+  assert.deepEqual((await status()).previousExit, { kind: 'clean' });
+  assert.equal(JSON.parse(await readFile(marker, 'utf8')).pid, (await readLock(home)).pid);
+  const client = await connect((await readLock(home)).socket);
+  await client.request('daemon.shutdown');
+  client.close();
+  await until(async () => !(await readLock(home)));
+  await assert.rejects(access(marker), 'a clean stop removes the marker last');
+
+  assert.deepEqual((await status()).previousExit, { kind: 'clean' });
+  // The alpd of this test's own home, killed as a crash would.
+  const { pid } = await readLock(home);
+  assert.equal(JSON.parse(await readFile(marker, 'utf8')).pid, pid);
+  process.kill(pid, 'SIGKILL');
+  await until(() => { try { process.kill(pid, 0); return false; } catch { return true; } });
+  const after = await status();
+  assert.equal(after.previousExit.kind, 'crash');
+  assert.ok(Date.parse(after.previousExit.at) > 0);
+  const last = await connect((await readLock(home)).socket);
+  await last.request('daemon.shutdown');
+  last.close();
+  await until(async () => !(await readLock(home)));
+});
+
 test('finds alpd through the ALP CLI on PATH', async t => {
   const directory = await mkdtemp(path.join(tmpdir(), 'alp-path-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -243,7 +275,7 @@ test('sessions survive a daemon restart and resume with their history', async t 
   assert.equal((await second.client.request('session.get', { sessionId: session.id })).session.status, 'idle');
 });
 
-test('a crash leaves records that the next daemon settles: root errored and resumable, assignments failed', async t => {
+test('after a crash the next daemon reopens a root that was working; an assignment it cannot continue fails', async t => {
   const { directory, project } = await durableProject(t);
   const runtimes = [];
   const first = await durable(t, directory, project, runtimes);
@@ -254,18 +286,22 @@ test('a crash leaves records that the next daemon settles: root errored and resu
   const child = first.events.find(e => e.event.type === 'session.opened' && e.event.session.parentId).sessionId;
   await first.stop(false);
 
+  // This runtime keeps running assignments in memory only, so the lead cannot continue.
+  const before = runtimes.length;
   const second = await durable(t, directory, project, runtimes);
+  await until(() => runtimes[before]?.calls.some(c => c.method === 'turn/start'));
+  const reopened = runtimes[before];
+  assert.equal(reopened.calls[0].method, 'thread/resume');
+  assert.match(reopened.calls.find(c => c.method === 'turn/start').params.input.at(-1).text, /alpd restarted during your turn, and reopened this session\. Continue the user's request/);
   const { sessions } = await second.client.request('session.list', { includeClosed: true });
-  const root = sessions.find(s => s.id === session.id);
-  assert.equal(root.status, 'error');
-  assert.equal(root.lastError.code, 'daemon_restarted');
+  assert.equal(sessions.find(s => s.id === session.id).status, 'running');
   assert.equal(sessions.find(s => s.id === child).status, 'closed');
   const runLog = (await readFile(path.join(directory, 'runs', `${session.id}.jsonl`), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.ok(runLog.some(entry => entry.event === 'assignment.finished' && entry.assignmentId === child && entry.status === 'failed' && entry.reconciled));
   const timeline = await second.store.timeline(session.id);
   assert.ok(timeline.some(e => e.sessionId === session.id && e.event.type === 'turn.ended' && e.event.state === 'failed'));
-  await second.client.request('session.create', { sessionId: session.id, spec: { cwd: project } });
-  assert.equal(runtimes.at(-1).calls[0].method, 'thread/resume');
+  // A client opening it attaches to the reopened root.
+  assert.equal((await second.client.request('session.create', { sessionId: session.id, spec: { cwd: project } })).attached, true);
 });
 
 test('closed trees older than 30 days are pruned at startup', async t => {

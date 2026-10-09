@@ -1011,3 +1011,70 @@ Goal (D20, step 4): when the work under an epic is done, main closes the epic, a
   - after the last close, main closed the epic on its own;
   - `alp run` showed `ℹ Landed epic t-30f4 "Greeting files": 2/2 tasks closed, took 2m.` with the per-task lines;
   - `alp log` showed the notice and `◆ main closed t-30f4 …`.
+
+## 31. Crash and restart recovery as built (2026-10-09)
+
+Goal (D21, step A): work survives alpd and its native processes. Gas City treats sessions as mortal and work as durable; ALP takes that, with resume instead of adoption, since Codex and Claude processes end with alpd.
+
+**Daemon invariants.** These rules come from Gas City's controller. alpd follows them from this step on:
+1. A failed or partial observation is never "nothing": alpd does nothing destructive on it. An assignment that cannot be reopened ends only after its tree was tried, and a revive that fails falls back to the old failure path.
+2. Intent is written before the effect. The live entry exists once the thread does, and is removed before an assignment starts to finish. The running marker is written at start and removed last at stop.
+3. Destructive actions check the incarnation. Tasks record the alpd `epoch`; a retake writes the new one; a transport that was replaced reports nothing.
+4. Deliberate stops are never crashes. Pause, usage limits, interrupt and close never trip the restart breaker; only a process death does, and progress clears it.
+5. Recovery is idempotent. A crash during recovery leaves the entries of what did not finish, and the next alpd tries them again. An entry is rewritten with the new epoch only once its assignment is open again.
+6. Every recovered assignment ends with one named outcome: `resumed`, `parked` or `failed` with a reason. Each is in the run log and in the notice.
+7. Tests wait for facts, not for time: run log entries, transport calls, task files.
+
+**Live assignments.** `createLiveBook(liveFile)` (alpd: `$ALP_HOME/state/live.json`, written atomically) holds one `LiveEntry` per running assignment:
+- `assignmentId`, `rootId`, `parentId`, `callId`, `agent`, `project`, `ancestry`;
+- `runtime`, `model`, `threadId`, the session `spec` it was opened with, and `delegation`;
+- `mode`, `isolation`, `taskId`, `worktree`, `copyOf`, `lease` and `fingerprint`;
+- `startedAt`, and the `epoch` of the alpd that wrote it.
+
+`runDelegation` writes the entry right after the child's session opens. `finishAssignment` removes it first. While the runtime shuts down (`closed`), `finishAssignment` keeps the entry and the task, logs `assignment.interrupted`, and only closes the session. The server stops recording events once it closes, so session records keep what was running at the stop, as after a crash.
+
+**Reopening trees.** `restore()` in the server:
+- reads `runtime.recoverable()`, the entries with another epoch;
+- reopens a root that is resumable (spec, persistent thread) when it was `running` or has entries. Its children with entries stay `closed` without a failed `assignment.finished`;
+- after loading, calls `runtime.abandon(root)` for entries whose root it does not reopen;
+- reopens each tree with no connection: `runtime.open` with `restore`, then `runtime.recover(root, { continueRoot: wasRunning })`. A root in `recovering` is not reaped until its recovery has started.
+
+**`recover`** opens entries nearest the root first. For each entry, `resumeAssignment`:
+1. takes the lease again, unless another line holds it;
+2. checks out the worktree again with `reattachWorktree`, from the branch `reclaimWorktrees` committed it to, or creates a new review copy;
+3. registers the assignment under the requester with `childContexts.recovered`, so it opens beside an idle requester;
+4. retakes the task with `retakeTask`: same assignment, new `pid` and `epoch`, log `resumed`; this is refused when the assignment no longer holds the task;
+5. opens the session with `restore` on its thread, and pins its task claims again.
+
+On a failure it undoes what it did and `abandonEntry` ends the assignment:
+- the task is released with the reason, and the branch is logged as kept;
+- the run log gets `assignment.finished` with `failed` and `reconciled`;
+- the requester gets a failed result if it is open.
+
+Each resumed assignment, and the root when it was working, then gets a prompt saying why ALP reopened it, listing that session's own resumed assignments so it can `alp_wait` for them. With `recoveryResume: false` (alpd: `"recovery": { "autoResume": false }`), or on a paused runtime, the session is parked instead, with that prompt kept for `continueParked`. A root that was idle gets a passive note per resumed assignment. Every open root of the project gets one notice with the counts and the failures. Run log events: `assignment.interrupted` and `assignment.recovered`.
+
+**Reviving a process.** `wire()` connects a transport. When a transport fails and `revivable(session)` holds:
+- `revive` parks the interrupted turn, with `parkThen` telling the requester ALP is restarting it;
+- it creates a new transport, `thread/resume`s with `configOf(session)`, and continues the parked turn with a prompt saying the process was restarted.
+
+`revivable` needs:
+- an open session that has a thread, is not pending, and is not a supervisor;
+- a persistent or kept thread;
+- fewer than `RESTART_LIMIT` (3) fruitless restarts within `RESTART_WINDOW_MS` (10 minutes). A restart is fruitless when no item completed after it (`progressAt`).
+
+When the revive fails, the session fails as before. Run log events: `session.restarted`, `session.revived` and `session.revive_failed`.
+
+**How alpd ended.** `main.ts` writes `$ALP_HOME/state/alpd.running` (`{ pid, startedAt }`) at start, touches it with the lock heartbeat, and removes it as the last step of a clean stop. When the file is there at start, `previousExit` is `{ kind: 'crash', at: <its mtime> }`; otherwise it is `{ kind: 'clean' }`. `daemon.status` returns `previousExit`, `alp daemon status` prints a crash, and recovery prompts and notices say "alpd stopped unexpectedly" or "alpd restarted". `alp daemon restart` no longer refuses when sessions are open.
+
+**Evidence.**
+- `test/recovery.test.js` covers:
+  - a worktree assignment stopped with alpd, continued by the next one: same thread and worktree directory, its file intact, task retaken, requester told, the notice, then a normal finish into review;
+  - a process death revived and continued, and the breaker after three fruitless restarts;
+  - abandoned entries, with the task reopened, and recovery parked until `resume()`;
+  - a server that reopens a tree by itself after a clean stop, the assignment continuing, main waking for its result, and the unwatched tree closing.
+- `test/daemon.test.js` covers the running marker with a real alpd: clean stop, then `kill -9`. The crash test there now expects the working root to be reopened.
+- Live on 2026-10-09, with Codex `gpt-5.6-sol` in an isolated `ALP_HOME`:
+  - main delegated a peer to run `sleep 120` before writing two files;
+  - `kill -9` of that alpd also ended its `codex app-server` processes;
+  - `alp daemon start` logged the crash, reopened the root and the peer (`recovered …: peer resumed`) and showed the notice;
+  - the peer reran its commands and filed its handoff; main `alp_wait`ed for it and reported both files; `live.json` was empty at the end.

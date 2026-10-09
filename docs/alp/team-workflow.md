@@ -311,8 +311,63 @@ When that happens:
 resume a runtime a minute after its limit resets.
 
 Pauses are kept in `$ALP_HOME/state/pause.json`, so they survive a restart.
-Parked assignments do not survive one, because their sessions end with alpd.
-Their tasks go back to open as described under Tasks in delegation.
+Parked assignments survive one too: the next alpd reopens them still parked,
+as described under Crashes and restarts.
+
+## Crashes and restarts
+
+Work survives alpd. When alpd stops, cleanly or in a crash, the next alpd
+continues what was running:
+
+- **Assignments.** ALP keeps every running assignment in
+  `$ALP_HOME/state/live.json` from the moment its native thread exists. At
+  start, alpd reopens the tree it belongs to and the assignment under its own
+  id. It gets back:
+  - its native thread;
+  - its worktree, from the branch the crash recovery committed it to, or a
+    fresh review copy;
+  - its write lease, its task, which records the new alpd, and its claims.
+
+  It then gets a turn that says alpd restarted and asks it to check where it
+  stopped and continue.
+- **Roots.** A root whose turn was running continues that turn with the same
+  kind of prompt. A root that was idle stays idle; its assignments report to it
+  by mail as usual. alpd reopens these trees with no client attached, so the
+  work goes on before anyone opens Paseo. A client that opens the session
+  attaches to the running tree. When the work is done and nobody watches, the
+  tree closes as any unwatched root does.
+- **Requesters** learn which of their assignments continue, and can
+  `alp_wait` for them.
+- **When an assignment cannot continue**, it ends as failed and its task goes
+  back to open. For example, its branch is gone, or its root cannot be
+  reopened. Its work stays on its branch.
+
+Every open session of the project shows a notice: what restarted, how many
+assignments reopened, and which could not.
+
+`alp daemon stop` and `alp daemon restart` keep running work the same way.
+`alp daemon restart` no longer refuses when sessions are open. To stop work
+for good, interrupt the session, or `alp pause --now` first: a paused runtime's
+assignments are reopened parked.
+
+To decide yourself when recovered work continues, set
+`"recovery": { "autoResume": false }` in `$ALP_HOME/settings.json`. Recovered
+sessions then wait parked until `alp resume`.
+
+**A runtime process that dies.** When a Codex app-server or Claude process
+stops under a session, ALP starts a new one and resumes the session's thread.
+A turn it interrupted is parked, then continued as soon as the new process is
+up; its requester gets a passive note. ALP stops restarting after three
+restarts in a row that brought no progress (no completed item since the
+restart) within ten minutes. The session then fails as it did before. Pauses,
+usage limits and interrupts never count as a death.
+
+**Crash or clean stop.** A running alpd keeps `$ALP_HOME/state/alpd.running`
+and touches it every 30 seconds; a clean stop removes it last. If alpd finds
+the file at start, the previous alpd crashed around the file's last touch.
+`alp daemon status` says so, and the notices and prompts of recovered sessions
+say "alpd stopped unexpectedly" instead of "alpd restarted". `alp log` shows
+`⏹` interrupted, `↻` reopened or restarted, and `▶` running again.
 
 ## Talking to the user
 

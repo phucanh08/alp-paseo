@@ -100,6 +100,7 @@ export function reopenTask(projectRoot: string, id: string, reopen: { note?: str
 export function submitTask(projectRoot: string, id: string, submit: { assignment: string; handoff: { outcome: string; summary: string } & Record<string, unknown>; agent: string }, by: string): Promise<Task>;
 export function releaseOrphans(projectRoot: string, isOrphan: (assignee: { agent: string; assignment: string; pid?: number; epoch?: string }) => boolean, describe: (assignee: { agent: string; assignment: string }) => Promise<string | undefined>, by: string): Promise<Task[]>;
 export function orphanedEntry(task: Task): { at: string; by: string; event: 'orphaned'; agent: string; assignment: string; note?: string } | undefined;
+export function retakeTask(projectRoot: string, id: string, assignee: { assignment: string; pid?: number; epoch?: string }, by: string): Promise<Task>;
 export function releaseTask(projectRoot: string, id: string, release: { assignment: string; handoff?: ({ outcome: string; summary: string } & Record<string, unknown>) | null; agent: string; reason: string }, by: string): Promise<Task>;
 export function taskDigest(tasks: Task[], errors?: Array<{ file: string; error: string }>): string;
 export function startRefusal(task: Task, tasks: Task[]): string | undefined;

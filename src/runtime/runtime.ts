@@ -14,14 +14,15 @@ import { MAIL_BODY_CHARS, publicEvent, renderMail, takeBatch, USER, type MailEve
 import type { AlpEvent, AssignmentSnapshot, Envelope, SessionSnapshot, TreeStatus, TurnOrigin, UserQuestion } from './events.js';
 import { BOARD_KEEP, live, normalizePaths, overlapping, PIN_BODY_CHARS, PIN_KINDS, renderBoard, renderPin, type Pin, type PinKind } from './board.js';
 import { describeVerification, runVerify, verifyConfig, type Verification, type VerifyConfig } from '../core/verify.js';
+import { createLiveBook, type LiveEntry } from './live.js';
 import { createRecallBook, recallPrompt, RECALL_KEEP_MS, RECALL_QUESTION_CHARS, RECALL_TIMEOUT_MS, type RecallEntry } from './recall.js';
-import { branchExists, checkoutFingerprint, checkoutKey, commitWorktree, createCopy, createWorktree, linkModules, mergeWorktree, removeCopy, removeWorktree, type Copy, type Worktree, type WorktreeChange } from './workspace.js';
+import { branchExists, checkoutFingerprint, checkoutKey, commitWorktree, createCopy, createWorktree, linkModules, mergeWorktree, reattachWorktree, removeCopy, removeWorktree, type Copy, type Worktree, type WorktreeChange } from './workspace.js';
 import { claudeSandboxAvailable } from './claude-transport.js';
 import { ALP_REPO, gh, projectRepo, type GitHubRunner } from './github.js';
 import { parse as toml } from 'smol-toml';
 import { findFormula, formulaDirs, listFormulas, pourFormula } from '../core/formulas.js';
 import { ADVISORS, addAllowRule, capMode, commandDecision, profileFor, unwrapShell, type PermissionProfile } from '../core/permissions.js';
-import { CLOSE_REASONS, GATE_KINDS, addGate, checkGates, resolveGate, TASK_STATUSES, TASK_TYPES, TASKS_DIR, blockersOf, childrenOf, closeTask, epicReport, recordVerification, releaseOrphans, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, releaseTask, reopenTask, startRefusal, startTask, submitTask, summarize, taskDigest, updateTask, type Task } from '../core/tasks.js';
+import { CLOSE_REASONS, GATE_KINDS, addGate, checkGates, resolveGate, TASK_STATUSES, TASK_TYPES, TASKS_DIR, blockersOf, childrenOf, closeTask, epicReport, recordVerification, releaseOrphans, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, releaseTask, reopenTask, retakeTask, startRefusal, startTask, submitTask, summarize, taskDigest, updateTask, type Task } from '../core/tasks.js';
 
 export type RuntimeTransport = {
   request(method: string, params: any): Promise<any>;
@@ -82,6 +83,15 @@ export type RuntimeOptions = {
   /** Resume a runtime a usage limit paused, a minute after the limit resets. Default false: the user resumes. */
   autoResume?: boolean;
 
+  /** Where running assignments are kept, so the next alpd continues them (ALPD §31). Omitted keeps them in memory. */
+  liveFile?: string;
+
+  /** False parks assignments an earlier alpd left running until the user runs alp resume. Default true: they continue. */
+  recoveryResume?: boolean;
+
+  /** How the previous alpd ended, for what recovered sessions are told. */
+  previousExit?: { kind: 'clean' | 'crash'; at?: string };
+
   /** False starts no supervisors, for hosts and tests that do not want them. Default true. */
   supervisor?: boolean;
 
@@ -136,8 +146,18 @@ export type AlpRuntime = {
   pauses(): PauseState;
   /** The user asks a finished assignment, or the last one on a task of the project, about its work. */
   recall(target: { assignmentId?: string; taskId?: string; projectRoot?: string }, question: string): Promise<RecallAnswer>;
+  /** Assignments an earlier alpd left running, which recover() can continue once their root is open again. */
+  recoverable(): LiveEntry[];
+  /** Continues the assignments an earlier alpd left running in an open root's tree; with continueRoot, the root's own turn too. */
+  recover(rootId: string, options?: { continueRoot?: boolean }): Promise<RecoveryOutcome[]>;
+  /** Gives up the assignments of a tree whose root cannot be opened again: their tasks go back to open. */
+  abandon(rootId: string, reason: string): Promise<RecoveryOutcome[]>;
+  /** Closes everything; assignments still running stay in the live file, so the next alpd continues them. */
   shutdown(): Promise<void>;
 };
+
+/** What became of one assignment an earlier alpd left running. */
+export type RecoveryOutcome = { assignmentId: string; agent: string; outcome: 'resumed' | 'parked' | 'failed'; error?: string };
 
 export type Pause = { since: string; by: string; reason: string; resetsAt?: string };
 export type PauseState = {
@@ -183,8 +203,14 @@ type Session = {
   wakes: number;
   /** Set by interrupt: pending mail waits for the next user prompt. */
   wakeBlocked: boolean;
-  /** An assignment a usage limit or a pause stopped: it waits, open, until its runtime resumes. */
-  parked?: { reason: string; since: number };
+  /** An assignment a usage limit or a pause stopped: it waits, open, until its runtime resumes. prompt is what continues it. */
+  parked?: { reason: string; since: number; prompt?: string };
+  /** What the requester of a session parked by its turn's end is told happens next, instead of waiting for alp resume. */
+  parkThen?: string;
+  /** When ALP restarted this session's native process, within the last RESTART_WINDOW_MS. */
+  restarts?: number[];
+  /** The last completed native item: progress that keeps the restart breaker closed. */
+  progressAt?: number;
   /** Why the running turn is being stopped, so its end parks the assignment instead of ending it. */
   parkReason?: string;
   /** Mail arrived while its runtime was paused; it is delivered on resume. */
@@ -256,6 +282,9 @@ type Waiter = {
 };
 
 const MAX_WAKES = 8;
+/** A session's native process is restarted at most RESTART_LIMIT times within RESTART_WINDOW_MS unless it makes progress meanwhile. */
+const RESTART_LIMIT = 3;
+const RESTART_WINDOW_MS = 10 * 60_000;
 // Placeholder delivery marks while a steer or a woken turn is starting.
 const STEERING = '\u0000steering';
 const STARTING = '\u0000starting';
@@ -893,6 +922,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       workflow: ResolvedSession['workflow'];
       ancestry: string[];
       role?: 'supervisor';
+      /** Reopened after alpd restarted: its requester may be idle. */
+      recovered?: boolean;
     }
   >();
 
@@ -900,6 +931,10 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   const epoch = randomUUID();
   /** Finished assignments whose native threads alp_recall can question. */
   const recalls = createRecallBook(options.recallFile);
+  /** Running assignments, so the next alpd continues them (ALPD §31). */
+  const inFlight = createLiveBook(options.liveFile);
+  /** Those an earlier alpd left running; recover() takes them once their root is open again. */
+  let inherited = inFlight.all().filter(entry => entry.epoch !== epoch);
   /** Pauses by runtime, or of everything; kept in pauseFile across restarts. */
   let paused: { all?: Pause; runtimes: Partial<Record<RuntimeKind, Pause>> } = { runtimes: {} };
   try {
@@ -1127,6 +1162,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
 
     if (method === 'item/completed' || method === 'item/started') {
+      if (method === 'item/completed') session.progressAt = Date.now();
       if (params.item?.type !== 'userMessage') {
         nativeItem(sessionId, session, params.item);
       }
@@ -1748,18 +1784,20 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   /** An assignment whose turn a limit or a pause ended stays open, and its requester learns why. */
   function park(sessionId: string, session: Session) {
     session.parked = { reason: session.parkReason!, since: Date.now() };
+    const then = session.parkThen;
     session.parkReason = undefined;
+    session.parkThen = undefined;
     emit(sessionId, { type: 'session.updated', session: snapshot(sessionId, session) });
     const parent = session.parent ? sessions.get(session.parent) : undefined;
     const assignment = parent?.assignments.get(sessionId);
     runLog(rootOf(sessionId), { event: 'assignment.parked', assignmentId: sessionId, agent: session.mapping.agent.name, reason: session.parked.reason });
     if (!parent || !assignment) return;
     emit(session.parent!, { type: 'assignment', assignment: assignmentSnapshot(assignment, 'parked') });
-    post(session.parent!, { kind: 'note', from: assignment.agent, assignment: sessionId, passive: true, body: `Parked: ${session.parked.reason}. ALP continues this assignment where it stopped when ${label(session.runtimeKind)} is resumed (the user runs alp resume). Wait for it, or start other work.` });
+    post(session.parent!, { kind: 'note', from: assignment.agent, assignment: sessionId, passive: true, body: `Parked: ${session.parked.reason}. ${then ?? `ALP continues this assignment where it stopped when ${label(session.runtimeKind)} is resumed (the user runs alp resume).`} Wait for it, or start other work.` });
   }
 
   function continueParked(sessionId: string, session: Session) {
-    const reason = session.parked!.reason;
+    const { reason, prompt } = session.parked!;
     session.parked = undefined;
     session.wakeHeld = false;
     session.lastActivity = Date.now();
@@ -1771,8 +1809,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     void startPrompt(sessionId, {
       clientMessageId: `alp-resume-${randomUUID()}`,
       delivery: 'auto',
-      content: [{ type: 'text', text: `ALP resumed this assignment; it had stopped because ${reason}. Continue where you left off: your earlier work in this session and its files are intact. Finish with alp_handoff as before.` }],
-    }, 'assignment').catch(error => session.settle?.('failed', error));
+      content: [{ type: 'text', text: prompt ?? `ALP resumed this assignment; it had stopped because ${reason}. Continue where you left off: your earlier work in this session and its files are intact. Finish with alp_handoff as before.` }],
+    }, session.parent ? 'assignment' : 'wake').catch(error => session.settle?.('failed', error));
   }
 
   /** When a limit resets, from what the runtime last reported: the latest reset of a window that is used up. */
@@ -2408,6 +2446,18 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   async function finishAssignment(parentId: string, parent: Session, assignment: Assignment, state: string, error?: unknown, quiet = false) {
     if (assignment.finished) return;
     assignment.finished = true;
+    // alpd is stopping: the assignment stays in the live file and its task stays in progress, for the next alpd to continue.
+    if (closed && inFlight.get(assignment.id)) {
+      runLog(assignment.rootId, { event: 'assignment.interrupted', assignmentId: assignment.id, agent: assignment.agent, reason: 'alpd stopped' });
+      await closeSession(assignment.id);
+      if (assignment.lease && leases.get(assignment.lease)?.assignment === assignment.id) leases.delete(assignment.lease);
+      childContexts.delete(assignment.id);
+      parent.children.delete(assignment.id);
+      parent.assignments.delete(assignment.id);
+      return;
+    }
+    // Removed before anything else, so a crash while finishing never runs finished work again.
+    void inFlight.remove(assignment.id);
     const child = sessions.get(assignment.id);
     if (child && state === 'failed' && child.active) terminal(assignment.id, child, 'failed', error);
     assignment.ask?.resolve(toolResult(false, { error: 'Assignment ended' }));
@@ -3045,7 +3095,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       const digest = renderBoard(await boardOf(session.mapping.agent.projectRoot));
       // A child inherits the requester's client configuration, never its native thread.
       const { restore: _restore, ...inherited } = session.spec;
-      await openSession(childId, {
+      const childSpec: SessionSpec = {
         ...inherited,
         ...(assignment.worktree ? { workdir: assignment.worktree.workdir } : assignment.copy ? { workdir: assignment.copy.workdir, copy: true, copyOf: session.mapping.workdir } : {}),
         persist: false,
@@ -3055,7 +3105,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         model,
         thinking,
         mode: childMode,
-      }, 'skip', session.delegation);
+      };
+      await openSession(childId, childSpec, 'skip', session.delegation);
 
       const child = sessions.get(childId);
 
@@ -3071,6 +3122,14 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
       child.settle = (state, error) =>
         void finishAssignment(sessionId, session, assignment, state, error);
+      // From here a restarted alpd can continue it: its thread exists.
+      void inFlight.put({
+        assignmentId: childId, rootId, parentId: sessionId, callId: params.callId, agent: args.agent, project, ancestry: [...session.ancestry, args.agent],
+        runtime: child.runtimeKind, model: child.mapping.model, threadId: child.threadId, spec: childSpec, delegation: session.delegation,
+        mode: childMode, isolation, ...(assignment.taskId ? { taskId: assignment.taskId } : {}), ...(assignment.worktree ? { worktree: assignment.worktree } : {}),
+        ...(assignment.copy ? { copyOf: session.mapping.workdir } : {}), ...(assignment.lease ? { lease: assignment.lease } : {}),
+        ...(assignment.fingerprint ? { fingerprint: assignment.fingerprint } : {}), startedAt: assignment.startedAt, epoch,
+      });
 
       // A writing assignment holds the task's paths for as long as it runs.
       if (task?.paths.length && writes(childMode)) {
@@ -3163,13 +3222,13 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         ? graph[mapping.agent.name]
         : [];
 
-    // An assignment opens inside its requester's turn; a supervisor opens beside an idle root.
+    // An assignment opens inside its requester's turn; a supervisor opens beside an idle root, and so does a recovered assignment.
     if (
       context &&
       (
         !sessions.has(context.parent) ||
         sessions.get(context.parent)!.closed ||
-        (!sessions.get(context.parent)!.active && context.role !== 'supervisor')
+        (!sessions.get(context.parent)!.active && context.role !== 'supervisor' && !context.recovered)
       )
     ) {
       throw new Error(
@@ -3227,49 +3286,12 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       worktrees: new Map(),
     };
 
-    runtime.onRequest?.(
-      async (method, params) =>
-        method === 'item/tool/call' ? toolCall(sessionId, session, params)
-          : method === 'item/permission/request' ? claudePermission(sessionId, session, params)
-          : approve(sessionId, session, method, params),
-    );
-
     sessions.set(
       sessionId,
       session,
     );
 
-    runtime.onNotification(
-      (method, params) =>
-        notification(
-          sessionId,
-          session,
-          method,
-          params,
-        ),
-    );
-
-    runtime.onFailure((error) => {
-      if (!session.closed) {
-        terminal(
-          sessionId,
-          session,
-          'failed',
-          error,
-        );
-
-        session.settle?.(
-          'failed',
-          error,
-        );
-
-        void closeSession(
-          sessionId,
-        );
-
-        emit(sessionId, { type: 'session.failed', error: errorData(error) });
-      }
-    });
+    wire(sessionId, session, runtime);
 
     try {
       await runtime.initialize();
@@ -3298,17 +3320,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         );
       }
 
-      const nativeConfig =
-        nativeSessionConfig(
-          runtimeKind,
-          mapping,
-          targets,
-          session.parentAgent,
-          session.role,
-          supervises(session),
-          lessonFiles(mapping),
-          Object.fromEntries(await Promise.all(targets.map(async target => [target, await profileFor(mapping.agent.projectRoot, options.libraryDir, target).catch(() => null)] as const))),
-        );
+      const nativeConfig = await configOf(session);
 
       const result = mapping.threadId
         ? await runtime.request(
@@ -3382,6 +3394,246 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
       throw error;
     }
+  }
+
+  /** Connects a session to its transport: tool calls, notifications, and what a failure of its process does. */
+  function wire(sessionId: string, session: Session, transport: RuntimeTransport) {
+    transport.onRequest?.(
+      async (method, params) =>
+        method === 'item/tool/call' ? toolCall(sessionId, session, params)
+          : method === 'item/permission/request' ? claudePermission(sessionId, session, params)
+          : approve(sessionId, session, method, params),
+    );
+    transport.onNotification((method, params) => notification(sessionId, session, method, params));
+    transport.onFailure((error) => {
+      // A transport ALP already replaced reports nothing.
+      if (session.closed || session.runtime !== transport) return;
+      if (revivable(session)) void revive(sessionId, session, error);
+      else failSession(sessionId, session, error);
+    });
+  }
+
+  function failSession(sessionId: string, session: Session, error: unknown) {
+    terminal(sessionId, session, 'failed', error);
+    session.settle?.('failed', error);
+    void closeSession(sessionId);
+    emit(sessionId, { type: 'session.failed', error: errorData(error) });
+  }
+
+  /** The native thread configuration of a session: its instructions, tools and sandbox. */
+  async function configOf(session: Session) {
+    const { mapping } = session;
+    const targets = Object.hasOwn(session.graph, mapping.agent.name) ? session.graph[mapping.agent.name] : [];
+    return nativeSessionConfig(
+      session.runtimeKind,
+      mapping,
+      targets,
+      session.parentAgent,
+      session.role,
+      supervises(session),
+      lessonFiles(mapping),
+      Object.fromEntries(await Promise.all(targets.map(async target => [target, await profileFor(mapping.agent.projectRoot, options.libraryDir, target).catch(() => null)] as const))),
+    );
+  }
+
+  /**
+   * Whether ALP restarts a session whose native process died (ALPD §31): one with a
+   * thread to resume, unless its last RESTART_LIMIT restarts within RESTART_WINDOW_MS
+   * each brought no progress. Progress since the last restart clears the count.
+   */
+  function revivable(session: Session) {
+    if (closed || session.closed || session.pending || !session.threadId || session.role === 'supervisor') return false;
+    if (!session.mapping.persist && !session.mapping.keepThread) return false;
+    return fruitlessRestarts(session).length < RESTART_LIMIT;
+  }
+
+  function fruitlessRestarts(session: Session) {
+    const restarts = session.restarts ?? [];
+    if ((session.progressAt ?? 0) > (restarts.at(-1) ?? 0)) return [];
+    const now = Date.now();
+    return restarts.filter(at => now - at < RESTART_WINDOW_MS);
+  }
+
+  /** Starts the session's native process again and resumes its thread; a turn it interrupted continues. */
+  async function revive(sessionId: string, session: Session, error: unknown) {
+    session.restarts = [...fruitlessRestarts(session), Date.now()];
+    const harness = label(session.runtimeKind);
+    runLog(rootOf(sessionId), { event: 'session.restarted', sessionId, agent: session.mapping.agent.name, error: errorData(error).message, restarts: session.restarts.length });
+    if (session.active) {
+      session.parkReason = `its ${harness} process stopped`;
+      session.parkThen = `ALP is restarting the ${harness} process; this assignment continues by itself.`;
+      terminal(sessionId, session, 'failed', error);
+    }
+    const old = session.runtime;
+    void old.close().catch(() => {});
+    try {
+      const transport = createTransport(options, session.runtimeKind, session.mapping.workdir, nativeEnvironment(options, session.mapping.env));
+      session.runtime = transport;
+      session.pending = true;
+      wire(sessionId, session, transport);
+      await transport.initialize();
+      const config = await configOf(session);
+      if (session.closed) return void transport.close().catch(() => {});
+      await transport.request('thread/resume', { ...config, threadId: session.threadId });
+      if (session.closed) return void transport.close().catch(() => {});
+      session.pending = false;
+      session.buffered = [];
+      runLog(rootOf(sessionId), { event: 'session.revived', sessionId, agent: session.mapping.agent.name });
+      if (session.parked && !pauseOf(session.runtimeKind)) {
+        session.parked.prompt = `ALP restarted your ${harness} process after it stopped in the middle of your turn. Continue where you left off: your earlier work in this session and its files are intact.${session.parent ? ' Finish with alp_handoff as before.' : ''}`;
+        continueParked(sessionId, session);
+      }
+    } catch (failure) {
+      session.pending = false;
+      session.parked = undefined;
+      runLog(rootOf(sessionId), { event: 'session.revive_failed', sessionId, agent: session.mapping.agent.name, error: errorData(failure).message });
+      failSession(sessionId, session, error);
+    }
+  }
+
+  /** Why recovered sessions were reopened, for what they are told. */
+  const restartCause = () => options.previousExit?.kind === 'crash' ? 'alpd stopped unexpectedly' : 'alpd restarted';
+
+  /**
+   * Opens an assignment an earlier alpd left running again, under its own id, in
+   * its requester's tree: its thread, worktree or copy, write lease, task and claims.
+   * Throws, leaving nothing behind but the worktree's branch, when it cannot continue.
+   */
+  async function resumeAssignment(entry: LiveEntry) {
+    const parent = sessions.get(entry.parentId);
+    if (!parent || parent.closed) throw new Error('its requester did not come back');
+    const id = entry.assignmentId;
+    const project = entry.project;
+    const assignment: Assignment = {
+      id, agent: entry.agent, mode: entry.mode, isolation: entry.isolation, rootId: entry.rootId, startedAt: entry.startedAt, warned: false, finished: false,
+      ...(entry.fingerprint ? { fingerprint: entry.fingerprint } : {}),
+    };
+    let spec = entry.spec;
+    const undo = async () => {
+      parent.children.delete(id);
+      parent.assignments.delete(id);
+      childContexts.delete(id);
+      if (assignment.lease && leases.get(assignment.lease)?.assignment === id) leases.delete(assignment.lease);
+      if (entry.agent === 'peer') { const root = sessions.get(entry.rootId); if (root) root.peerCount--; }
+      if (assignment.copy) await removeCopy(assignment.copy).catch(() => {});
+      if (assignment.worktree) await removeWorktree(assignment.worktree).catch(() => {});
+    };
+    try {
+      if (entry.lease) {
+        const holder = leases.get(entry.lease);
+        if (holder && !lineage(entry.parentId).includes(holder.assignment)) throw new Error(`${holder.agent} writes ${entry.lease} now`);
+        if (!holder) { assignment.lease = entry.lease; leases.set(entry.lease, { assignment: id, agent: entry.agent }); }
+      }
+      if (entry.worktree) assignment.worktree = await reattachWorktree(entry.worktree);
+      if (entry.copyOf) {
+        assignment.copy = await createCopy(entry.copyOf, copyRoot, id);
+        spec = { ...spec, workdir: assignment.copy.workdir };
+      }
+      parent.children.add(id);
+      parent.assignments.set(id, assignment);
+      childContexts.set(id, { parent: entry.parentId, callId: entry.callId, graph: parent.graph, workflow: parent.mapping.workflow, ancestry: entry.ancestry, recovered: true });
+      if (entry.agent === 'peer') { const root = sessions.get(entry.rootId); if (root) root.peerCount++; }
+      if (entry.taskId) {
+        await retakeTask(project, entry.taskId, { assignment: id, pid: process.pid, epoch }, 'alpd');
+        assignment.taskId = entry.taskId;
+        touchTask(entry.rootId, entry.taskId);
+      }
+      await openSession(id, { ...spec, restore: { agent: entry.agent, threadId: entry.threadId, runtime: entry.runtime, model: entry.model, workflow: parent.mapping.workflow } }, 'skip', entry.delegation);
+      const child = sessions.get(id)!;
+      child.settle = (state, error) => void finishAssignment(entry.parentId, parent, assignment, state, error);
+      if (assignment.taskId && writes(entry.mode)) {
+        const task = await getTask(project, assignment.taskId).catch(() => undefined);
+        if (task?.paths.length) {
+          const pins = await boardOf(project);
+          if (!claimConflicts(id, pins, task.paths).length) addPin(id, child, pins, { kind: 'claim', body: `Task ${task.id}: ${task.title}`, paths: task.paths, task: task.id });
+        }
+      }
+    } catch (error) {
+      await undo();
+      throw error;
+    }
+    void inFlight.put({ ...entry, epoch, ...(assignment.copy ? { spec } : {}) });
+    emit(entry.parentId, { type: 'assignment', assignment: assignmentSnapshot(assignment, 'running') });
+    return assignment;
+  }
+
+  /** An assignment an earlier alpd left running that cannot continue: its task goes back to open, its work stays on its branch. */
+  async function abandonEntry(entry: LiveEntry, reason: string) {
+    await inFlight.remove(entry.assignmentId);
+    const parent = sessions.get(entry.parentId);
+    let task: Record<string, unknown> | undefined;
+    if (entry.taskId) {
+      const released = await releaseTask(entry.project, entry.taskId, { assignment: entry.assignmentId, handoff: null, agent: entry.agent, reason: `${restartCause()} and it could not continue: ${reason}` }, 'alpd').catch(() => undefined);
+      if (released) { task = { id: released.id, status: released.status }; touchTask(entry.rootId, released.id); }
+    }
+    if (entry.worktree) runLog(entry.rootId, { event: 'worktree.kept', assignmentId: entry.assignmentId, branch: entry.worktree.branch });
+    const result = {
+      agent: entry.agent, sessionId: entry.assignmentId, status: 'failed', handoff: null, output: '',
+      error: `${restartCause()} while it worked, and it could not continue: ${reason}`,
+      ...(entry.worktree ? { worktree: { branch: entry.worktree.branch, kept: true } } : {}), ...(task ? { task } : {}),
+    };
+    runLog(entry.rootId, { event: 'assignment.finished', assignmentId: entry.assignmentId, reconciled: true, ...result });
+    if (parent && !parent.closed) post(entry.parentId, { kind: 'result', from: entry.agent, assignment: entry.assignmentId, result });
+  }
+
+  /**
+   * Continues what an earlier alpd left running in an open root's tree, nearest the
+   * root first, since each assignment needs its requester open. Each one continues
+   * its turn, or waits parked when its runtime is paused or the user resumes recovery.
+   */
+  async function recoverTree(rootId: string, continueRoot: boolean): Promise<RecoveryOutcome[]> {
+    const root = sessions.get(rootId);
+    if (!root || root.closed) throw new Error(`Session ${rootId} is not open`);
+    const entries = inherited.filter(entry => entry.rootId === rootId).sort((a, b) => a.ancestry.length - b.ancestry.length);
+    inherited = inherited.filter(entry => entry.rootId !== rootId);
+    const outcomes: RecoveryOutcome[] = [];
+    const resumed = new Map<string, Assignment[]>();
+    for (const entry of entries) {
+      try {
+        const assignment = await resumeAssignment(entry);
+        resumed.set(entry.parentId, [...(resumed.get(entry.parentId) ?? []), assignment]);
+        outcomes.push({ assignmentId: entry.assignmentId, agent: entry.agent, outcome: 'resumed' });
+      } catch (error) {
+        const message = errorData(error).message;
+        await abandonEntry(entry, message);
+        outcomes.push({ assignmentId: entry.assignmentId, agent: entry.agent, outcome: 'failed', error: message });
+      }
+    }
+    const cause = restartCause();
+    const listed = (assignments: Assignment[] = []) => assignments.length
+      ? ` These assignments of yours continue and report to you: ${assignments.map(assignment => `${assignment.id} (${assignment.agent}${assignment.taskId ? `, task ${assignment.taskId}` : ''})`).join(', ')}. Wait for them with alp_wait, or keep working.`
+      : '';
+    const proceed = (sessionId: string, session: Session, text: string) => {
+      if (options.recoveryResume === false || pauseOf(session.runtimeKind)) {
+        session.parked = { reason: cause, since: Date.now(), prompt: text };
+        emit(sessionId, { type: 'session.updated', session: snapshot(sessionId, session) });
+        runLog(rootId, { event: 'assignment.parked', assignmentId: sessionId, agent: session.mapping.agent.name, reason: cause });
+        const outcome = outcomes.find(entry => entry.assignmentId === sessionId);
+        if (outcome) outcome.outcome = 'parked';
+        return;
+      }
+      void startPrompt(sessionId, { clientMessageId: `alp-recover-${randomUUID()}`, delivery: 'auto', content: [{ type: 'text', text }] }, session.parent ? 'assignment' : 'wake')
+        .catch(error => session.settle?.('failed', error));
+    };
+    for (const entry of entries) {
+      const child = sessions.get(entry.assignmentId);
+      if (!child || child.closed || !outcomes.some(outcome => outcome.assignmentId === entry.assignmentId && outcome.outcome === 'resumed')) continue;
+      runLog(rootId, { event: 'assignment.recovered', assignmentId: entry.assignmentId, agent: entry.agent, ...(entry.taskId ? { taskId: entry.taskId } : {}) });
+      proceed(entry.assignmentId, child, `ALP: ${cause} while you worked on this assignment, and reopened this session. Your earlier work in it${entry.worktree ? ' and your worktree' : ''} is intact; check where you stopped (for example with git status), then continue. Finish with alp_handoff as before.${listed(resumed.get(entry.assignmentId))}`);
+    }
+    if (continueRoot) proceed(rootId, root, `ALP: ${cause} during your turn, and reopened this session. Continue the user's request where you stopped.${listed(resumed.get(rootId))}`);
+    else for (const assignment of resumed.get(rootId) ?? []) post(rootId, { kind: 'note', from: assignment.agent, assignment: assignment.id, passive: true, body: `${cause}; ALP reopened this assignment and it continues. It reports when done.` });
+    const failed = outcomes.filter(outcome => outcome.outcome === 'failed');
+    if (entries.length || continueRoot) {
+      const parked = outcomes.some(outcome => outcome.outcome === 'parked') || (continueRoot && !!root.parked);
+      notice(failed.length ? 'warning' : 'info',
+        `ALP: ${cause}${options.previousExit?.at ? ` (around ${options.previousExit.at})` : ''}. ` +
+        `${entries.length - failed.length} of ${entries.length} running assignments reopened${continueRoot ? ', and this session' : ''}` +
+        `${parked ? '; they wait parked: run alp resume to continue them' : ''}.` +
+        `${failed.length ? ` Could not continue: ${failed.map(outcome => `${outcome.agent} ${outcome.assignmentId} (${outcome.error})`).join('; ')}; their tasks went back to open.` : ''}`,
+        root.mapping.agent.projectRoot);
+    }
+    return outcomes;
   }
 
   function openOf(sessionId: string) {
@@ -3797,6 +4049,21 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       return open.sort(([, a], [, b]) => depth(a) - depth(b)).map(([id, session]) => snapshot(id, session));
     },
 
+    recoverable() {
+      return [...inherited];
+    },
+
+    recover(rootId, { continueRoot = false } = {}) {
+      return enqueue(() => recoverTree(rootId, continueRoot));
+    },
+
+    async abandon(rootId, reason) {
+      const entries = inherited.filter(entry => entry.rootId === rootId);
+      inherited = inherited.filter(entry => entry.rootId !== rootId);
+      for (const entry of entries) await abandonEntry(entry, reason);
+      return entries.map(entry => ({ assignmentId: entry.assignmentId, agent: entry.agent, outcome: 'failed' as const, error: reason }));
+    },
+
     async shutdown() {
       closed = true;
 
@@ -3816,6 +4083,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       await runLogWrites;
       await forgetting;
       await recalls.flush();
+      await inFlight.flush();
       for (const timer of resumeTimers.values()) clearTimeout(timer);
       await pauseWrites;
 
