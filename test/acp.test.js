@@ -127,7 +127,10 @@ test('ALP answers the agent\'s permission requests by its mode and profile, and 
   assert.match(runtime.questions()[0].body, /Its permission profile careful asks you each time/);
   runtime.answer(runtime.questions()[0].id, { text: 'Deny' });
   assert.equal((await ruled).text, 'permission: no');
-  const decisions = (await runLog()).filter(entry => entry.event === 'permission').map(entry => [entry.command, entry.decision, entry.asked ?? false]);
+  // The run log is written in the background.
+  const permissions = async () => (await runLog()).filter(entry => entry.event === 'permission');
+  await until(async () => (await permissions()).length === 3, 'three permission entries');
+  const decisions = (await permissions()).map(entry => [entry.command, entry.decision, entry.asked ?? false]);
   assert.deepEqual(decisions, [['rm -rf build', 'decline', false], [path.join(root, 'README.md'), 'accept', true], ['npm publish', 'decline', true]]);
   // The decision itself, without a session.
   const edit = file => acpPermission({ kind: 'edit', title: 'Edit', locations: [{ path: file }] }, []);
