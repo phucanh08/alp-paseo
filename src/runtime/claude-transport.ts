@@ -305,6 +305,9 @@ export class ClaudeTransport {
   /** The last rate limit Claude reported, and whether the running turn hit one. */
   private rateLimit?: { status: string; resetsAt?: number; overageStatus?: string; rateLimitType?: string; utilization?: number };
   private limitedTurn = false;
+  /** The model's context window, from the last result, or guessed from the model name before one. */
+  private contextWindow?: number;
+  private model?: string;
 
   constructor(
     private readonly command: string,
@@ -486,6 +489,7 @@ export class ClaudeTransport {
     const { settings: ruleSettings, ...permissions } = claudePermissions(config.sandbox, () => config.sandbox, rules,
       async request => (this.requestHandler ? await this.requestHandler('item/permission/request', request) as PermissionAnswer : { allow: false, message: 'No one can approve it' }));
     const settings = { ...(config.thinking === 'ultracode' ? { ultracode: true } : {}), ...ruleSettings };
+    this.model = config.model;
     const options = {
       cwd: config.cwd,
       env: this.env,
@@ -541,6 +545,20 @@ export class ClaudeTransport {
       return;
     }
     if (message.type === 'assistant' && message.error === 'rate_limit') this.limitedTurn = true;
+    // How full the context is, reported as Codex does: the tokens of the latest model call against the window.
+    const usage = message.type === 'assistant' && !message.parent_tool_use_id ? (message.message as any).usage : undefined;
+    if (usage) {
+      const totalTokens = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.output_tokens ?? 0);
+      const last = { totalTokens, inputTokens: usage.input_tokens ?? 0, cachedInputTokens: usage.cache_read_input_tokens ?? 0, outputTokens: usage.output_tokens ?? 0 };
+      this.emit('thread/tokenUsage/updated', {
+        threadId: this.threadId, turnId: this.activeTurn,
+        tokenUsage: { last, total: last, modelContextWindow: this.contextWindow ?? (/\[1m\]/i.test(this.model ?? '') ? 1_000_000 : 200_000) },
+      });
+    }
+    if (message.type === 'result') {
+      const windows = Object.values((message as any).modelUsage ?? {}).map((entry: any) => entry?.contextWindow).filter((value): value is number => typeof value === 'number' && value > 0);
+      if (windows.length) this.contextWindow = Math.max(...windows);
+    }
     if (message.type === 'assistant' && !message.parent_tool_use_id) {
       for (const block of message.message.content as any[]) {
         if (block.type === 'text') {

@@ -292,6 +292,25 @@ A task an earlier alpd held goes back to open only when that alpd is gone.
 ALP checks the pid and the time that process started, since a pid can be
 reused by another process.
 
+## Context fill
+
+ALP watches how full each session's context is and stays quiet until it
+matters. Past 60% it tells the session once to plan how it finishes; past 80%
+it tells it once to act before the runtime compacts the context:
+- an assignment finishes the step it is on and files `alp_handoff` with outcome
+  `partial` (what is done, what remains, where), and its requester continues the
+  rest in a fresh assignment;
+- main pins decisions and findings with `alp_pin`, updates task notes, and tells
+  the user when a fresh session would serve better.
+
+The note steers into a running turn, or waits for the next one without starting
+a turn. When the context drops below 50%, as after a compaction, the advice can
+come again. Supervisors are not advised. Each advice is logged as a `context`
+record, which `alp log` shows as `◔ peer context 85% full: told to hand off now`.
+Codex reports its fill itself; for Claude, ALP counts the tokens of each reply
+against the model's window (200k, or 1M for `[1m]` models, until a result reports
+the actual window).
+
 ## Pause and usage limits
 
 The user can hold ALP's work without losing it:
