@@ -4,6 +4,7 @@ import { resolveWorkflow } from '../core/workflow.js';
 import { initProject } from '../core/init.js';
 import { resolveAgent } from '../core/resolver.js';
 import { resolveTeam } from '../core/teams.js';
+import { loadHooks } from '../core/hooks.js';
 import { ensureLibrary } from '../core/library.js';
 import { compileAgent } from '../core/adapter.js';
 import { capMode, profileFor } from '../core/permissions.js';
@@ -60,7 +61,8 @@ async function exists(target: string) {
 /** Composes project and agent instructions with lazily referenced skills. */
 export class InstructionsAdapter implements AlpRuntimeAdapter<{ instructions: string; mcp: ResolvedAgent['mcp']; runtime: ResolvedAgent['runtime'] }> {
   id = 'native';
-  capabilities() { return { instructions: 'emulated', skills: 'emulated', hooks: 'unsupported', mcp: 'native' } as const; }
+  // ALP runs an agent's hooks itself, at its own events (ALPD §45).
+  capabilities() { return { instructions: 'emulated', skills: 'emulated', hooks: 'emulated', mcp: 'native' } as const; }
   async compile(agent: ResolvedAgent) {
     const skills = agent.skills.length ? `Available skills (read a SKILL.md only when needed):\n${agent.skills.map(s => `${JSON.stringify(s.name)}: ${JSON.stringify(s.path)}`).join('\n')}` : '';
     return { adapterId: this.id, agentName: agent.name, projectRoot: agent.projectRoot, material: {
@@ -148,8 +150,9 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
     }
   }
   const houseRules = base.houseRules;
+  const hooks = await loadHooks(agent);
   return {
-    agent, workflow, team, houseRules, runtimeKind: runtimeKind as RuntimeKind, model, mode, permissions, thinking, threadId: restored?.threadId,
+    agent, workflow, team, houseRules, hooks, runtimeKind: runtimeKind as RuntimeKind, model, mode, permissions, thinking, threadId: restored?.threadId,
     workdir: spec.workdir ?? agent.projectRoot,
     copy: Boolean(spec.copy && spec.workdir),
     ...(spec.copy && spec.copyOf ? { copyOf: spec.copyOf } : {}),
