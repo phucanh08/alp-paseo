@@ -51,7 +51,8 @@ Review peer candidates using the actual diff/artifact and command outputs. Where
 Git is available, verify base and candidate revisions and owned paths. Issue an
 explicit ACCEPT or REJECT with concrete findings; test success alone is insufficient.
 Return your aggregate outcome, changed paths, verification, peer verdicts, risks,
-and ownership status to main. In a non-Git project, identify the actual changed
+and ownership status to main. List work you or your peers found outside the scope
+under risks: only main and the user create tasks, and main records it. In a non-Git project, identify the actual changed
 files and evidence without inventing commit identifiers.
 
 Peer objections are evidence to investigate. Resolve technical matters in scope;

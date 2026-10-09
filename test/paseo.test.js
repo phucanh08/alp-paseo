@@ -273,7 +273,7 @@ test('a profile session shows Phở and Cafe, and main starts its supervisor as 
   assert.equal(childConfig.model, 'claude:claude-sonnet-4-6');
   assert.equal(childConfig.mode, 'read-only');
   const start = runtimes[1].calls.find(c => c.method === 'thread/start').params;
-  assert.deepEqual(start.dynamicTools.map(tool => tool.name), ['alp_send', 'alp_board']);
+  assert.deepEqual(start.dynamicTools.map(tool => tool.name), ['alp_send', 'alp_board', 'alp_task']);
   assert.match(start.developerInstructions, /Supervisor — process reviewer for main/);
   assert.ok(runtimes[0].calls.find(c => c.method === 'thread/start').params.dynamicTools.some(tool => tool.name === 'alp_lesson'));
 });
