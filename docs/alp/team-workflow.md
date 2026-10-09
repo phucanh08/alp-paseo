@@ -61,11 +61,65 @@ sets `runtime.provider` or `runtime.model`, or the caller passes a model
 or outside the project, without asking. The caller can choose `read-only` or
 `workspace-write` instead. A child inherits its requester's mode unless it asks for
 less, and never exceeds it; oracle, reviewer and supervisor are always read-only.
+A permission profile can cap an agent's mode and add rules (below).
 
 Default maximum simultaneous peers is **2**. Increase `workflow.maxPeers` only at
 the user's request, then start a new session. Peer limits count across the root
 session's live tree. Advisors and lead do not consume peer slots. Concurrent peers
 must be read-only or isolated.
+
+## Permission profiles
+
+A permission profile tunes what one agent may do. It caps the agent's mode at
+its `base`, lets it run what `allow` names even beyond that mode, and refuses what
+`deny` names in any mode. Profiles live in `permissions` in `.alp/settings.json`,
+which is committed with the project, and in the user's `$ALP_HOME/settings.json`:
+
+```json
+{
+  "permissions": {
+    "profiles": {
+      "review": {
+        "base": "read-only",
+        "allow": ["Bash(npm test:*)", "Bash(node --test:*)"],
+        "deny": ["Bash(rm:*)", "Bash(git push:*)"]
+      }
+    },
+    "agents": { "reviewer": "review", "auditor": "review", "lead": "workspace-write" }
+  }
+}
+```
+
+- Rules use Claude Code's syntax, for both runtimes:
+  - `Bash(npm test:*)` covers `npm test` and anything after it; `Bash(git status)` covers exactly that command; `Bash` alone covers every command.
+  - `Edit(src/**)`, `Read(...)`, `WebFetch(domain:example.com)` and `mcp__server__tool` name other tools.
+  - A misspelt tool name is refused when the settings load.
+- A command line is allowed only when allow rules cover each of its commands
+  (split at `&&`, `||`, `;`, `|`), and none writes a file through a redirect;
+  `2>&1` and `2>/dev/null` are fine. It is denied when a deny rule covers any one of them,
+  or when it substitutes a command (`$(...)`, backticks) while deny rules exist.
+- An agent names a profile, or one of the bases `read-only`,
+  `workspace-write` and `full-access` for a cap with no rules. A profile defined in
+  both files takes its base from the project and the rules of both; the
+  project's agent entries win over the user's.
+- Agents without an entry keep today's behavior. Oracle, reviewer and the
+  supervisor get a read-only profile, and settings cannot raise theirs.
+- A delegated child gets its own profile's cap. It still never exceeds its
+  requester's mode.
+- How each runtime enforces the rules:
+  - Claude gets them as its own allowed and disallowed tools. Deny rules hold
+    even with full access, and allowed commands run without asking.
+  - Codex runs commands inside its sandbox without asking. With allow rules in a
+    read-only or workspace-write session, Codex asks ALP before a command leaves
+    the sandbox; ALP accepts only what an allow rule covers. A full-access
+    session with Bash deny rules makes Codex ask before every command, and ALP
+    declines what a deny rule covers. Inside its sandbox, Codex does not ask, so
+    deny rules there only stop commands from leaving it.
+- Every Codex decision goes to the assignment log as a `permission` event. The
+  session's instructions list its profile's rules.
+
+`alp permissions` lists every agent's profile. `alp permissions check reviewer "npm test 2>&1"`
+says what a profile decides about a command.
 
 ## Parallel writers
 

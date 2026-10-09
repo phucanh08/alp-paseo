@@ -133,3 +133,15 @@ Details: [alpd §20](ALPD.md).
 For step 3 the user raised the Paseo requirement to `>=0.11.1 <0.12.0` on 2026-10-09. The Tasks panel uses the plugin client API that the spike verified on 0.11.1. Details: [alpd §22](ALPD.md).
 
 Step 4 adds beads JSONL import and export and formulas. TOML formulas use `smol-toml`, ALP's first runtime dependency besides the Claude SDK. The core stays free of packages: the CLI and the runtime pass the parser in. Details: [alpd §23](ALPD.md).
+
+## D19 — Permission profiles instead of fixed read-only agents
+
+Decided by the user on 2026-10-09. A read-only reviewer could not run tests. Claude refused Bash, and Codex's read-only sandbox refused every write, even to the temp directory. Instead of a fixed list of read-only agents, settings give agents permission profiles. A profile has a base mode that caps the agent, and allow, ask and deny rules in Claude Code's syntax for both runtimes. Profiles come from the project's `.alp/settings.json` and the user's `$ALP_HOME/settings.json`; deny wins. Without settings, behavior is unchanged. Only the user answers an `ask`: once, always (written to settings), or no. Main cannot grant permissions.
+
+The work runs in three steps, one PR each:
+1. Profiles and allow/deny rules, replacing the fixed list.
+2. `ask`, answered by the user.
+3. The OS sandbox as a floor (Claude's SDK sandbox, Codex's writable roots and network) and a disposable copy of the tree, so a reviewer can build and test without touching it.
+
+Details: [alpd §24](ALPD.md).
+

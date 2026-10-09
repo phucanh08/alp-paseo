@@ -5,6 +5,7 @@ import { initProject } from '../core/init.js';
 import { resolveAgent } from '../core/resolver.js';
 import { ensureLibrary } from '../core/library.js';
 import { compileAgent } from '../core/adapter.js';
+import { capMode, profileFor } from '../core/permissions.js';
 import type { ResolvedAgent } from '../core/types.js';
 import type { AlpRuntimeAdapter } from '../core/adapter.js';
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_MODEL, MAIN_MODEL, MAIN_THINKING, ORACLE_MODELS, ORACLE_THINKING, modes, thinkingOptions, thinkingOptionsFor } from './catalog.js';
@@ -70,7 +71,7 @@ async function lessons(file: string) {
   return text.length > LESSON_CHARS ? `…\n${text.slice(-LESSON_CHARS)}` : text;
 }
 
-/** Agents that never write: they advise, review, or watch. */
+/** Agents that advise, review, or watch: they never write, and take no tasks. */
 export const READ_ONLY_AGENTS = ['oracle', 'reviewer', 'supervisor'];
 
 export async function resolveSession(spec: SessionSpec, options: { templates?: Record<string, string>; library?: string } = {}) {
@@ -102,8 +103,10 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
   if (model.startsWith('claude/')) { runtimeKind = 'claude'; model = model.slice('claude/'.length); }
   if (!['codex', 'claude'].includes(runtimeKind)) throw new Error(`Unsupported ALP runtime provider '${runtimeKind}'`);
   if (restored?.runtime && runtimeKind !== restored.runtime) throw new Error('Cannot resume a thread with a different runtime provider');
-  // Main has full access unless the caller limits it.
-  const mode = READ_ONLY_AGENTS.includes(agent.name) ? 'read-only' : spec.mode ?? (agent.name === 'main' ? 'full-access' : 'read-only');
+  // Main has full access unless the caller limits it; a permission profile caps the mode at its base.
+  const permissions = await profileFor(agent.projectRoot, options.library, agent.name);
+  const requested = spec.mode ?? (agent.name === 'main' ? 'full-access' : 'read-only');
+  const mode = permissions ? capMode(requested, permissions.base) : requested;
   const availableThinking = thinkingOptionsFor(runtimeKind as RuntimeKind, model);
   const thinking = spec.thinking ?? agent.runtime.reasoning ??
     (profileModel ? MAIN_THINKING : agent.name === 'oracle' ? ORACLE_THINKING : availableThinking.length ? 'medium' : 'none');
@@ -135,7 +138,7 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
     }
   }
   return {
-    agent, workflow, runtimeKind: runtimeKind as RuntimeKind, model, mode, thinking, threadId: restored?.threadId,
+    agent, workflow, runtimeKind: runtimeKind as RuntimeKind, model, mode, permissions, thinking, threadId: restored?.threadId,
     workdir: spec.workdir ?? agent.projectRoot,
     instructions: [compiled.material.instructions, learned, spec.systemPrompt].filter(Boolean).join('\n\n'),
     mcp, env: { ...spec.env }, persist: spec.persist ?? false,

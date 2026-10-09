@@ -84,6 +84,17 @@ For example, select Claude Code and one of its model aliases in `.alp/settings.j
 
 The Paseo model picker shows only the two profiles, Phở and Cafe; a session's model and effort follow from the profile and are not chosen in Paseo. `runtime.model` in `.alp/settings.json`, or `--model` and `--thinking` on `alp run`, still override them. Those take runtime-prefixed IDs such as `codex:gpt-6.1-sol` or `claude:claude-opus-5-5`, or any native model name the installed Codex or Claude Code accepts.
 
+`permissions` in `.alp/settings.json` (and in `$ALP_HOME/settings.json`) gives agents permission profiles with Claude Code-style rules. A profile caps an agent's mode, lets it run commands beyond that mode, or refuses them in any mode. For example, a read-only reviewer may run the tests:
+
+```json
+"permissions": {
+  "profiles": { "review": { "base": "read-only", "allow": ["Bash(npm test:*)"], "deny": ["Bash(rm:*)"] } },
+  "agents": { "reviewer": "review" }
+}
+```
+
+`alp permissions` shows each agent's profile, and `alp permissions check <agent> "<command>"` tests a rule. Details: [Permission profiles](docs/alp/team-workflow.md#permission-profiles).
+
 Use `resolveAgent(projectRoot, { agent: 'your-agent' })` from `src/core/resolver.js` to resolve an agent without starting a runtime. Explicit selection overrides settings; missing settings default to `main`. There is no central agent registry.
 
 ## Daemon and CLI

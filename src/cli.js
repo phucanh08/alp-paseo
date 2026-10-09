@@ -11,6 +11,8 @@ import { upgradeProject } from './core/upgrade.js';
 import { seedLibrary } from './core/library.js';
 import { exportBeads, importBeads, parseJsonl } from './core/beads.js';
 import { findFormula, formulaDirs, listFormulas, pourFormula } from './core/formulas.js';
+import { commandDecision, profileFor } from './core/permissions.js';
+import { discoverAgents } from './core/resolver.js';
 import { parse as toml } from 'smol-toml';
 import { addGate, blockersOf, checkGates, childrenOf, closeTask, compactTasks, createTask, describeGate, gateOpen, gatesOf, linkTask, listTasks, loadTasks, readyTasks, reopenTask, resolveGate, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
 import { alpHome, connect, ensureDaemon, lockAlive, readLock } from './client/index.js';
@@ -27,6 +29,8 @@ const USAGE = `Usage:
   alp answer <question> <text> | alp answer <question> --dismiss [--reason R]
   alp log <session> [--json]
   alp board [--project DIR] [--json]
+  alp permissions [--project DIR] [--json]   each agent's permission profile
+  alp permissions check <agent> "<command>"  what that agent's profile says about a command
   alp tasks [ready] [--all] [--status S] [--label L] [--project DIR] [--json]
   alp tasks gates [--json]                 open gates; checks GitHub ones
   alp tasks compact [--days 30] [--dry-run]
@@ -481,6 +485,32 @@ const TASK_PAST = { create: 'created', update: 'updated', link: 'linked', start:
 const STATUS_MARK = { open: '○', in_progress: '◐', review: '◑', closed: '●' };
 
 /** The ALP project a task command works on: --project, or the current directory. */
+/** alp permissions: the profile each agent runs with, from .alp/settings.json and $ALP_HOME/settings.json. */
+async function permissionsCommand(args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { project: { type: 'string' }, json: { type: 'boolean' } } });
+  const root = await taskProject(values.project);
+  if (positionals[0] === 'check') {
+    if (positionals.length !== 3) throw new UsageError();
+    const profile = await profileFor(root, alpHome(), positionals[1]);
+    const decision = profile ? commandDecision(profile, positionals[2]) : undefined;
+    const result = { agent: positionals[1], profile: profile?.name ?? null, base: profile?.base ?? null, decision: decision ?? 'mode' };
+    if (values.json) { console.log(JSON.stringify(result)); return; }
+    console.log(decision === 'deny' ? `deny: a deny rule of profile ${profile.name} covers it`
+      : decision === 'allow' ? `allow: profile ${profile.name} lets ${result.agent} run it, even beyond its ${profile.base} mode`
+      : `no rule covers it: ${result.agent}'s mode decides${profile ? ` (at most ${profile.base})` : ''}`);
+    return;
+  }
+  if (positionals.length) throw new UsageError();
+  const rows = [];
+  for (const agent of await discoverAgents(root)) rows.push({ agent, profile: await profileFor(root, alpHome(), agent) });
+  if (values.json) { console.log(JSON.stringify(rows)); return; }
+  for (const { agent, profile } of rows) {
+    console.log(profile ? `${agent}  profile ${profile.name}, at most ${profile.base}` : `${agent}  no profile: the mode its requester or the user chooses`);
+    if (profile?.allow.length) console.log(`  allow: ${profile.allow.join(', ')}`);
+    if (profile?.deny.length) console.log(`  deny:  ${profile.deny.join(', ')}`);
+  }
+}
+
 async function taskProject(directory) {
   const root = path.resolve(directory ?? process.cwd());
   try { await access(path.join(root, '.alp')); }
@@ -732,7 +762,7 @@ async function interrupt(args) {
   console.log('Interrupted');
 }
 
-const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, interrupt };
+const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, interrupt };
 const [command, ...args] = process.argv.slice(2);
 try {
   if (!Object.hasOwn(commands, command)) throw new UsageError();

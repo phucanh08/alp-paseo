@@ -16,6 +16,7 @@ import { checkoutKey, commitWorktree, createWorktree, mergeWorktree, removeWorkt
 import { ALP_REPO, gh, projectRepo, type GitHubRunner } from './github.js';
 import { parse as toml } from 'smol-toml';
 import { findFormula, formulaDirs, listFormulas, pourFormula } from '../core/formulas.js';
+import { ADVISORS, capMode, commandDecision, profileFor, type PermissionProfile } from '../core/permissions.js';
 import { CLOSE_REASONS, GATE_KINDS, addGate, checkGates, resolveGate, TASK_STATUSES, TASK_TYPES, TASKS_DIR, blockersOf, childrenOf, closeTask, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, releaseTask, reopenTask, startRefusal, startTask, submitTask, summarize, taskDigest, updateTask, type Task } from '../core/tasks.js';
 
 export type RuntimeTransport = {
@@ -577,6 +578,37 @@ function createTransport(
  * The runtime therefore owns orchestration only; the transport adapters
  * preserve the full native harness underneath.
  */
+/**
+ * Codex runs commands inside its sandbox without asking. With 'on-request' it
+ * asks ALP before a command leaves the sandbox, which an allow rule permits;
+ * with 'untrusted' it asks before every command, which a full-access session
+ * with deny rules needs. Without Bash rules nothing changes: Codex never asks.
+ */
+function codexApproval(mapping: Pick<ResolvedSession, 'mode' | 'permissions'>) {
+  const bash = (rules: string[] = []) => rules.some(rule => /^Bash(\(|$)/.test(rule));
+  if (mapping.mode === 'full-access') return bash(mapping.permissions?.deny) ? 'untrusted' : 'never';
+  return bash(mapping.permissions?.allow) ? 'on-request' : 'never';
+}
+
+/** What the session's permission profile adds to its mode, for its instructions. */
+function permissionNote(mapping: Pick<ResolvedSession, 'mode' | 'permissions' | 'runtimeKind'>) {
+  const profile = mapping.permissions;
+  if (!profile || (!profile.allow.length && !profile.deny.length)) return [];
+  return [`Permissions: profile ${profile.name}, mode ${mapping.mode}.` +
+    (profile.allow.length ? ` Beyond your mode you may also use: ${profile.allow.join(', ')}.` : '') +
+    (profile.deny.length ? ` Never: ${profile.deny.join(', ')}.` : '') +
+    ' ALP refuses anything else your mode does not allow; do not try to work around a refusal, report it.' +
+    (mapping.runtimeKind === 'codex' && profile.allow.length && mapping.mode !== 'full-access' ? ' Other commands run in your sandbox. Run a command an allow rule covers with escalated permissions from the start: ALP approves it, and it runs outside the sandbox.' : '')];
+}
+
+/** The profiles of a coordinator's targets that change what it may expect of them. */
+function targetNote(profiles: Record<string, PermissionProfile | null>) {
+  const shown = Object.entries(profiles).filter(([agent, profile]) => profile && (profile.allow.length || profile.deny.length || !ADVISORS.includes(agent)));
+  if (!shown.length) return [];
+  return ['Permission profiles of your targets; an assignment never runs above its profile\'s mode, whatever mode you request, and may run what its allow rules name even beyond that mode, so brief it to: ' +
+    shown.map(([agent, profile]) => `${agent}: at most ${profile!.base}` + (profile!.allow.length ? `, may also run ${profile!.allow.join(', ')}` : '') + (profile!.deny.length ? `, never ${profile!.deny.join(', ')}` : '')).join('; ') + '.'];
+}
+
 function nativeSessionConfig(
   runtimeKind: RuntimeKind,
   mapping: ResolvedSession,
@@ -585,6 +617,7 @@ function nativeSessionConfig(
   role?: 'supervisor',
   supervised = false,
   lessonFiles: string[] = [],
+  targetProfiles: Record<string, PermissionProfile | null> = {},
 ) {
   if (role === 'supervisor') {
     return {
@@ -592,13 +625,15 @@ function nativeSessionConfig(
       cwd: mapping.workdir,
       model: mapping.model,
       sandbox: mapping.mode,
-      approvalPolicy: 'never',
+      approvalPolicy: codexApproval(mapping),
+      ...(runtimeKind === 'claude' ? { permissions: mapping.permissions } : {}),
       developerInstructions: [
         mapping.instructions,
         `Profile: ${mapping.workflow.mode}. ALP runtime identity: supervisor of ${parentAgent}. You are not an assignment: you file no handoff and delegate nothing. ` +
           `After each turn of ${parentAgent}, ALP sends you a digest of what happened in its session tree. ` +
           `When you find process mistakes, send ${parentAgent} one alp_send to: "parent", kind note, asking about them; it answers and records a lesson. ` +
           'Otherwise send nothing. Read files, alp_board and alp_task when the digest is not enough; never change anything. End each review with a one-line verdict.',
+        ...permissionNote(mapping),
         `Lessons main has recorded: ${lessonFiles.join(' and ')}. Read them when you review. When three or more cover one theme, or a recorded lesson recurred, also suggest that ${parentAgent} distill them into a skill with alp_skill. When a mistake comes from ALP itself (an unclear instruction, a missing tool, a runtime bug), suggest that ${parentAgent} propose an ALP issue with alp_issue. The user approves both.`,
       ].join('\n\n'),
       mcpServers: mapping.mcp,
@@ -631,10 +666,14 @@ function nativeSessionConfig(
     cwd: mapping.workdir,
     model: mapping.model,
     sandbox: runtimeKind === 'codex' && mapping.mode === 'full-access' ? 'danger-full-access' : mapping.mode,
-    approvalPolicy: 'never',
+    approvalPolicy: codexApproval(mapping),
+    // Claude only: Codex has a permissions field of its own.
+    ...(runtimeKind === 'claude' ? { permissions: mapping.permissions } : {}),
 
     developerInstructions: [
       mapping.instructions,
+      ...permissionNote(mapping),
+      ...targetNote(targetProfiles),
       `Profile: ${mapping.workflow.mode}; fixed for this session. In Phở (pho), main implements or directly delegates to peer; do not create lead. In Cafe (cafe), main supervises lead; lead may implement or delegate to peer. The technical coordinator chooses each peer's model and effort. Use oracle for significant uncertainty; use reviewer for logic changes and risky changes, not mandatory for typo/format fixes. Advisors return only to their requesting coordinator.`,
       `Oracle runs on ${ORACLE_MODELS.join(' or ')}; pass one as model (thinking defaults to high). For two independent opinions, start one oracle on each model with wait: false and compare their advice. If the model you need is unavailable, say so rather than choosing another. Usage context is advisory, may be unavailable or stale; never infer quota from token counts. Respect known exhausted limits and report them.`,
       ...(supervised
@@ -1050,6 +1089,26 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   const userQuestions = new Map<string, { question: UserQuestion; settle: (outcome: 'answered' | 'dismissed' | 'timeout' | 'canceled', answer?: string, reason?: string, result?: unknown) => void }>();
   let mailSequence = 0;
   let watchdog: NodeJS.Timeout | undefined;
+
+  /**
+   * Answers Codex when it asks to run a command or change files: a deny rule
+   * declines, an allow rule accepts, and otherwise only full access accepts.
+   */
+  function approve(sessionId: string, session: Session, method: string, params: any) {
+    if (method !== 'item/commandExecution/requestApproval' && method !== 'item/fileChange/requestApproval') throw new Error('Unsupported runtime request');
+    const profile = session.mapping.permissions;
+    const full = session.mapping.mode === 'full-access';
+    const command = method === 'item/commandExecution/requestApproval' && params?.kind !== 'writeStdin' && !params?.networkApprovalContext && typeof params?.command === 'string' ? params.command : undefined;
+    const rule = command !== undefined && profile ? commandDecision(profile, command) : undefined;
+    const decision = rule === 'deny' ? 'decline' : rule === 'allow' || full ? 'accept' : 'decline';
+    runLog(rootOf(sessionId), {
+      event: 'permission', agent: session.mapping.agent.name, sessionId,
+      request: command !== undefined ? 'command' : method === 'item/fileChange/requestApproval' ? 'file change' : 'other',
+      ...(command !== undefined ? { command: command.slice(0, 500) } : {}),
+      decision, ...(rule ? { rule } : {}), ...(profile ? { profile: profile.name } : {}),
+    });
+    return { decision };
+  }
 
   function rootOf(sessionId: string) {
     let id = sessionId;
@@ -2159,7 +2218,11 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
     if (args.model !== undefined && !/^(codex|claude):[^\s]+$/.test(args.model)) return toolResult(false, { error: 'Use a runtime-prefixed model ID' });
     if (args.agent === 'oracle' && !ORACLE_MODELS.includes(args.model)) return toolResult(false, { error: `Oracle runs on ${ORACLE_MODELS.join(' or ')}; pass one as model. For two opinions, start one on each with wait: false` });
-    const childMode = READ_ONLY_AGENTS.includes(args.agent) ? 'read-only' : args.mode ?? session.mapping.mode;
+    // The child's permission profile caps its mode, as resolving its session will.
+    const childProfile = await profileFor(session.mapping.agent.projectRoot, options.libraryDir, args.agent).catch(() => null);
+    const childMode = childProfile ? capMode(args.mode ?? session.mapping.mode, childProfile.base) : args.mode ?? session.mapping.mode;
+    const capped = childProfile && childMode !== (args.mode ?? session.mapping.mode)
+      ? { mode: childMode, modeNote: `${args.agent} runs ${childMode}: its permission profile ${childProfile.name} caps it` } : {};
     const isolation: Assignment['isolation'] = args.isolation ?? 'shared';
     if (isolation === 'worktree' && !writes(childMode)) return toolResult(false, { error: 'Worktree isolation is for writing assignments (mode workspace-write or full-access)' });
     const project = session.mapping.agent.projectRoot;
@@ -2344,7 +2407,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     watch();
 
     if (args.wait === false) {
-      return toolResult(true, { assignmentId: childId, agent: args.agent, status: 'running' });
+      return toolResult(true, { assignmentId: childId, agent: args.agent, status: 'running', ...capped });
     }
 
     // Waiting returns the result, or the child's first question so it can be answered.
@@ -2360,7 +2423,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
 
     const [event] = events;
-    if (event.kind === 'result') return toolResult(event.result!.status === 'completed', event.result);
+    if (event.kind === 'result') return toolResult(event.result!.status === 'completed', { ...event.result, ...capped });
     return toolResult(true, {
       assignmentId: childId,
       agent: args.agent,
@@ -2478,12 +2541,10 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     };
 
     runtime.onRequest?.(
-      (_method, params) =>
-        toolCall(
-          sessionId,
-          session,
-          params,
-        ),
+      async (method, params) =>
+        method === 'item/tool/call'
+          ? toolCall(sessionId, session, params)
+          : approve(sessionId, session, method, params),
     );
 
     sessions.set(
@@ -2559,6 +2620,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
           session.role,
           supervises(session),
           lessonFiles(mapping),
+          Object.fromEntries(await Promise.all(targets.map(async target => [target, await profileFor(mapping.agent.projectRoot, options.libraryDir, target).catch(() => null)] as const))),
         );
 
       const result = mapping.threadId
@@ -2655,7 +2717,10 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     if (session.active || session.pending || session.children.size) throw new Error('Wait for the current turn and child sessions to finish before changing permissions');
     const mode = changes.mode ?? session.mapping.mode;
     if (!modes.some(candidate => candidate.id === mode)) throw new Error(`Unsupported mode '${mode}'`);
-    if (READ_ONLY_AGENTS.includes(session.mapping.agent.name) && mode !== 'read-only') throw new Error('Advisors and the supervisor must remain read-only');
+    const profile = session.mapping.permissions;
+    if (profile && !withinMode(mode, profile.base)) {
+      throw new Error(READ_ONLY_AGENTS.includes(session.mapping.agent.name) ? 'Advisors and the supervisor must remain read-only' : `Permission profile ${profile.name} allows at most ${profile.base}`);
+    }
     const parent = session.parent ? sessions.get(session.parent) : undefined;
     if (parent && !withinMode(mode, parent.mapping.mode)) throw new Error('Child cannot exceed parent permissions');
     if (session.runtimeKind === 'claude') await session.runtime.request('session/configure', { sandbox: mode });
@@ -2820,6 +2885,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
                 input: nativeInput,
                 effort:
                   session.mapping.thinking,
+                approvalPolicy: codexApproval(session.mapping),
                 sandboxPolicy: session.mapping.mode === 'read-only'
                   ? { type: 'readOnly', networkAccess: false }
                   : session.mapping.mode === 'full-access'

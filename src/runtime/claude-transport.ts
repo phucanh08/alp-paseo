@@ -146,6 +146,8 @@ type NativeConfig = {
   }>;
   ephemeral?: boolean;
   threadId?: string;
+  /** The session's permission profile: rules Claude enforces itself, in every permission mode. */
+  permissions?: { allow: string[]; deny: string[] } | null;
 };
 
 class InputQueue implements AsyncIterable<SDKUserMessage> {
@@ -184,7 +186,7 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
 /** Claude's permission mode for an ALP mode; full-access skips every permission check. */
 export const claudePermissionMode = (sandbox: string) => sandbox === 'read-only' ? 'default' : sandbox === 'full-access' ? 'bypassPermissions' : 'acceptEdits';
 
-export function claudePermissions(sandbox: string, currentSandbox?: () => string) {
+export function claudePermissions(sandbox: string, currentSandbox?: () => string, rules?: { allow: string[]; deny: string[] } | null) {
   const readOnly = sandbox === 'read-only';
   const readers = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'];
   return {
@@ -195,7 +197,9 @@ export function claudePermissions(sandbox: string, currentSandbox?: () => string
     // Lets a live session switch to full-access later; it bypasses nothing by itself.
     allowDangerouslySkipPermissions: true,
     ...(readOnly && !currentSandbox ? { tools: readers } : {}),
-    disallowedTools: ['Agent', 'Task', 'TeamCreate', 'EnterPlanMode', 'ExitPlanMode'],
+    // Allow rules run without asking, even in a read-only session; deny rules hold even with full access.
+    ...(rules?.allow.length ? { allowedTools: rules.allow } : {}),
+    disallowedTools: ['Agent', 'Task', 'TeamCreate', 'EnterPlanMode', 'ExitPlanMode', ...(rules?.deny ?? [])],
     canUseTool: async (name: string, input: Record<string, unknown>) => {
       if ((currentSandbox ? currentSandbox() === 'read-only' : readOnly) && !readers.includes(name) && !name.startsWith('mcp__alp__')) {
         return { behavior: 'deny', message: 'ALP session is read-only' };
@@ -396,7 +400,7 @@ export class ClaudeTransport {
       thinking: ['none', 'off'].includes(config.thinking) ? { type: 'disabled' } : { type: 'adaptive' },
       ...(config.thinking === 'ultracode' ? { settings: { ultracode: true } } : {}),
       systemPrompt: config.developerInstructions,
-      ...claudePermissions(config.sandbox, () => config.sandbox),
+      ...claudePermissions(config.sandbox, () => config.sandbox, config.permissions),
       mcpServers,
       strictMcpConfig: true,
       settingSources: [],
