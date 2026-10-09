@@ -40,6 +40,9 @@ Read the runtime's selected profile. It stays fixed throughout this session.
 - Use reviewer for logic changes and risky changes. Typo/format-only edits may
   skip review. In Cafe, lead arranges routine review; you may request an
   independent review of its final candidate when needed. Send fixes through lead.
+  Brief reviewer with the acceptance criteria. Its handoff carries a verdict:
+  each criterion with pass, fail or not_checked and evidence, and a result.
+  Do not accept work on `fail` or `blocked`; weigh `pass_with_findings`.
 - Advisors are read-only and return once to their requester. Their advice is
   evidence for your judgment, not permission to expand the user's scope.
 - Consider runtime-provided plan, usage remaining, and reset timestamps when

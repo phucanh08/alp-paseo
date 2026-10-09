@@ -895,6 +895,23 @@ to files instead.
 the child's final message. Interim messages stay in the child timeline and are no
 longer concatenated into the result.
 
+**Review verdicts.** A review ends in a fixed verdict, filed as the handoff's
+`verdict`:
+- `criteria`: each acceptance criterion with `pass`, `fail` or `not_checked`,
+  and its evidence;
+- `findings`: each with severity (`critical`, `high`, `medium`, `low`), where,
+  the problem and the fix;
+- `result`: `fail` when a criterion failed or a finding is critical or high,
+  `pass_with_findings` when only medium or low findings remain, `pass` when there
+  is nothing to fix, and `blocked` when the review could not be done.
+
+ALP refuses a verdict whose result does not follow from its criteria and
+findings, and refuses a `complete` handoff from reviewer without one. Any other
+agent may add a verdict too. The verdict reaches the requester with the handoff,
+stays on the task, and shows in main's list of tasks to accept
+(`handoff complete, verdict fail`) and in `alp log`. Main and lead brief reviewer
+with the acceptance criteria and do not accept work on `fail` or `blocked`.
+
 ## Recalling an assignment
 
 A handoff says what an assignment did, not always why. `alp_recall` asks a

@@ -497,7 +497,7 @@ async function log(args) {
         text = `${entry.parentAgent} → ${entry.agent} (${entry.mode}${entry.isolation === 'worktree' ? ', worktree' : ''}, ${entry.model}${entry.wait === false ? ', async' : ''}): ${entry.task.split('\n')[0].slice(0, 120)}`;
         break;
       case 'assignment.finished':
-        text = `${entry.agent} ${entry.status} after ${duration(entry.durationMs ?? 0)}${entry.handoff ? `, handoff ${entry.handoff.outcome}: ${entry.handoff.summary.split('\n')[0].slice(0, 120)}` : ''}${entry.error ? `: ${entry.error}` : ''}${entry.reconciled ? ' (after a restart)' : ''}`;
+        text = `${entry.agent} ${entry.status} after ${duration(entry.durationMs ?? 0)}${entry.handoff ? `, handoff ${entry.handoff.outcome}${entry.handoff.verdict ? `, verdict ${entry.handoff.verdict.result.toUpperCase()}` : ''}: ${entry.handoff.summary.split('\n')[0].slice(0, 120)}` : ''}${entry.error ? `: ${entry.error}` : ''}${entry.reconciled ? ' (after a restart)' : ''}`;
         break;
       case 'mail':
         // Board pins are logged once, as board.pin, not per reader.

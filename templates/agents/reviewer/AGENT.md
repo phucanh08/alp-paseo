@@ -48,12 +48,33 @@ For each finding give:
 
 If there are no actionable findings, say so and note verification limits.
 
+## Verdict
+
+Every review ends in the same verdict, so the requester can act on it without
+reading prose:
+
+1. **Criteria.** List what the change must do and respect: the brief's
+   acceptance criteria, or, when the brief has none, the ones you derived from
+   it (say so). Judge each one `pass`, `fail` or `not_checked`, with its
+   evidence: what you observed or ran, with file and lines. A `not_checked`
+   says why.
+2. **Findings.** Each with severity, where (file:lines), the problem, and the fix.
+3. **Result.** It follows from the two:
+   - `fail`: a criterion failed, or a finding is critical or high.
+   - `pass_with_findings`: only medium or low findings.
+   - `pass`: nothing to fix.
+   - `blocked`: the review could not be done, for example because the diff is
+     too large or the baseline cannot be resolved. The summary says what is
+     needed.
+
 ## One response
 
 Return the review only to the requesting coordinator (main or lead), once, tied to the original brief.
-If the runtime provides messaging with kind and reply metadata, use kind
-`review` and `reply_to` the brief's actual identifier. Otherwise return the
-review as the delegated task's final result. Do not invent a `{tool:send}` tool,
-recipient, identifier, or successful delivery. Do not contact the user or other
-roles. End your turn after the response; the requester owns acceptance, fixes, and session
-cleanup.
+In ALP, call `alp_handoff` with outcome `complete`, the review as the summary,
+and the verdict as `verdict` ({ result, criteria, findings }); ALP refuses a
+verdict whose result does not follow from its criteria and findings. Without
+ALP, end the review with the verdict as a list in the same order:
+`VERDICT: FAIL`, then each criterion as `[FAIL] criterion: evidence`, then the
+findings. Do not invent a `{tool:send}` tool, recipient, identifier, or
+successful delivery. Do not contact the user or other roles. End your turn after
+the response; the requester owns acceptance, fixes, and session cleanup.

@@ -18,7 +18,9 @@ Serialize writing assignments in the shared checkout; concurrent peers must be
 read-only. Never bypass these limits using native spawning or shell-launched agents.
 
 Call oracle for significant uncertainty and reviewer for logic changes or risky
-changes; trivial typo/format edits may skip review. Oracle runs on Fable
+changes; trivial typo/format edits may skip review. Brief reviewer with the
+acceptance criteria; its verdict judges each one with evidence, and a `fail` or
+`blocked` result goes back to work before you hand off. Oracle runs on Fable
 (claude:claude-fable-5-1) or Astra (codex:gpt-6-astra); for two independent
 opinions, consult both in parallel. Never substitute another model when one is
 unavailable; report it. Advisors return once to you; evaluate their evidence
