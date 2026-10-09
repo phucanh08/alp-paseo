@@ -4,7 +4,7 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { initProject } from '../src/core/init.js';
-import { createAlpRuntime } from '../dist/runtime/index.js';
+import { claudeToolShapes, createAlpRuntime } from '../dist/runtime/index.js';
 
 async function until(check) {
   for (let i = 0; i < 200; i++) { if (check()) return; await new Promise(resolve => setTimeout(resolve, 5)); }
@@ -140,13 +140,19 @@ test('interrupt closes the subtree and a failed prompt is reported once', async 
   await assert.rejects(runtime.configure('missing', {}), /Session is not open/);
 });
 
-test('every ALP tool the runtime offers has a Claude tool schema', async () => {
-  const runtime = await readFile(new URL('../src/runtime/runtime.ts', import.meta.url), 'utf8');
-  const claude = await readFile(new URL('../src/runtime/claude-transport.ts', import.meta.url), 'utf8');
-  const offered = new Set([...runtime.matchAll(/name: '(alp_\w+)'/g)].map(match => match[1]));
-  assert.ok(offered.size >= 7, [...offered].join(', '));
-  for (const name of offered) assert.match(claude, new RegExp(`\\b${name}: \\{`), `${name} has no Claude schema`);
-  const delegate = runtime.slice(runtime.indexOf("name: 'alp_delegate'"), runtime.indexOf("required: ['agent', 'task']"));
-  const shape = claude.slice(claude.indexOf('alp_delegate: {'), claude.indexOf('alp_wait: {'));
-  for (const [, property] of delegate.matchAll(/^\s+(\w+): \{/gm)) if (property !== 'properties' && property !== 'inputSchema') assert.match(shape, new RegExp(`\\b${property}:`), `alp_delegate.${property} has no Claude schema`);
+test('every ALP tool the runtime offers has a Claude tool schema with the same properties', async t => {
+  const { root, runtime, runtimes } = await setup(t);
+  await runtime.open('root', { cwd: root, mode: 'read-only' });
+  await runtime.prompt('root', prompt('first', 'Delegate'));
+  void runtimes[0].call('alp_delegate', { agent: 'lead', task: 'Work' });
+  await until(() => runtimes[1]?.calls.some(call => call.method === 'thread/start'));
+  const offered = new Map();
+  for (const harness of runtimes) {
+    for (const tool of harness.calls.find(call => call.method === 'thread/start').params.dynamicTools) offered.set(tool.name, Object.keys(tool.inputSchema.properties).sort());
+  }
+  assert.deepEqual([...offered.keys()].sort(), ['alp_ask', 'alp_delegate', 'alp_discard', 'alp_handoff', 'alp_merge', 'alp_send', 'alp_wait']);
+  for (const [name, properties] of offered) {
+    assert.ok(claudeToolShapes[name], `${name} has no Claude schema`);
+    assert.deepEqual(Object.keys(claudeToolShapes[name]).sort(), properties, `${name} properties differ for Claude`);
+  }
 });

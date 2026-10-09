@@ -52,6 +52,30 @@ export type AssignmentSnapshot = {
 
 export type TurnOrigin = 'user' | 'wake' | 'assignment';
 
+/** A question an agent asked the user with alp_ask to: "user". */
+export type UserQuestion = {
+  id: string;
+  sessionId: string;
+  rootId: string;
+  agent: string;
+  body: string;
+  options?: string[];
+  askedAt: string;
+};
+
+export type SessionState = 'running' | 'waiting' | 'waiting_parent' | 'waiting_user' | 'idle';
+
+/** A live tree at one moment, for dashboards (plans/reference/ALPD.md §17). */
+export type TreeStatus = {
+  rootId: string;
+  sessions: Array<SessionSnapshot & { state: SessionState; idleMs: number; workdir: string; unreadMail: number }>;
+  assignments: Array<AssignmentSnapshot & { requester: string; isolation: 'shared' | 'worktree'; idleMs: number }>;
+  questions: UserQuestion[];
+  /** Finished worktree assignments waiting for alp_merge or alp_discard. */
+  worktrees: Array<{ assignmentId: string; requester: string; agent: string; branch: string; files: string[]; stat: string }>;
+  leases: Array<{ checkout: string; assignmentId: string; agent: string }>;
+};
+
 export type AlpEvent =
   | { type: 'session.opened'; session: SessionSnapshot; cwd: string; effective: { model: string; thinking: string } }
   | { type: 'session.ready' }
@@ -64,7 +88,9 @@ export type AlpEvent =
   | { type: 'turn.ended'; turnId: string; state: 'completed' | 'failed' | 'canceled'; error?: AlpError }
   | { type: 'item'; item: TimelineItem }
   | { type: 'mail'; mail: Omit<MailEvent, 'passive' | 'deliveredTurn'> }
-  | { type: 'assignment'; assignment: AssignmentSnapshot };
+  | { type: 'assignment'; assignment: AssignmentSnapshot }
+  | { type: 'question'; question: UserQuestion }
+  | { type: 'question.resolved'; questionId: string; outcome: 'answered' | 'dismissed' | 'timeout' | 'canceled'; answer?: string };
 
 export type Envelope = {
   sessionId: string;

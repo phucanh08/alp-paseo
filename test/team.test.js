@@ -399,7 +399,7 @@ test('unanswered questions time out and children only mail notes to their reques
   await started(runtimes, 1);
   assert.equal((await runtimes[1].call('alp_send', { to: 'parent', kind: 'steer', body: 'do it' }, 'child-steer')).success, false);
   assert.equal((await runtimes[1].call('alp_send', { to: start.assignmentId, kind: 'note', body: 'self' }, 'child-self')).success, false);
-  assert.equal((await runtimes[0].call('alp_ask', { question: 'root has no requester' }, 'root-ask')).success, false);
+  assert.match(decode(await runtimes[0].call('alp_ask', { question: 'root has no requester', to: 'parent' }, 'root-ask')).error, /no requester/);
   const unanswered = decode(await runtimes[1].call('alp_ask', { question: 'anyone?' }, 'ask'));
   assert.equal(unanswered.status, 'unanswered');
   const waited = decode(await runtimes[0].call('alp_wait', { timeoutMs: 5 }, 'stale'));

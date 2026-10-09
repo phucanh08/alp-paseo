@@ -21,7 +21,7 @@ type ClaudeQuery = AsyncGenerator<SDKMessage, void> & {
 
 // Zod mirrors of the provider's dynamic tool schemas; the provider validates again.
 const handoffList = z.array(z.string().min(1)).max(100).optional();
-const toolShapes: Record<string, Record<string, z.ZodType>> = {
+export const toolShapes: Record<string, Record<string, z.ZodType>> = {
   alp_delegate: {
     agent: z.string().min(1),
     task: z.string().min(1).max(32_000),
@@ -50,6 +50,8 @@ const toolShapes: Record<string, Record<string, z.ZodType>> = {
   },
   alp_ask: {
     question: z.string().min(1).max(8000),
+    to: z.enum(['parent', 'user']).optional(),
+    options: z.array(z.string().min(1).max(200)).max(10).optional(),
   },
   alp_handoff: {
     outcome: z.enum(['complete', 'partial', 'blocked', 'reconsider']),

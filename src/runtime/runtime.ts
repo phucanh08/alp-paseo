@@ -8,8 +8,8 @@ import { CodexTransport } from './transport.js';
 import { ClaudeTransport } from './claude-transport.js';
 import { modes } from './catalog.js';
 import { resolveSession, type ResolvedSession, type RuntimeKind, type SessionSpec } from './resolve.js';
-import { MAIL_BODY_CHARS, publicEvent, renderMail, takeBatch, type MailEvent } from './mailbox.js';
-import type { AlpEvent, AssignmentSnapshot, Envelope, SessionSnapshot, TurnOrigin } from './events.js';
+import { MAIL_BODY_CHARS, publicEvent, renderMail, takeBatch, USER, type MailEvent } from './mailbox.js';
+import type { AlpEvent, AssignmentSnapshot, Envelope, SessionSnapshot, TreeStatus, TurnOrigin, UserQuestion } from './events.js';
 import { checkoutKey, commitWorktree, createWorktree, mergeWorktree, removeWorktree, type Worktree, type WorktreeChange } from './workspace.js';
 
 export type RuntimeTransport = {
@@ -41,6 +41,8 @@ export type RuntimeOptions = {
   silentForMs?: number;
   /** How long alp_ask waits for the requester before returning unanswered. */
   askTimeoutMs?: number;
+  /** How long alp_ask waits for the user before returning unanswered. Default 30 minutes. */
+  userAskTimeoutMs?: number;
 
   /** Directory for per-root-session assignment logs (JSONL). Omitted disables logging. */
   runLogDir?: string;
@@ -81,6 +83,14 @@ export type AlpRuntime = {
   snapshot(sessionId: string): SessionSnapshot | undefined;
   /** Live sessions, roots before their children. */
   list(): SessionSnapshot[];
+  /** The live tree containing a session: sessions, assignments, questions, worktrees and leases. */
+  status(sessionId: string): TreeStatus | undefined;
+  /** Questions agents asked the user that wait for an answer. */
+  questions(): UserQuestion[];
+  /** Answers or dismisses a question to the user. */
+  answer(questionId: string, reply: { text?: string; dismiss?: boolean; reason?: string }): void;
+  /** Mails a note from the user to any live session, such as an assignment the user wants to redirect. */
+  message(sessionId: string, text: string): void;
   shutdown(): Promise<void>;
 };
 
@@ -249,10 +259,14 @@ const DISCARD_TOOL = {
 const ASK_TOOL = {
   type: 'function',
   name: 'alp_ask',
-  description: 'Ask your requester a question and wait for the answer. Returns unanswered after the ask timeout.',
+  description: 'Ask a question and wait for the answer: your requester (default), or the user for a decision only they can make. Returns unanswered after the ask timeout.',
   inputSchema: {
     type: 'object',
-    properties: { question: { type: 'string' } },
+    properties: {
+      question: { type: 'string' },
+      to: { type: 'string', enum: ['parent', 'user'], description: 'parent (default for assignments) or user (the only choice for a session without a requester).' },
+      options: { type: 'array', items: { type: 'string' }, description: 'Suggested answers for the user; they may answer otherwise.' },
+    },
     required: ['question'],
     additionalProperties: false,
   },
@@ -355,8 +369,10 @@ function nativeSessionConfig(
 
       `ALP runtime identity: ${mapping.agent.name}. ${delegationInstruction}`,
 
+      ...(!parentAgent ? ['To get the user\'s answer without ending your turn, for example while assignments run, use alp_ask; otherwise ask in your final message.'] : []),
+
       ...(parentAgent
-        ? [`This session is an assignment from ${parentAgent}. If a decision is genuinely theirs, ask with alp_ask (it waits for the answer); send information they need now with alp_send to: "parent", kind note. You cannot reach other assignments directly; ${parentAgent} relays. Before ending your turn, call alp_handoff with outcome, summary, and the evidence fields that apply (candidate, scope, verification, risks, ownership). Calling it again replaces the earlier handoff. Then end with a one-line final message.`]
+        ? [`This session is an assignment from ${parentAgent}. If a decision is genuinely theirs, ask with alp_ask (it waits for the answer); only a decision that neither you nor ${parentAgent} can make goes to the user with alp_ask to: "user"; send information they need now with alp_send to: "parent", kind note. You cannot reach other assignments directly; ${parentAgent} relays. Before ending your turn, call alp_handoff with outcome, summary, and the evidence fields that apply (candidate, scope, verification, risks, ownership). Calling it again replaces the earlier handoff. Then end with a one-line final message.`]
         : []),
     ].join('\n\n'),
 
@@ -409,7 +425,8 @@ function nativeSessionConfig(
       : []),
       ...(targets.length ? [WAIT_TOOL, MERGE_TOOL, DISCARD_TOOL] : []),
       ...(targets.length || parentAgent ? [SEND_TOOL] : []),
-      ...(parentAgent ? [HANDOFF_TOOL, ASK_TOOL] : []),
+      ...(parentAgent ? [HANDOFF_TOOL] : []),
+      ASK_TOOL,
     ],
   };
 }
@@ -499,6 +516,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       clearTimeout(waiter.timer);
       waiter.resolve(null);
     }
+    cancelQuestions(sessionId);
     if (session.parent) sessions.get(session.parent)?.assignments.get(sessionId)?.ask?.resolve(toolResult(false, { error: 'Turn ended' }));
 
     // Mail is acknowledged only by a turn that completed; otherwise it is delivered again.
@@ -650,6 +668,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     if (!session || session.closed) return;
 
     session.closed = true;
+    cancelQuestions(sessionId);
 
     await Promise.all(
       [...session.children].map(closeSession),
@@ -705,6 +724,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
   const silentForMs = options.silentForMs ?? 600_000;
   const askTimeoutMs = options.askTimeoutMs ?? 900_000;
+  const userAskTimeoutMs = options.userAskTimeoutMs ?? 1_800_000;
+  const userQuestions = new Map<string, { question: UserQuestion; settle: (outcome: 'answered' | 'dismissed' | 'timeout' | 'canceled', answer?: string, reason?: string, result?: unknown) => void }>();
   let mailSequence = 0;
   let watchdog: NodeJS.Timeout | undefined;
 
@@ -1112,14 +1133,68 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     return toolResult(true, { sent: post(assignment.id, { kind: args.kind, from, assignment: assignment.id, body: args.body, ...(args.replyTo ? { replyTo: args.replyTo } : {}) }).id });
   }
 
+  /** Asks the user; viewers show the question, and answer() or a timeout resolves it. */
+  function askUser(sessionId: string, session: Session, assignment: Assignment | undefined, body: string, options?: string[]) {
+    const rootId = rootOf(sessionId);
+    const question: UserQuestion = {
+      id: `q-${randomUUID().slice(0, 8)}`,
+      sessionId,
+      rootId,
+      agent: session.mapping.agent.name,
+      body,
+      ...(options?.length ? { options } : {}),
+      askedAt: new Date().toISOString(),
+    };
+    return new Promise<unknown>(resolve => {
+      let timer: NodeJS.Timeout | undefined;
+      const settle = (outcome: 'answered' | 'dismissed' | 'timeout' | 'canceled', answer?: string, reason?: string, result?: unknown) => {
+        if (!userQuestions.delete(question.id)) return;
+        clearTimeout(timer);
+        if (assignment?.ask?.id === question.id) assignment.ask = undefined;
+        session.lastActivity = Date.now();
+        emit(sessionId, { type: 'question.resolved', questionId: question.id, outcome, ...(answer !== undefined ? { answer } : {}) });
+        runLog(rootId, { event: 'human.answer', questionId: question.id, sessionId, agent: question.agent, outcome, ...(answer !== undefined ? { answer } : {}), ...(reason ? { reason } : {}) });
+        resolve(result ?? (outcome === 'answered'
+          ? toolResult(true, { status: 'answered', from: 'user', answer })
+          : toolResult(true, {
+            status: outcome === 'dismissed' ? 'dismissed' : 'unanswered',
+            question: question.id,
+            ...(reason ? { reason } : {}),
+            next: 'Decide, and record the assumption in your handoff or final message; or report that you are blocked.',
+          })));
+      };
+      userQuestions.set(question.id, { question, settle });
+      // The watchdog does not count time spent waiting for an answer.
+      if (assignment) assignment.ask = { id: question.id, resolve: result => settle('canceled', undefined, undefined, result) };
+      emit(sessionId, { type: 'question', question });
+      runLog(rootId, { event: 'human.question', questionId: question.id, sessionId, agent: question.agent, body, ...(options?.length ? { options } : {}) });
+      timer = setTimeout(() => settle('timeout'), userAskTimeoutMs);
+    });
+  }
+
+  /** Questions to the user end with the turn or session that asked them. */
+  function cancelQuestions(sessionId: string) {
+    for (const { question, settle } of [...userQuestions.values()]) {
+      if (question.sessionId === sessionId) settle('canceled', undefined, undefined, toolResult(false, { error: 'Turn ended' }));
+    }
+  }
+
   function askTool(sessionId: string, session: Session, args: unknown) {
     const parent = session.parent ? sessions.get(session.parent) : undefined;
     const assignment = parent?.assignments.get(sessionId);
-    if (!session.parent || !parent || !assignment) return Promise.resolve(toolResult(false, { error: 'Only assignment sessions can ask their requester' }));
-    if (!plainObject(args, ['question']) || typeof args.question !== 'string' || !args.question.trim() || args.question.length > MAIL_BODY_CHARS) {
+    if (!plainObject(args, ['question', 'to', 'options']) || typeof args.question !== 'string' || !args.question.trim() || args.question.length > MAIL_BODY_CHARS) {
       return Promise.resolve(toolResult(false, { error: `question is required, at most ${MAIL_BODY_CHARS} characters` }));
     }
-    if (assignment.ask) return Promise.resolve(toolResult(false, { error: 'A question is already waiting for an answer' }));
+    const to = args.to ?? (assignment ? 'parent' : 'user');
+    if (to !== 'parent' && to !== 'user') return Promise.resolve(toolResult(false, { error: 'to must be parent or user' }));
+    if (args.options !== undefined && (to !== 'user' || !Array.isArray(args.options) || args.options.length > 10 || !args.options.every((option: unknown) => typeof option === 'string' && option.trim() && option.length <= 200))) {
+      return Promise.resolve(toolResult(false, { error: 'options are up to 10 short answers, for questions to the user' }));
+    }
+    if (assignment?.ask || [...userQuestions.values()].some(pending => pending.question.sessionId === sessionId)) {
+      return Promise.resolve(toolResult(false, { error: 'A question is already waiting for an answer' }));
+    }
+    if (to === 'user') return askUser(sessionId, session, assignment, args.question, args.options);
+    if (!session.parent || !parent || !assignment) return Promise.resolve(toolResult(false, { error: 'This session has no requester; ask the user with to: "user"' }));
     const parentId = session.parent;
     return new Promise<unknown>(resolve => {
       const question = post(parentId, { kind: 'question', from: session.mapping.agent.name, assignment: sessionId, body: args.question });
@@ -1889,6 +1964,72 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     snapshot(sessionId) {
       const session = sessions.get(sessionId);
       return session && !session.closed ? snapshot(sessionId, session) : undefined;
+    },
+
+    status(sessionId) {
+      const rootId = rootOf(sessionId);
+      const root = sessions.get(rootId);
+      if (!root || root.closed) return undefined;
+      const now = Date.now();
+      const tree: Array<[string, Session]> = [];
+      const visit = (id: string) => {
+        const session = sessions.get(id);
+        if (!session || session.closed) return;
+        tree.push([id, session]);
+        for (const child of session.children) visit(child);
+      };
+      visit(rootId);
+      const questions = [...userQuestions.values()].map(pending => pending.question).filter(question => question.rootId === rootId);
+      const asking = new Set(questions.map(question => question.sessionId));
+      const ids = new Set(tree.map(([id]) => id));
+      return {
+        rootId,
+        sessions: tree.map(([id, session]) => {
+          const parent = session.parent ? sessions.get(session.parent) : undefined;
+          const waitingParent = !!parent?.assignments.get(id)?.ask && !asking.has(id);
+          const snap = snapshot(id, session);
+          return {
+            ...snap,
+            state: asking.has(id) ? 'waiting_user' as const : waitingParent ? 'waiting_parent' as const : session.active ? 'running' as const : snap.busy ? 'waiting' as const : 'idle' as const,
+            idleMs: now - session.lastActivity,
+            workdir: session.mapping.workdir,
+            unreadMail: session.mail.filter(event => !event.deliveredTurn && !event.passive).length,
+          };
+        }),
+        assignments: tree.flatMap(([id, session]) => [...session.assignments.values()].map(assignment => ({
+          ...assignmentSnapshot(assignment, asking.has(assignment.id) ? 'waiting_user' : assignment.ask ? 'waiting_parent' : 'running'),
+          requester: id,
+          isolation: assignment.isolation,
+          idleMs: now - (sessions.get(assignment.id)?.lastActivity ?? assignment.startedAt),
+        }))),
+        questions,
+        worktrees: tree.flatMap(([id, session]) => [...session.worktrees].map(([assignmentId, pending]) => ({
+          assignmentId, requester: id, agent: pending.agent, branch: pending.worktree.branch, files: pending.change.files, stat: pending.change.stat,
+        }))),
+        leases: [...leases].filter(([, holder]) => ids.has(holder.assignment)).map(([checkout, holder]) => ({ checkout, assignmentId: holder.assignment, agent: holder.agent })),
+      };
+    },
+
+    questions() {
+      return [...userQuestions.values()].map(pending => pending.question);
+    },
+
+    message(sessionId, text) {
+      openOf(sessionId);
+      if (typeof text !== 'string' || !text.trim() || text.length > MAIL_BODY_CHARS) throw new Error(`A message needs text of at most ${MAIL_BODY_CHARS} characters`);
+      post(sessionId, { kind: 'note', from: USER, assignment: sessionId, body: text });
+    },
+
+    answer(questionId, reply) {
+      const pending = userQuestions.get(questionId);
+      if (!pending) throw new Error(`No question ${questionId} waits for an answer`);
+      if (reply.dismiss) {
+        pending.settle('dismissed', undefined, reply.reason);
+        return;
+      }
+      if (typeof reply.text !== 'string' || !reply.text.trim()) throw new Error('An answer needs text');
+      if (reply.text.length > MAIL_BODY_CHARS) throw new Error(`An answer is at most ${MAIL_BODY_CHARS} characters`);
+      pending.settle('answered', reply.text);
     },
 
     list() {
