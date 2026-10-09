@@ -363,7 +363,9 @@ export class AcpTransport {
       await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socket, () => resolve()); });
       this.bridge = { server, socket, token, connections };
     }
-    return { name: 'alp', command: process.execPath, args: ['-e', BRIDGE], env: [{ name: 'ALP_BRIDGE_SOCKET', value: this.bridge.socket }, { name: 'ALP_BRIDGE_TOKEN', value: this.bridge.token }] };
+    // Under Paseo, alpd runs on Electron's binary, which is node only with ELECTRON_RUN_AS_NODE; the agent may not pass its own environment on.
+    const electron = process.versions.electron ? [{ name: 'ELECTRON_RUN_AS_NODE', value: '1' }] : [];
+    return { name: 'alp', command: process.execPath, args: ['-e', BRIDGE], env: [{ name: 'ALP_BRIDGE_SOCKET', value: this.bridge.socket }, { name: 'ALP_BRIDGE_TOKEN', value: this.bridge.token }, ...electron] };
   }
 
   private serveBridge(connection: net.Socket, token: string) {

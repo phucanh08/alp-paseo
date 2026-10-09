@@ -27,13 +27,20 @@ async function entries(directory) {
 
 /** The agents ALP ships; their files come from the package's templates. */
 export const BUILTIN_AGENTS = ['main', 'lead', 'peer', 'oracle', 'reviewer', 'supervisor'];
-const TEMPLATE_ROOT = new URL('../../templates/', import.meta.url);
+/**
+ * The package's templates directory, found when first needed. Paseo re-bundles plugin
+ * code where import.meta.url is no URL, so this must not run when the module loads;
+ * there, bundles pass `templates` instead.
+ */
+const templateRoot = () => { try { return new URL('../../templates/', import.meta.url); } catch { return undefined; } };
 const validName = name => typeof name === 'string' && /^[\w.-]+$/.test(name) && name !== '.' && name !== '..';
 
 /** A shipped template file, from `templates` when given (bundles embed them), else from the package. */
 export async function builtinText(relative, templates) {
   if (templates) return templates[relative];
-  try { return await readFile(new URL(relative, TEMPLATE_ROOT), 'utf8'); }
+  const root = templateRoot();
+  if (!root) return undefined;
+  try { return await readFile(new URL(relative, root), 'utf8'); }
   catch (error) { if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return undefined; throw error; }
 }
 
