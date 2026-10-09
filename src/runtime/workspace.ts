@@ -30,14 +30,18 @@ const IDENTITY = ['-c', 'user.name=ALP', '-c', 'user.email=alp@localhost', '-c',
 
 function git(cwd: string, args: string[], input?: string): Promise<GitResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', args, { cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+    const child = spawn('git', args, { cwd, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', chunk => { stdout += chunk; });
-    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.stdout!.on('data', chunk => { stdout += chunk; });
+    child.stderr!.on('data', chunk => { stderr += chunk; });
     child.once('error', reject);
     child.once('close', code => resolve({ code: code ?? 1, stdout, stderr }));
-    child.stdin.end(input ?? '');
+    if (child.stdin) {
+      // git may exit before reading its input (EPIPE); its exit code reports the failure.
+      child.stdin.on('error', () => {});
+      child.stdin.end(input);
+    }
   });
 }
 
