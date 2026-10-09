@@ -267,7 +267,8 @@ export function createProvider(options: Options = {}): ProviderRegistration {
 
       function wire(connection: DaemonConnection) {
         connection.onEvent(project);
-        connection.onClose(error => lost(error));
+        // An older connection closing after a reconnect is not news.
+        connection.onClose(error => { if (connection === client) lost(error); });
       }
 
       /** alpd went away. In-process backends end their sessions; alpd is started again and its sessions picked up. */
@@ -278,8 +279,9 @@ export function createProvider(options: Options = {}): ProviderRegistration {
           roots.clear();
           return;
         }
+        if (relinking) return;
         for (const sessionId of roots) notify(sessionId, 'warning', `ALP lost its connection to alpd (${errorData(error).message}); reconnecting. Work that was running continues once alpd is back.`);
-        relinking ??= relink().finally(() => { relinking = undefined; });
+        relinking = relink().finally(() => { relinking = undefined; });
       }
 
       async function relink() {
@@ -479,7 +481,15 @@ export function createProvider(options: Options = {}): ProviderRegistration {
 
           try {
             await linked();
-            await handle(input);
+            try {
+              await handle(input);
+            } catch (error) {
+              // The request beat the news that alpd went away: wait for it to come back and try once more.
+              if (!backend.relink || closed || !client.closed) throw error;
+              lost(error);
+              await linked();
+              await handle(input);
+            }
           } catch (error) {
             if (input.type === 'session.prompt') {
               emit({ type: 'session.prompt_result', sessionId: input.sessionId, clientMessageId: input.prompt.clientMessageId, result: { type: 'failed', error: errorData(error) } });
