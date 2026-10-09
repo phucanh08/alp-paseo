@@ -6,7 +6,7 @@ import path from 'node:path';
 import { initProject } from '../src/core/init.js';
 import { resolveAgent } from '../src/core/resolver.js';
 import { resolveTeam } from '../src/core/teams.js';
-import { deleteEntry, duplicateEntry, getEntry, listEntries, renameEntry, saveEntry } from '../src/core/library-edit.js';
+import { deleteEntry, duplicateEntry, getEntry, listEntries, renameEntry, saveEntry, setGivenSkills } from '../src/core/library-edit.js';
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'alp-edit-'));
@@ -87,4 +87,20 @@ test('what an entry names must exist where it lives, and an entry in use is not 
   assert.deepEqual((await listEntries('hooks', options)).map(row => [row.name, row.source]), [['checks', 'library']]);
   assert.deepEqual((await listEntries('teams', options)).map(row => row.name), ['pho', 'cafe']);
   await assert.rejects(deleteEntry('hooks', 'absent', { ...options, scope: 'library' }), { code: 'NOT_FOUND' });
+});
+
+test('the library gives an agent skills by name, so a built-in agent changes its skills without a copy', async t => {
+  const { root, library, options } = await setup(t);
+  for (const name of ['xia', 'bug-loop']) await saveEntry('skills', name, { body: `---\nname: ${name}\ndescription: d\n---\n` }, { ...options, scope: 'library', revision: null });
+  await writeFile(path.join(library, 'role-skills.json'), JSON.stringify({ main: ['xia'], peer: ['bug-loop'] }));
+  const main = await getEntry('agents', 'main', options);
+  assert.deepEqual([main.source, main.librarySkills], ['builtin', ['xia']]);
+  assert.deepEqual(await setGivenSkills('main', ['xia', 'bug-loop', 'xia'], { library }), { skills: ['xia', 'bug-loop'] });
+  assert.deepEqual(JSON.parse(await readFile(path.join(library, 'role-skills.json'), 'utf8')), { main: ['xia', 'bug-loop'], peer: ['bug-loop'] });
+  assert.deepEqual((await resolveAgent(root, { agent: 'main', library })).skills.map(skill => skill.name), ['bug-loop', 'xia']);
+  // Still built in: no copy of main was made.
+  assert.equal((await getEntry('agents', 'main', options)).source, 'builtin');
+  await assert.rejects(setGivenSkills('main', ['missing'], { library }), /No skill 'missing' in the library/);
+  await setGivenSkills('peer', [], { library });
+  assert.deepEqual(JSON.parse(await readFile(path.join(library, 'role-skills.json'), 'utf8')), { main: ['xia', 'bug-loop'] });
 });

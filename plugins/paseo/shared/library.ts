@@ -40,7 +40,16 @@ export const libraryGet = defineRpc({
     /** Pass back with a save or delete; a different current revision refuses it. */
     revision: z.string().nullable(),
     usedBy: z.array(z.string()),
+    /** Agents: the skills the library gives it by name (role-skills.json). */
+    librarySkills: z.array(z.string()).optional(),
   }),
+});
+
+/** Sets the skills the library gives an agent; a built-in agent keeps following ALP's instructions. */
+export const librarySkills = defineRpc({
+  name: 'alp.library.skills',
+  input: z.object({ agent: Name, skills: z.array(Name) }),
+  output: z.object({ skills: z.array(z.string()) }),
 });
 
 export const librarySave = defineRpc({

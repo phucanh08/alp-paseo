@@ -78,7 +78,11 @@ project uses. The screen has two columns:
 - Each section has New, and each entry Duplicate.
 - Opening an entry edits it:
   - **Agent:** description, provider, model, thinking, default mode, instructions
-    (`AGENT.md`), and switches for the skills, MCP servers and hooks it uses.
+    (`AGENT.md`), and switches for the skills, MCP servers and hooks it uses. The
+    skills your library gives an agent by name (`role-skills.json`; main, lead and
+    peer start with ALP's six) show on, marked "Default for this agent". Changing
+    them in Settings → ALP saves `role-skills.json`, so a built-in agent keeps
+    following ALP's instructions. In the ALP project panel they show locked.
   - **Team:** label, main, members and their roles, each member's model and
     thinking, who may delegate to whom (a cycle is shown and refused), the most
     peers at once, the supervisor and its model, and the house rules.

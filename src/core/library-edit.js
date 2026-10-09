@@ -116,7 +116,46 @@ export async function getEntry(kind, name, { root, library, templates, scope } =
   const source = order.find(layer => found[layer] !== undefined);
   if (!source) fail('NOT_FOUND', `No ${kind} entry '${name}'${scope ? ` in the ${scope}` : ''}`);
   const below = ['builtin', 'library', 'project'].slice(0, ['builtin', 'library', 'project'].indexOf(source)).reverse().find(layer => found[layer] !== undefined);
-  return { kind, name, source: /** @type {'builtin' | 'library' | 'project'} */ (source), ...(below ? { overrides: /** @type {'builtin' | 'library'} */ (below) } : {}), content: found[source], revision: revisionOf(found[source]), usedBy: await usersOf(kind, name, { root, library, templates }) };
+  return {
+    kind, name, source: /** @type {'builtin' | 'library' | 'project'} */ (source), ...(below ? { overrides: /** @type {'builtin' | 'library'} */ (below) } : {}), content: found[source], revision: revisionOf(found[source]), usedBy: await usersOf(kind, name, { root, library, templates }),
+    // The skills the library gives an agent by name, whatever layer defines it (ALPD §49).
+    ...(kind === 'agents' && library ? { librarySkills: await givenSkills(library, name) } : {}),
+  };
+}
+
+/** role-skills.json: the library's skills for each agent, by name. */
+async function readGiven(library) {
+  const file = path.join(library, 'role-skills.json');
+  const text = await optionalText(file);
+  if (text === undefined) return { file, roles: {} };
+  let roles;
+  try { roles = JSON.parse(text); }
+  catch (cause) { throw new AlpError('INVALID_LIBRARY', `${file}: ${cause.message}`, { cause }); }
+  if (!object(roles)) fail('INVALID_LIBRARY', `${file}: expected an object of agent names to skill lists`);
+  return { file, roles };
+}
+
+/** The skills the library gives `agent`, as role-skills.json lists them. */
+export async function givenSkills(library, agent) {
+  const { roles } = await readGiven(library);
+  return Array.isArray(roles[agent]) ? roles[agent].filter(name => typeof name === 'string') : [];
+}
+
+/**
+ * Sets the skills the library gives an agent (role-skills.json), so a built-in agent's
+ * skills change without copying its instructions. Every skill must be in the library.
+ * @returns {Promise<{ skills: string[] }>}
+ */
+export async function setGivenSkills(agent, skills, { library } = {}) {
+  nameOf(agent);
+  if (!library) fail('INVALID_SCOPE', 'No library: ALP_HOME is not set');
+  if (!Array.isArray(skills) || !skills.every(validName)) fail('INVALID_ENTRY', 'Skills must be a list of skill names');
+  const unique = [...new Set(skills)];
+  for (const skill of unique) if (!(await exists(path.join(library, 'skills', skill, 'SKILL.md')))) fail('NOT_FOUND', `No skill '${skill}' in the library`);
+  const { file, roles } = await readGiven(library);
+  if (unique.length) roles[agent] = unique; else delete roles[agent];
+  await writeAtomic(file, JSON.stringify(roles, null, 2) + '\n');
+  return { skills: unique };
 }
 
 /** Every entry of a kind with its source and users, as `alp <kind>` lists them. */

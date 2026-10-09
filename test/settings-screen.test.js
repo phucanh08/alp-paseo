@@ -29,7 +29,7 @@ const tag = name => ({ children, accessibilityLabel, onPress: _onPress, style: _
 const kit = {
   SettingsSection: ({ title, info, trailing, children }) => createElement('section', { 'data-title': title }, createElement('h2', null, title), info, trailing, children),
   SettingsRow: ({ label, hint }) => createElement('row', { 'data-label': label }, label, hint ? ` (${hint})` : ''),
-  SettingsSwitch: ({ label, value }) => createElement('switch', { 'data-label': label, 'data-value': String(value) }, label),
+  SettingsSwitch: ({ label, value, hint, disabled }) => createElement('switch', { 'data-label': label, 'data-value': String(value), ...(disabled ? { 'data-disabled': 'true' } : {}) }, label, hint ? ` (${hint})` : ''),
   SettingsSelect: ({ label, value, options }) => createElement('select', { 'data-label': label, 'data-value': value }, options.map(option => createElement('option', { key: option.value, value: option.value }, option.label))),
   SettingsInput: ({ label, initialValue, error }) => createElement('field', { 'data-label': label, 'data-value': initialValue ?? '' }, label, error ? ` error: ${error}` : ''),
   SettingsAction: ({ label, actionLabel }) => createElement('action', { 'data-label': label }, actionLabel),
@@ -53,7 +53,7 @@ function load(code, overrides = {}) {
 }
 
 const theme = { colors: { surface0: '#fff', surface1: '#eee', surface2: '#ddd', border: '#ccc', foreground: '#000', foregroundMuted: '#666', accent: '#06c', accentForeground: '#fff', statusSuccess: '#0a0', statusWarning: '#a60', statusDanger: '#c00' } };
-const actions = { select() {}, duplicate: async () => true, override: async () => true, useLibrary: async () => true, save: async () => true, remove: async () => true, test: async () => null };
+const actions = { select() {}, giveSkills: async () => true, duplicate: async () => true, override: async () => true, useLibrary: async () => true, save: async () => true, remove: async () => true, test: async () => null };
 const lists = {
   teams: [{ name: 'pho', source: 'builtin' }, { name: 'cafe', source: 'builtin' }, { name: 'docs', source: 'library', usedBy: ['project settings'] }],
   agents: [{ name: 'main', source: 'library', overrides: 'builtin', description: 'My main' }, { name: 'peer', source: 'builtin' }, { name: 'writer', source: 'library' }, { name: 'supervisor', source: 'builtin' }],
@@ -151,6 +151,11 @@ test('editors: an agent picks skills, MCP servers and hooks; a team its members,
   assert.match(capabilities, /<switch data-label="style" data-value="true">/);
   assert.match(capabilities, /<switch data-label="tests" data-value="false">/);
   assert.match(capabilities, /No mcp servers to choose from yet/);
+  // Skills the library gives main by name show on: editable in the library, locked in a project.
+  const given = { ...main, librarySkills: ['style'], content: { instructions: '# Main\n' } };
+  assert.match(editor('agents', given, 'capabilities'), /<switch data-label="style" data-value="true">style \(Default for this agent\)<\/switch>/);
+  assert.doesNotMatch(editor('agents', given, 'capabilities'), /data-disabled/);
+  assert.match(editor('agents', given, 'capabilities', 'project'), /<switch data-label="style" data-value="true" data-disabled="true">style \(Given by your library/);
   // The workspace opens the selected entry's editor.
   assert.match(renderToStaticMarkup(createElement(LibraryWorkspace, { theme, compact: false, scope: 'library', where, lists, error: null, selection: { kind: 'agents', name: 'main' }, entry: main, actions })), /Save as my own/);
 
