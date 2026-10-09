@@ -1151,3 +1151,24 @@ Goal (D21, C4): know which instructions a session ran with, so a change in behav
 - after ALP.md changes, the sha and the project part change while the agent part stays the same.
 
 Two older tests now skip `instructions` entries when they read the run log.
+
+## 35. Context-fill advisory as built (2026-10-09)
+
+Goal (D21, C1): a session that fills its context loses detail when the runtime compacts it. Gas City injects the fill level only when it matters, with advice that changes as it grows (`context_inject.go`). ALP does the same and points at the tools it already has: `alp_handoff` with outcome `partial` for assignments, and `alp_pin` plus task notes for roots.
+
+- Both runtimes report usage as `thread/tokenUsage/updated` with `tokenUsage.last.totalTokens` and `modelContextWindow`.
+  - Codex sends this itself.
+  - `ClaudeTransport` builds it from each top-level assistant message: input, cache-read, cache-creation and output tokens. Sub-agent messages are skipped. The window is 200k, or 1M when the model name has `[1m]`, until a `result` reports `modelUsage[*].contextWindow`; then it uses the largest reported.
+- `contextReport` in the runtime:
+  - below 50% it resets `session.contextLevel` to 0 and says nothing;
+  - at 60% (level 1, `plan`) and 80% (level 2, `now`) it posts one note from `alp` each time the level rises, never twice for the same level;
+  - the note steers into an active turn and is passive otherwise, so it never starts a turn;
+  - supervisors are skipped;
+  - each note logs `{ event: 'context', sessionId, agent, percent, level }`, printed by `alp log`.
+- Notes for an assignment ask for a partial handoff; notes for a root ask for pins, task notes, and a word to the user if a fresh session would serve better.
+
+**Evidence.** `test/context.test.js` checks:
+- for a peer: 30% and 59% say nothing, 65% plans, 72% says nothing, 85% says hand off now, 90% says nothing, and after 20% the advice comes again at 62%;
+- the run log holds exactly those three entries;
+- main between turns gets a passive note that arrives with its next prompt, and no turn is started for it;
+- `ClaudeTransport` counts cache tokens, takes the window from the result, and ignores sub-agent messages.

@@ -482,6 +482,9 @@ async function log(args) {
       case 'instructions':
         text = `# ${entry.agent} instructions ${entry.sha} (ALP.md ${entry.parts?.project}, AGENT.md ${entry.parts?.agent}, ${entry.chars} chars)`;
         break;
+      case 'context':
+        text = `◔ ${entry.agent} context ${entry.percent}% full: ${entry.level === 'now' ? 'told to hand off now' : 'told to plan a handoff'}`;
+        break;
       case 'assignment.interrupted':
         text = `⏹ ${entry.agent} ${entry.assignmentId} interrupted: ${entry.reason}; the next alpd continues it`;
         break;

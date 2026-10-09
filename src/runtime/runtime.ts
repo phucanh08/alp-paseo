@@ -215,6 +215,8 @@ type Session = {
   progressAt?: number;
   /** A digest of the instructions the session runs with. */
   instructionsSha?: string;
+  /** How far the context advisory went since the context last emptied: 1 plan a handoff, 2 hand off now. */
+  contextLevel?: number;
   /** Why the running turn is being stopped, so its end parks the assignment instead of ending it. */
   parkReason?: string;
   /** Mail arrived while its runtime was paused; it is delivered on resume. */
@@ -289,6 +291,13 @@ const MAX_WAKES = 8;
 /** A session's native process is restarted at most RESTART_LIMIT times within RESTART_WINDOW_MS unless it makes progress meanwhile. */
 const RESTART_LIMIT = 3;
 const RESTART_WINDOW_MS = 10 * 60_000;
+/**
+ * The context advisory (ALPD §35): silent below CONTEXT_PLAN, then once each at
+ * CONTEXT_PLAN and CONTEXT_NOW. Below CONTEXT_RESET, as after a compaction, it starts over.
+ */
+const CONTEXT_PLAN = 0.6;
+const CONTEXT_NOW = 0.8;
+const CONTEXT_RESET = 0.5;
 // Placeholder delivery marks while a steer or a woken turn is starting.
 const STEERING = '\u0000steering';
 const STARTING = '\u0000starting';
@@ -1181,6 +1190,11 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       return;
     }
 
+    if (method === 'thread/tokenUsage/updated') {
+      contextReport(sessionId, session, params?.tokenUsage);
+      return;
+    }
+
     if (
       method === 'turn/completed' &&
       params.turn.id === session.active
@@ -1844,6 +1858,33 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     pauseRuntime(kind, pause);
     const other = RUNTIMES.find(candidate => candidate !== kind && !pauseOf(candidate));
     notice('error', `${label(kind)} usage limit reached${resetsAt ? `; it resets ${resetsAt}` : ''}. ALP paused delegation to ${label(kind)} agents and parked their assignments${other ? `; ${label(other)} agents keep working` : ''}. ${options.autoResume && resetsAt ? 'ALP resumes it a minute after the reset.' : `Run alp resume ${kind} when it has reset.`}`);
+  }
+
+  /**
+   * Tells a session how full its context is, only when that matters (ALPD §35):
+   * once past CONTEXT_PLAN to plan for it, once past CONTEXT_NOW to act before the
+   * runtime compacts it. An always-visible countdown would distract more than help.
+   */
+  function contextReport(sessionId: string, session: Session, usage: any) {
+    const used = usage?.last?.totalTokens;
+    const window = usage?.modelContextWindow;
+    if (session.role === 'supervisor' || typeof used !== 'number' || typeof window !== 'number' || window <= 0) return;
+    const fill = used / window;
+    if (fill < CONTEXT_RESET) { session.contextLevel = 0; return; }
+    const level = fill >= CONTEXT_NOW ? 2 : fill >= CONTEXT_PLAN ? 1 : 0;
+    if (level <= (session.contextLevel ?? 0)) return;
+    session.contextLevel = level;
+    const percent = Math.round(fill * 100);
+    runLog(rootOf(sessionId), { event: 'context', sessionId, agent: session.mapping.agent.name, percent, level: level === 2 ? 'now' : 'plan' });
+    const body = session.parent
+      ? level === 2
+        ? `Your context is about ${percent}% full; the runtime will compact it soon and lose detail. Finish the step you are on, then file alp_handoff with outcome partial: what is done, what remains, and where. Your requester continues the rest in a fresh assignment.`
+        : `Your context is about ${percent}% full. Plan how you finish: if much remains, prepare to file alp_handoff with outcome partial, listing what is done and what remains, before it fills.`
+      : level === 2
+        ? `Your context is about ${percent}% full; the runtime will compact it soon and lose detail. Write down now what must survive: pin decisions and findings with alp_pin, keep task notes current, and tell the user if a fresh session would serve better.`
+        : `Your context is about ${percent}% full. Keep decisions and findings on the board with alp_pin and in task notes, so they survive when it is compacted.`;
+    // During a turn it steers in; otherwise it waits for the next turn without starting one.
+    post(sessionId, { kind: 'note', from: 'alp', assignment: sessionId, body, ...(session.active ? {} : { passive: true }) });
   }
 
   /** Remembers a runtime's usage report and warns once per window when it nears its limit. */
