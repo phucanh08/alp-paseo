@@ -206,6 +206,58 @@ alp task close t-77e0.2 -m "Merged in #12"    # --reason wontfix | duplicate | s
 alp task reopen t-77e0.2 -m "Fails on Windows"
 ```
 
+### Gates
+
+A gate holds a task back, like an open blocker, until it clears. Main adds gates
+with `alp_task` action `gate`, and the user adds them with `alp task gate add`:
+
+| Kind | Clears when | Added with |
+|---|---|---|
+| `human` | the user approves it: `alp task gate clear <id> g1`, or Approve in Paseo | `--human "question"` |
+| `timer` | its time passes; nothing is written | `--timer +2h` or an ISO time |
+| `gh:pr` | the pull request merges | `--pr 12` or `--pr owner/repo#12` |
+| `gh:run` | the workflow run completes with success | `--run 345` or `--run owner/repo#345` |
+
+A gate on an epic holds back its children. Main cannot clear a human gate: the
+runtime refuses it, and main asks the user instead. Main may clear its other
+gates by hand with action `clear`, and the user removes a gate with
+`alp task gate rm`. At the start of main's turns, at most once a minute per
+project, ALP asks GitHub about the open `gh:pr` and `gh:run` gates with the `gh`
+CLI and clears those that are done. `alp tasks gates` does the same and lists
+the open gates. Main's turn context lists tasks that only a gate holds back.
+
+### Compaction
+
+`alp tasks compact [--days 30] [--dry-run]` shrinks tasks closed more than
+`--days` ago:
+- Kept: the title, relations, labels, paths and the close reason and summary.
+- Clipped to 300 characters: the description and the handoff summary.
+- Dropped: the handoff's lists, gate details, and the log between creation and close.
+
+A compacted task records when, by whom and its former size, and is not
+compacted again. Only the user compacts.
+
+### The Tasks panel in Paseo
+
+The plugin adds a **Tasks** panel to every workspace, also reachable from the
+command center as "Open ALP tasks". It shows the tasks of the ALP project that
+contains the workspace's directory, grouped as:
+
+1. Waiting for your approval (human gates, with Approve)
+2. In review (with the handoff and "Accept and close")
+3. In progress
+4. Ready
+5. Blocked or waiting
+6. Epics
+7. Closed, folded until you open it
+
+The panel also adds tasks with a priority, closes and reopens them. All writes
+are made as the user. It works through the plugin's server RPCs
+(`alp.tasks.list`, `alp.tasks.add`, `alp.tasks.change`), which read and write
+the files directly, without alpd. Plugin RPC cannot push, so the panel asks
+again every five seconds while it is open. It needs Paseo 0.11.1 or a later
+0.11 release.
+
 Every writer holds the lock directory `.alp/tasks/.lock` while it reads, checks
 and writes one task; a lock older than ten seconds is cleared. Each write bumps
 the task's `rev` and replaces the file through a temporary file, and a writer

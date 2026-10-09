@@ -578,3 +578,52 @@ Then, inside the start's `try`:
 `test/paseo.test.js` checks a todo item through Paseo's provider event schema. On 2026-10-09 two live `alp run` sessions used real Claude models in an isolated `ALP_HOME`:
 - **Phở:** main passed `taskId` to a peer on Sonnet 4.6. ALP claimed `greet.js` for the peer. The peer's complete handoff moved the task to review. Main verified the change and closed the task, and the run printed the todo list. The supervisor checked the task lifecycle and judged the turn sound.
 - **Cafe, an epic with two children:** main gave the ready child to lead with `taskId`. ALP pinned lead's claim for that task on its two paths, and lead had a peer implement it. Lead's handoff moved the task to review, and main closed it after re-running the tests. The second child, which the first had blocked, then became ready. The supervisor judged the turn sound.
+
+## 22. Gates, compaction and the Tasks panel as built, step 3 (2026-10-09)
+
+Goal: tasks can wait on the user, a time or GitHub; old tasks stay small; and the user sees and acts on tasks in Paseo (D18).
+
+**Gates.** A task has `gates: [{ id: g<n>, kind, note?, until?, repo?, ref?, at, by, resolved? }]`, with kinds `human`, `timer`, `gh:pr` and `gh:run`.
+- `addGate` validates each kind: a human gate needs a note; a timer takes an ISO time or `+Nm`, `+Nh` or `+Nd`; GitHub refs take `N` or `owner/repo#N`. A task has at most 10 open gates, and a closed task takes none.
+- `gateOpen` treats a gate as open until it is resolved, or for a timer, until `until` passes; a timer writes nothing.
+- `gatesOf` lists the open gates of a task and of its ancestors. `readyTasks`, `startRefusal`, `summarize` and `taskDigest` count them; the digest lists tasks that only gates hold back.
+- `resolveGate(id, gate, { by, note?, remove? })` clears a gate (logged `gate cleared`) or removes it (`ungated`).
+- `checkGates(root, gh)` runs `gh pr view N --json state` and `gh run view N --json status,conclusion` (with `-R repo`) for the open GitHub gates of tasks not closed. It clears a merged pull request or a successful run as `github`, and returns `{ cleared, pending, errors }`.
+
+`alp_task` for main adds actions `gate { id, kind, note?, until?, ref? }` and `clear { id, gate, note? }`. `clear` refuses human gates. Before the task digest of each of root main's turns, `checkGatesOften` runs `checkGates` with `RuntimeOptions.github ?? gh`. It runs only when a GitHub gate is open, and at most once a minute per project.
+
+The CLI adds:
+- `alp task gate add <id> --human|--timer|--pr|--run`
+- `alp task gate clear|rm <id> <gate> [-m]`
+- `alp tasks gates [--json]`, which checks the GitHub gates (`ALP_GH_BIN` selects `gh`) and lists the open ones
+
+`alp tasks` and `alp task show` print gates.
+
+**Compaction.** `compactTasks(root, { days = 30, dryRun }, by)` runs under the task lock. For each closed task closed at least `days` ago and not yet compacted, it:
+- clips the description and the handoff summary to 300 characters, and drops the handoff's other fields;
+- keeps only each gate's id, kind and resolution;
+- keeps only the `created` and last `closed` log entries;
+- sets `compacted: { at, by, chars }`.
+
+A task is written only when it gets smaller. `alp tasks compact [--days N] [--dry-run]` runs it as `user`.
+
+**Paseo panel.** The plugin now requires Paseo `>=0.11.1 <0.12.0`, in both `paseo-plugin.json` and the SDK peer dependency, and ships `index.client.tsx`, `client/` and `shared/`. Paseo compiles the client from source and supplies React, React Native, zod and the SDK.
+- `shared/tasks.ts` holds the RPC contracts `alp.tasks.list { directory }`, `alp.tasks.add { directory, title, priority? }` and `alp.tasks.change { directory, id, action: close | reopen | approve, gate?, note? }`, the `TaskRow` schema, and `boardSections`, which groups rows for the panel.
+- `server/tasks.ts` registers the handlers with `server.handle`. They find the nearest directory with `.alp` and call the task core as `user`; `@getpaseo/plugin` is external to the server bundle.
+- `client/tasks-panel.tsx` is the panel. `TasksPanel` reads the workspace's `directory` (falling back to `projectRootPath`), polls `alp.tasks.list` every 5 s, and turns actions into RPCs with toasts. `TaskBoard` renders from data alone.
+- `index.client.tsx` registers the workspace panel `alp-tasks` ("Tasks", icon `ListTodo`, which the app's lucide set provides) and a command center item.
+- `npm run check` also type-checks the client against React 19.1 and React Native 0.81.5 types, with no DOM types.
+
+**Evidence.**
+- `test/tasks.test.js` adds:
+  - gates: validation; human, timer and GitHub gates holding tasks back; an epic's gate holding back its children; the digest; clearing and removing gates; `checkGates` with a fake `gh`
+  - compaction: the cutoff, a dry run, what is kept, and no second compaction
+  - the runtime: main adding gates, refused for a human gate, and GitHub gates cleared at most once a minute at turn start
+  - the CLI: gates and compaction against a fake `gh`
+- `test/panel.test.js`:
+  - bundles the client entry the way Paseo's compiler does, and checks that it imports only host modules and only files from `client/` and `shared/`
+  - registers the panel and its command
+  - renders `TaskBoard` with React DOM's static renderer, React Native stubbed, to check the section order and actions and the empty states
+  - drives the three RPCs through their contracts against a real project
+- `test/paseo.test.js` checks that the plugin registers the RPCs. On 2026-10-09 the panel was checked live. The plugin was installed into an isolated Paseo 0.11.1 daemon (its own home, port 6799), which compiled and loaded the client entry with no import-boundary errors. The Desktop app's web build was served locally and connected to that daemon. In a workspace of a demo ALP project, "Tasks" appeared in the new-tab menu, and the panel showed real data in this order: the human gate with Approve, the task in review with its handoff, ready, blocked, epics, and a folded closed list. Approve cleared the gate as `user`, which made the task ready. A title typed into the panel was added as a `user` task. The same day, `alp tasks gates` cleared real `gh:pr` gates on merged PRs #5 and #6 and a `gh:run` gate on a successful CI run.
+
