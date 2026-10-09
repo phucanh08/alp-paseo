@@ -76,7 +76,7 @@ test('main starts a supervisor on Sonnet 4.6 that reviews each turn and asks mai
   for (const tool of [...main.config.dynamicTools, ...supervisor.config.dynamicTools]) {
     const shape = Object.keys(claudeToolShapes[tool.name] ?? {}).sort();
     const properties = Object.keys(tool.inputSchema.properties).sort();
-    if (tool.name === 'alp_task') assert.ok(properties.every(property => shape.includes(property)), 'alp_task has a field Claude lacks');
+    if (tool.name === 'alp_task' || tool.name === 'alp_delegate') assert.ok(properties.every(property => shape.includes(property)), `${tool.name} has a field Claude lacks`);
     else assert.deepEqual(shape, properties, `${tool.name} differs for Claude`);
   }
   assert.ok(['alp_lesson', 'alp_skill', 'alp_issue'].every(name => main.config.dynamicTools.some(tool => tool.name === name)));

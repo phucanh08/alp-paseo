@@ -9,6 +9,8 @@ export type AlpError = { message: string };
 export type TimelineItem =
   | { kind: 'user_message'; id: string; text: string; clientMessageId?: string }
   | { kind: 'assistant_message'; id: string; text: string }
+  /** The tasks a root's tree created or worked on (plans/reference/ALPD.md §21). */
+  | { kind: 'todo'; id: string; items: Array<{ id: string; text: string; status: 'pending' | 'in_progress' | 'completed' }> }
   | {
       kind: 'tool_call';
       id: string;

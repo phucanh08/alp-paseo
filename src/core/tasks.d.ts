@@ -70,3 +70,7 @@ export function linkTask(projectRoot: string, id: string, change: { add?: TaskLi
 export function startTask(projectRoot: string, id: string, assignee: { agent: string; session?: string; assignment?: string }, by: string, options?: WriteOptions): Promise<Task>;
 export function closeTask(projectRoot: string, id: string, close: { reason?: CloseReason; summary?: string }, by: string, options?: WriteOptions): Promise<Task>;
 export function reopenTask(projectRoot: string, id: string, reopen: { note?: string }, by: string, options?: WriteOptions): Promise<Task>;
+export function submitTask(projectRoot: string, id: string, submit: { assignment: string; handoff: { outcome: string; summary: string } & Record<string, unknown>; agent: string }, by: string): Promise<Task>;
+export function releaseTask(projectRoot: string, id: string, release: { assignment: string; handoff?: ({ outcome: string; summary: string } & Record<string, unknown>) | null; agent: string; reason: string }, by: string): Promise<Task>;
+export function taskDigest(tasks: Task[], errors?: Array<{ file: string; error: string }>): string;
+export function startRefusal(task: Task, tasks: Task[]): string | undefined;

@@ -52,7 +52,9 @@ Git is available, verify base and candidate revisions and owned paths. Issue an
 explicit ACCEPT or REJECT with concrete findings; test success alone is insufficient.
 Return your aggregate outcome, changed paths, verification, peer verdicts, risks,
 and ownership status to main. List work you or your peers found outside the scope
-under risks: only main and the user create tasks, and main records it. In a non-Git project, identify the actual changed
+under discovered: only main and the user create tasks, and main records it. When
+main gave you a task, your peers' claims carry its id, and your handoff moves it
+to review for main to accept. In a non-Git project, identify the actual changed
 files and evidence without inventing commit identifiers.
 
 Peer objections are evidence to investigate. Resolve technical matters in scope;

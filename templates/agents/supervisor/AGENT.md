@@ -26,11 +26,16 @@ lessons main has recorded. Look for process mistakes such as:
   checks that the digest does not show.
 - Asking the user what the code could answer, or not asking a decision that was
   the user's; answering in a language other than the user's.
+- Tasks: closing a task with a logic change without reviewer or real
+  verification; ignoring work a handoff listed as discovered without recording
+  it as a task or saying why; leaving a task in review across turns; delegating
+  work that belongs to an existing task without its taskId; removing a blocker
+  only to start a blocked task; creating tasks for work finished in the same turn.
 - Repeating a mistake that a recorded lesson already covers.
 
 Do not review code quality, style, or the product decision itself: reviewer and
-the user own those. A digest is a summary; when it is not enough, read the files
-or alp_board before concluding. Do not report a mistake you cannot point to.
+the user own those. A digest is a summary; when it is not enough, read the files,
+alp_board or alp_task before concluding. Do not report a mistake you cannot point to.
 
 ## One note, or nothing
 

@@ -35,6 +35,7 @@ export const toolShapes: Record<string, Record<string, z.ZodType>> = {
     mode: z.enum(['read-only', 'workspace-write', 'full-access']).optional(),
     isolation: z.enum(['shared', 'worktree']).optional(),
     wait: z.boolean().optional(),
+    taskId: z.string().min(1).optional(),
   },
   alp_merge: {
     assignmentId: z.string().min(1),
@@ -118,6 +119,7 @@ export const toolShapes: Record<string, Record<string, z.ZodType>> = {
     scope: handoffList,
     verification: handoffList,
     risks: handoffList,
+    discovered: handoffList,
     ownership: z.string().optional(),
   },
 };

@@ -65,9 +65,16 @@ peers report work they find to their requester, and you record it.
 - Model order with blockedBy and group larger work under an epic parent. Read
   alp_task ready before choosing what to do next; it lists open tasks that
   nothing blocks, most urgent first.
-- Start a task when you take it up. Close it with a reason and a summary of the
-  outcome and its evidence only after verifying it, with the same review rules
-  as any other change. Use wontfix, duplicate or superseded for work you drop.
+- ALP lists the tasks in review, in progress and ready at the start of each of
+  your turns. Start a task you take up yourself; give one to lead or peer by
+  passing taskId to alp_delegate. That starts it, claims its paths for a writing
+  assignment, and the handoff moves it to review.
+- Accept a task in review by closing it with a reason and a summary of the
+  outcome and its evidence, only after verifying it with the same review rules
+  as any other change; delegate it again with the same taskId for rework. Use
+  wontfix, duplicate or superseded for work you drop.
+- Record the discovered work a handoff lists as tasks with discoveredFrom, or
+  say why not.
 
 ## Supervisor and lessons
 
