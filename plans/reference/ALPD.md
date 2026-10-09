@@ -1599,3 +1599,32 @@ Goal (D23, phase 13, step 6): agents run on any agent that speaks the Agent Clie
 - model choice through `session/set_model`, a model outside `models` refused, a missing provider, resuming through `session/load` without replayed history or repeated instructions, and the refused review copy.
 
 `test/settings-screen.test.js` checks the Providers section, the provider form and the agent form's ACP options.
+
+## 47. Two-column settings and beads-style tasks as built (2026-10-09)
+
+Goal: the user found the settings screen and the Tasks panel hard to use. The settings screen becomes a two-column layout with a fixed, foldable aside and a secondary menu on top of the working area. The Tasks panel follows how beads-ui and beads_viewer (bv) show tasks.
+
+- **`client/side-nav.tsx`:**
+  - `SideNavLayout` draws the aside and the working area.
+    - The aside has groups (first level), kinds with an icon and a count (second level), and the open kind's entries with a source dot (third level).
+    - It is 216 px wide, or 52 px folded to icons. It folds on its own below 640 px (`COLLAPSE_BELOW`, measured with `onLayout`) until the user toggles it. In a compact layout it opens from Menu as an overlay with a scrim.
+    - The working area has a breadcrumb, badges and actions, a row of tabs as the secondary menu, a scrolling body and a fixed footer bar.
+  - `Pill` and `Button` are shared by the screens.
+- **`client/library.tsx`:**
+  - `navGroups(scope, lists)` builds the aside: Organisation (Teams, Agents), Capabilities (Skills, MCP servers, Hooks), Runtimes (Providers, library only).
+  - `LibraryWorkspace` renders a kind's `KindOverview` or an entry's `EntryEditor` from a `Selection { kind, name?, creating? }`. Saving a new entry selects it; removing one returns to its kind. It replaces `LibraryLists`.
+  - `KindOverview`: source tabs with counts, New, and a table of entries with source and override pills, description, users, Duplicate, and in the project scope Override in this project and Use library.
+  - `EntryEditor`: tabs from `entryTabs(kind, saved)` (an agent: General, Instructions, Skills MCP & hooks; a team: General, Members, Delegation, Supervisor, House rules; Test only for a saved entry), a note on where the entry comes from, and a footer with Save or Save as my own, the state of the draft, and Remove. `AgentForm` and `TeamForm` take the tab; without one they render everything.
+  - Members get one section each (in the team, role, model, thinking); delegation one section per member.
+- **Tasks (`client/tasks-panel.tsx`):**
+  - `TaskRow` adds `description` (up to 4000 characters), `labels`, `paths`, `progress { done, total }` of a parent's children, and `createdAt`.
+  - The toolbar has List, Board and Epics, Refresh, New (title and P0–P4), the filters Open, Ready, Closed and All with counts (`filterTasks`), and a search.
+  - List: `boardSections` groups, foldable, with bv-style rows (`stateOf` dot, type icon, priority badge, id, title, assignee, `age`) and a second line of blockers, gates, epic and labels. Approve stays inline.
+  - Board: columns Needs approval, Blocked, Ready, In progress, In review, Closed, with four-line cards. Epics stay off the board.
+  - Epics: progress bar, done/total, and the children as a foldable tree.
+  - `TaskDetail`: fields, description, handoff, close, children, and Approve, Accept and close, Close or Reopen. From 820 px the detail sits beside the list (2:3); narrower, it replaces it.
+
+**Evidence.**
+- `test/settings-screen.test.js` checks the aside's groups and order, the breadcrumb and source tabs, the overview rows and actions in both scopes, the Menu button when compact, and each editor tab for agents, teams, hooks, providers and a new MCP server.
+- `test/panel.test.js` checks the grouped list and its order, filters and search, `age`, the detail alone and beside the list, the board columns without epics, and the epics view.
+- Both screens were looked at in an isolated Paseo 0.11.1 (web client against a daemon with its own home and `ALP_HOME`).

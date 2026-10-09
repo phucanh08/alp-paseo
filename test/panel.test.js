@@ -41,7 +41,7 @@ function hostModules(overrides = {}) {
     react: require('react'),
     'react/jsx-runtime': require('react/jsx-runtime'),
     'react-native': { View: tag('view'), Text: tag('text'), Pressable: tag('button'), TextInput: tag('input') },
-    '@getpaseo/plugin/client/react-native': { ScrollView: tag('scroll'), useToast: () => ({ show() {}, error() {} }) },
+    '@getpaseo/plugin/client/react-native': { ScrollView: tag('scroll'), Icon: tag('icon'), TextInput: tag('input'), useToast: () => ({ show() {}, error() {} }) },
     '@getpaseo/plugin/client': { useRpc: () => async () => ({}), useWorkspace: () => null },
     // The settings kit; test/settings-screen.test.js renders it.
     '@getpaseo/plugin/client/ui': {},
@@ -75,33 +75,57 @@ test('the client entry bundles with only the modules Paseo supplies and register
   assert.deepEqual([commands[0].context, opened], ['workspace', ['alp-tasks']]);
 });
 
-test('the board shows what waits for the user first, with actions for each section', async () => {
+test('the panel lists tasks the way beads views them: grouped list, detail, board and epics', async () => {
   const { code } = await compileClient('client/tasks-panel.tsx');
-  const { TaskBoard } = load(code);
+  const { TaskBoard, filterTasks, age } = load(code);
   const row = (id, title, extra = {}) => ({ id, title, type: 'task', priority: 2, status: 'open', ready: false, updatedAt: '2026-10-09T00:00:00Z', ...extra });
   const tasks = [
     row('t-0001', 'Ship the release', { approvals: [{ gate: 'g1', note: 'Approve the changelog?' }], waits: ['g1 human: Approve the changelog?'] }),
-    row('t-0002', 'Add --json', { status: 'review', assignee: 'peer', handoff: { outcome: 'complete', summary: 'Added it; npm test passed', agent: 'peer' } }),
+    row('t-0002', 'Add --json', { status: 'review', assignee: 'peer', parent: 't-0007', handoff: { outcome: 'complete', summary: 'Added it; npm test passed', agent: 'peer' } }),
     row('t-0003', 'Normalize', { status: 'in_progress', assignee: 'lead', priority: 1 }),
-    row('t-0004', 'Fix colors', { ready: true, priority: 3 }),
-    row('t-0005', 'Docs', { blockedBy: ['t-0002'] }),
+    row('t-0004', 'Fix colors', { ready: true, priority: 3, labels: ['ui'] }),
+    row('t-0005', 'Docs', { blockedBy: ['t-0002'], parent: 't-0007' }),
     row('t-0006', 'Old', { status: 'closed', closed: { reason: 'done', summary: 'Merged', at: '2026-10-08T00:00:00Z' } }),
+    row('t-0007', 'CLI polish', { type: 'epic', progress: { done: 0, total: 2 } }),
   ];
-  const html = renderToStaticMarkup(createElement(TaskBoard, { theme, compact: false, directory: '/p', projectRoot: '/p', tasks, unreadable: 1, error: null, onAdd: async () => true, onAction() {}, onRefresh() {} }));
-  const order = ['Waiting for your approval · 1', 'In review · 1', 'In progress · 1', 'Ready · 1', 'Blocked or waiting · 1', 'Show 1 recently closed'];
-  const positions = order.map(text => html.indexOf(text));
-  assert.ok(positions.every(position => position >= 0), html);
-  assert.deepEqual([...positions].sort((a, b) => a - b), positions);
-  assert.match(html, /Approve the changelog\?<\/text><button[^>]*><text>Approve</);
-  assert.match(html, /Handoff complete from peer: Added it; npm test passed/);
-  assert.match(html, /Accept and close/);
-  assert.match(html, /after t-0002/);
-  assert.match(html, /\/p\/\.alp\/tasks · 1 unreadable file/);
-  assert.match(html, /data-placeholder="Add a task for main"/);
+  const props = { theme, compact: false, directory: '/p', projectRoot: '/p', tasks, unreadable: 1, error: null, onAdd: async () => true, onAction() {}, onRefresh() {} };
+  const render = initial => renderToStaticMarkup(createElement(TaskBoard, { ...props, initial }));
 
-  const empty = renderToStaticMarkup(createElement(TaskBoard, { theme, compact: true, directory: '/q', projectRoot: null, tasks: [], unreadable: 0, error: null, onAdd: async () => true, onAction() {}, onRefresh() {} }));
+  // The list groups what waits for the user first; Open hides closed tasks.
+  const html = render({ filter: 'all' });
+  const order = ['Waiting for your approval', 'In review', 'In progress', 'Ready', 'Blocked or waiting', 'Epics', 'Closed'].map(title => html.indexOf(`data-label="Hide ${title}"`));
+  assert.ok(order.every(position => position >= 0), html);
+  assert.deepEqual([...order].sort((a, b) => a - b), order);
+  assert.match(html, /Approve the changelog\?<\/text><button[^>]*><text>Approve</);
+  assert.match(html, /after t-0002 · in t-0007/);
+  assert.match(html, /#ui/);
+  assert.match(html, /1 unreadable task file in \/p\/\.alp\/tasks/);
+  assert.match(html, /<text>Open <text>6<\/text><\/text>/);
+  assert.doesNotMatch(render({}), /Open t-0006/);
+  assert.deepEqual(filterTasks(tasks, 'ready', '').map(task => task.id), ['t-0004']);
+  assert.deepEqual(filterTasks(tasks, 'all', 'peer json').map(task => task.id), ['t-0002']);
+  assert.equal(age('2026-10-07T00:00:00Z', Date.parse('2026-10-09T00:00:00Z')), '2d');
+
+  // A task's detail: its fields, handoff and the action its state allows.
+  const detail = render({ selected: 't-0002' });
+  assert.match(detail, /Handoff · complete from peer/);
+  assert.match(detail, /Added it; npm test passed/);
+  assert.match(detail, /Accept and close/);
+  assert.match(detail, /data-label="Open t-0005"/, 'Blocks lists the task waiting on it');
+  assert.doesNotMatch(detail, /Waiting for your approval/, 'a narrow panel shows the detail alone');
+  assert.match(render({ selected: 't-0002', width: 1000 }), /Waiting for your approval[\s\S]*Accept and close/, 'a wide panel shows list and detail side by side');
+  assert.match(render({ selected: 't-0006', filter: 'all' }), /Reopen/);
+
+  // The board has a column per state; the epics view shows progress and children.
+  const board = render({ view: 'board' });
+  for (const title of ['Needs approval', 'Blocked', 'Ready', 'In progress', 'In review']) assert.match(board, new RegExp(`<text>${title}</text>`));
+  assert.doesNotMatch(board, /Open t-0007/, 'epics stay off the board');
+  const epics = render({ view: 'epics' });
+  assert.match(epics, /CLI polish[\s\S]*0\/2[\s\S]*2 tasks[\s\S]*Open t-0002/);
+
+  const empty = renderToStaticMarkup(createElement(TaskBoard, { ...props, compact: true, directory: '/q', projectRoot: null, tasks: [] }));
   assert.match(empty, /\/q is not an ALP project\. Run alp init to start one\./);
-  assert.match(renderToStaticMarkup(createElement(TaskBoard, { theme, compact: true, directory: null, projectRoot: null, tasks: null, unreadable: 0, error: null, onAdd: async () => true, onAction() {}, onRefresh() {} })), /needs a workspace/);
+  assert.match(renderToStaticMarkup(createElement(TaskBoard, { ...props, directory: null, projectRoot: null, tasks: null })), /needs a workspace/);
 });
 
 test('the plugin server lists, adds, closes, reopens and approves tasks as the user', async t => {
