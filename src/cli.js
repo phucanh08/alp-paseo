@@ -7,12 +7,13 @@ import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { initProject } from './core/init.js';
 import { upgradeProject } from './core/upgrade.js';
+import { seedLibrary } from './core/library.js';
 import { alpHome, connect, ensureDaemon, lockAlive, readLock } from './client/index.js';
 
 const USAGE = `Usage:
   alp <init|upgrade> [directory]
   alp daemon <start|stop|status|restart>
-  alp run [--agent A] [--workflow smart|supervised] [--model M] [--mode read-only|workspace-write] [--thinking T] [--project DIR] [--json] <prompt>
+  alp run [--agent A] [--profile pho|cafe] [--model M] [--mode read-only|workspace-write|full-access] [--thinking T] [--project DIR] [--json] <prompt>
   alp ps [--all]
   alp top [session] [--once]
   alp attach <session> [--json]
@@ -32,6 +33,8 @@ async function project(command, args) {
   try {
     const result = await (command === 'upgrade' ? upgradeProject : initProject)(args[0] ?? process.cwd());
     console.log(`ALP initialized: ${result.created.length} files created, ${result.preserved.length} existing files preserved.`);
+    const library = await seedLibrary(alpHome());
+    if (library.created.length || library.updated.length) console.log(`Skill library ${alpHome()}: ${library.created.length} files added, ${library.updated.length} unchanged files updated.`);
     if ('updated' in result) {
       console.log(`ALP upgraded: ${result.updated.length} files updated.${result.backup ? ` Backup: ${result.backup}` : ''}`);
       if (result.customInstructions.length) console.log(`Custom instructions preserved; reconcile with templates if needed: ${result.customInstructions.join(', ')}`);
@@ -191,18 +194,27 @@ function follow(client, rootId, print, { untilIdle, interactive = false }) {
     };
     process.on('SIGINT', onSignal);
     client.onClose(error => { process.off('SIGINT', onSignal); reject(error); });
+    let rootEnded = false;
     client.onEvent(envelope => {
       print(envelope);
       answering?.accept(envelope.event);
       const { sessionId, event } = envelope;
-      if (sessionId !== rootId) return;
       if (event.type === 'turn.ended') {
-        failed = event.state !== 'completed';
-        if (!untilIdle) return;
-        // The root may still have assignments or mail; it is done only when idle.
+        if (sessionId === rootId) {
+          failed = event.state !== 'completed';
+          rootEnded = true;
+        }
+        if (!untilIdle || !rootEnded) return;
+        // The root may still have assignments, mail, or a supervisor review; it is done
+        // only when idle, so any turn that ends in the tree checks again.
         setTimeout(() => {
           client.request('session.get', { sessionId: rootId }).then(({ session }) => { if (!session.busy) finish(); }, finish);
         }, 50);
+        return;
+      }
+      if (sessionId !== rootId) return;
+      if (event.type === 'turn.started') {
+        rootEnded = false;
       } else if (event.type === 'session.closed' || event.type === 'session.failed' || event.type === 'prompt.failed') {
         failed ||= event.type !== 'session.closed';
         finish();
@@ -216,14 +228,16 @@ function follow(client, rootId, print, { untilIdle, interactive = false }) {
 
 async function run(args) {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
-    agent: { type: 'string' }, workflow: { type: 'string' }, model: { type: 'string' }, mode: { type: 'string' },
+    agent: { type: 'string' }, profile: { type: 'string' }, workflow: { type: 'string' }, model: { type: 'string' }, mode: { type: 'string' },
     thinking: { type: 'string' }, project: { type: 'string' }, json: { type: 'boolean' },
   } });
   const text = positionals.join(' ').trim();
   if (!text) throw new UsageError();
+  // --workflow is the option's name before profiles.
+  if (values.profile && values.workflow && values.profile !== values.workflow) throw new UsageError();
   const client = await connect(await start(), { name: 'alp-cli', version: '1' });
   try {
-    const spec = { cwd: path.resolve(values.project ?? process.cwd()), persist: true, agent: values.agent, workflow: values.workflow, model: values.model, mode: values.mode, thinking: values.thinking };
+    const spec = { cwd: path.resolve(values.project ?? process.cwd()), persist: true, agent: values.agent, workflow: values.profile ?? values.workflow, model: values.model, mode: values.mode, thinking: values.thinking };
     const sessionId = `cli-${randomUUID()}`;
     const done = follow(client, sessionId, printer(values.json), { untilIdle: true, interactive: !values.json && process.stdin.isTTY });
     await client.request('session.create', { sessionId, spec });
