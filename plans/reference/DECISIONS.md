@@ -205,3 +205,16 @@ Decided by the user on 2026-10-09: while Paseo runs, alpd runs. The plugin start
 
 A deliberate `alp daemon stop` is respected: the plugin leaves alpd stopped until someone asks for it (a prompt in Paseo, `alp daemon start`, or Paseo starting again). When `alp daemon install` set up a login service, starts go through it. Details: [alpd §40](ALPD.md).
 
+## D23 — ALP settings in Paseo: library, teams, hooks, ACP
+
+Decided by the user on 2026-10-09. The plan is in [phase 13](../phases/13-settings-teams-acp.md).
+
+- Teams, agents, skills, MCP servers, hooks and providers live in a library in `~/.alp`, which every project uses. A project overrides an entry by name in its own `.alp/`. Built-ins come from the package's templates.
+- A team has a workflow (members, roles, delegation, limits) and house rules, which are prose added to every member's instructions. Phở and Cafe are built-in teams.
+- An agent picks its provider, model, mode, skills, MCP servers and hooks. A team may set a member's model, and the team wins.
+- ALP itself runs hooks at its own events. A project's hooks need the user's consent once per project; after that they run without asking.
+- ACP providers work through a generic framework, tested with a fake agent. ACP agents may run in every permission mode, and the limits are stated.
+- `alp init` no longer copies the built-in agents.
+- A Paseo settings screen edits the library, and a workspace panel edits a project's overrides.
+- Later: the mains of different teams work together ([phase 14](../phases/14-team-of-teams.md)).
+

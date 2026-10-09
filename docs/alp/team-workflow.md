@@ -790,7 +790,7 @@ The supervisor is agent `supervisor` on `claude:claude-sonnet-4-6` with `medium`
 effort, always read-only, and has only `alp_send` and `alp_board`. It is a child of
 main but not an assignment: it files no handoff, delegates nothing, does not count as
 a peer, and survives interrupts of main. A supervisor that fails to start never fails
-main. Projects from before 0.4 get its starter files when it first starts. Closing
+main. It is a built-in agent, so every project has it without a copy. Closing
 main closes it; a resumed main starts a new one.
 
 After each of main's turns, ALP sends the supervisor a digest of what happened in the

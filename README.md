@@ -18,9 +18,9 @@ The package provides the `alp` command and `alpd`, the per-user daemon that runs
 
 Run `node /path/to/alp/src/cli.js init [directory]` (or `alp init [directory]` when the package command is installed). The directory defaults to the current working directory.
 
-When the Paseo plugin opens an ALP session in a repository that lacks `ALP.md` or the starter `main` agent, it performs this initialization automatically. Initialization fills missing scaffold files and never replaces existing files, so partial and customized ALP setups are preserved.
+When the Paseo plugin opens an ALP session in a repository that lacks `ALP.md` or `.alp/settings.json`, it performs this initialization automatically. Initialization fills missing scaffold files and never replaces existing files, so partial and customized ALP setups are preserved.
 
-Initialization creates `ALP.md`, `.alp/settings.json`, and six editable agent packages: `main`, `lead`, `peer`, `oracle`, `reviewer`, and `supervisor`, each containing `AGENT.md`, an empty `skills/` directory for project-only skills, an empty `hooks/` directory, and `.mcp.json` with `{ "mcpServers": {} }`. Main owns delivery; Phở lets main implement or call peer, while Cafe assigns technical execution to lead. Oracle and reviewer provide read-only advice and review; the supervisor reviews main's process after each turn.
+Initialization creates `ALP.md` and `.alp/settings.json`. The six agents `main`, `lead`, `peer`, `oracle`, `reviewer` and `supervisor` are built into ALP and follow its updates; a project does not copy them. To change one, make an agent of the same name in your library (`~/.alp/agents/`) or in the project (`.alp/agents/`); see [agent library](docs/alp/agent-library.md). Main owns delivery; Phở lets main implement or call peer, while Cafe assigns technical execution to lead. Oracle and reviewer provide read-only advice and review; the supervisor reviews main's process after each turn.
 
 The default settings select main with the Phở profile. Main runs on Opus 5.5 with high effort and full access unless settings or the caller choose otherwise. Paseo exposes an `alp_delegate` tool that executes real child sessions and returns their evidence. See [Phở and Cafe profiles](docs/alp/team-workflow.md).
 
@@ -28,7 +28,7 @@ Six [role skills](docs/alp/role-skills.md) cover intake, research, planning, del
 
 Repeated runs fill in missing files and preserve existing file contents, including custom settings. Conflicting filesystem entry types cause an error; files already created before an error remain available for a later retry. Run `npm run test:init` to verify initialization independently.
 
-For projects created with an earlier scaffold, run `node /path/to/alp/src/cli.js upgrade [directory]`. This backs up and updates recognized original instructions, adds profile settings, renames the old `smart`/`supervised` profiles to `pho`/`cafe`, and archives project copies of skills that still match the shipped ones, so the library applies. The old shipped graph migrates to Cafe; custom graphs and customized instructions/skills remain unchanged.
+For projects created with an earlier scaffold, run `node /path/to/alp/src/cli.js upgrade [directory]`. This backs up and updates recognized original instructions, adds profile settings, renames the old `smart`/`supervised` profiles to `pho`/`cafe`, and archives project copies of skills that still match the shipped ones, so the library applies. Copies of the built-in agents that are still as ALP shipped them are put away too, so the project uses the built-ins; a copy you edited, or added skills, MCP servers or hooks to, stays as the project's override. The old shipped graph migrates to Cafe; custom graphs and customized instructions/skills remain unchanged.
 
 ## Development
 
@@ -56,12 +56,13 @@ your-project/
   .alp/
     settings.json
     tasks/            # one JSON file per task; commit it with the project
-    agents/
-      main/AGENT.md
-      lead/AGENT.md
-      peer/AGENT.md
+    agents/           # optional: project agents, and overrides of built-in or library ones
       your-agent/AGENT.md
+      your-agent/agent.json
+    skills/ mcp/ hooks/   # optional: project entries; each overrides a library entry of its name
 ```
+
+`alp agents`, `alp skills`, `alp mcp` and `alp hooks` list what a project can use: ALP's built-ins, your library in `~/.alp`, and the project's own entries, with what each overrides and which agents use it.
 
 Example `.alp/settings.json`:
 
@@ -73,7 +74,7 @@ Example `.alp/settings.json`:
 }
 ```
 
-`workflow.mode` is `pho` or `cafe` (`smart` and `supervised`, their names before 0.4, are still accepted); `workflow.supervisor: false` turns the supervisor off. `runtime.provider` selects `codex` or `claude` behind the ALP Paseo plugin; the Paseo provider ID itself is `alp`. Without `runtime.provider` and `runtime.model`, main runs on `claude:claude-opus-5-5` with `high` effort; setting either replaces that default. `runtime.model` is passed through to the selected native harness, so it accepts any model name supported by that installed Codex or Claude Code version. Core treats these strings as provider-neutral data. Optional agent-local `skills/<name>/SKILL.md`, `hooks/*`, and `.mcp.json` are discovered by core. This prototype rejects agents with hooks rather than executing them without a defined hook contract.
+`workflow.mode` is `pho` or `cafe` (`smart` and `supervised`, their names before 0.4, are still accepted); `workflow.supervisor: false` turns the supervisor off. `runtime.provider` selects `codex` or `claude` behind the ALP Paseo plugin; the Paseo provider ID itself is `alp`. Without `runtime.provider` and `runtime.model`, main runs on `claude:claude-opus-5-5` with `high` effort; setting either replaces that default. `runtime.model` is passed through to the selected native harness, so it accepts any model name supported by that installed Codex or Claude Code version. Core treats these strings as provider-neutral data. An agent's `agent.json` can pick its own provider, model, thinking and mode, and name the skills, MCP servers and hooks it uses ([agent library](docs/alp/agent-library.md)). ALP does not run hooks yet (phase 13, step 5), so an agent with hooks is refused when a session starts.
 
 For example, select Claude Code and one of its model aliases in `.alp/settings.json`:
 

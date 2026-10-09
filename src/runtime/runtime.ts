@@ -2098,7 +2098,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       return toolResult(false, { error: `A skill needs a name (lowercase letters, digits, hyphens), a one-line description, a body of at most ${SKILL_BODY_CHARS} characters, and the roles that get it` });
     }
     if (!options.libraryDir) return toolResult(false, { error: 'This host keeps no user skill library' });
-    const known = new Set([...STARTER_ROLES, ...await discoverAgents(session.mapping.agent.projectRoot)]);
+    const known = new Set([...STARTER_ROLES, ...await discoverAgents(session.mapping.agent.projectRoot, { library: options.libraryDir, templates: options.templates })]);
     const unknown = args.roles.filter((role: string) => !known.has(role));
     if (unknown.length) return toolResult(false, { error: `Unknown roles: ${unknown.join(', ')}. Roles are ${[...known].join(', ')}` });
     const file = path.join(options.libraryDir, 'skills', args.name, 'SKILL.md');

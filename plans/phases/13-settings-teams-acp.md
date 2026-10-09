@@ -1,6 +1,6 @@
 # Phase 13 — ALP settings in Paseo: teams, agents, skills, MCP, hooks, ACP providers
 
-**Status:** proposed on 2026-10-09 and waiting for the user's approval. Nothing here is built. Once approved, it becomes decision D23.
+**Status:** approved by the user on 2026-10-09 as decision D23, with the answers below. Built one step per PR.
 
 ## What the user asked for
 
@@ -162,15 +162,14 @@
 - Providers are added in Settings or with `alp provider add`. An agent then picks `provider: "<id>"` and a model.
 - **Tests:** a scripted fake ACP agent in `test/support` that streams messages, calls ALP tools through the bridge, asks permission, gets cancelled, loads a session and crashes. No real agent is used (decision 3).
 
-## Open questions for the user
+## Answers to the open questions (2026-10-09)
 
-1. **New projects:** `alp init` stops copying the built-in agents into new projects, which then use the library's. Projects that already copied them keep their copies as overrides. Or should `alp init` keep copying?
-2. **Team models:** where are a member's model and effort set?
-   - On the agent, and the team only lists members. This is simpler, but the same agent then runs the same model in every team.
-   - Or the team may set a model per member, overriding the agent's. Phở and Cafe need this today, for main on Opus 5.5 high and the advisors on fixed models.
-   - The proposal is to allow both, with the team winning.
-3. **Hook trust:** ask once per hook content digest, as proposed? Or trust project hooks without asking?
-4. **ACP permissions:** for ACP agents, accept that read-only and workspace-write rest on the agent asking permission? Or allow ACP agents only in `full-access` until their sandboxing is known?
+1. **New projects:** `alp init` stops copying the built-in agents. A new project uses the built-in and library agents. Copies that existing projects already have are overrides, and `alp upgrade` puts away the unedited ones, with a backup.
+2. **Team models:** both, as proposed. An agent sets its own model and effort, and a team may set them per member, overriding the agent's.
+3. **Hook trust:** ALP asks once per workspace (project). Once the user agrees, that project's hooks run from then on without asking again, including hooks added or changed later. Library hooks are always trusted.
+4. **ACP permission modes:** all three modes, as proposed. The limit is stated in the session's instructions, and `alp doctor` warns about it.
+
+Built-in agents, teams and providers are read from the package's templates, so they follow ALP updates. To change one, duplicate it, or make a library or project entry with the same name, which overrides it.
 
 ## Not in this phase
 

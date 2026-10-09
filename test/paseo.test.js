@@ -16,6 +16,8 @@ async function fixture(t) {
     await mkdir(dir, { recursive: true }); await writeFile(path.join(dir, 'AGENT.md'), `Agent ${name}`);
   }
   await writeFile(path.join(root, 'ALP.md'), 'Project instructions');
+  // The built-in supervisor would review each turn and keep a released tree running; these tests are not about it.
+  await writeFile(path.join(root, '.alp', 'settings.json'), JSON.stringify({ workflow: { supervisor: false } }));
   return root;
 }
 const config = cwd => ({ cwd, env: { ALP_TEST: 'session' }, systemPrompt: 'Host instructions', mcpServers: {}, settings: {}, persist: true });
@@ -88,9 +90,9 @@ test('opening the first session in an empty repository installs the ALP starter'
   assert.equal(result.agent.name, 'main');
   assert.match(result.instructions, /ALP/);
   assert.equal(JSON.parse(await readFile(path.join(root, '.alp', 'settings.json'), 'utf8')).defaultAgent, 'main');
-  for (const name of ['main', 'lead', 'peer']) {
-    assert.match(await readFile(path.join(root, '.alp', 'agents', name, 'AGENT.md'), 'utf8'), new RegExp(name, 'i'));
-  }
+  // Agents come from ALP's built-ins; the project gets no copies (ALPD §41).
+  assert.equal(result.agent.source, 'builtin');
+  await assert.rejects(readFile(path.join(root, '.alp', 'agents', 'main', 'AGENT.md'), 'utf8'), { code: 'ENOENT' });
   assert.ok((await readFile(path.join(root, 'ALP.md'), 'utf8')).length > 0);
 });
 test('opening a session repairs a partial ALP directory without replacing user files', async t => {
@@ -101,7 +103,7 @@ test('opening a session repairs a partial ALP directory without replacing user f
   const result = await mapSession(config(root));
   assert.equal(result.agent.name, 'main');
   assert.equal(await readFile(path.join(root, '.alp', 'custom.txt'), 'utf8'), 'keep me');
-  assert.ok((await readFile(path.join(root, '.alp', 'agents', 'main', 'AGENT.md'), 'utf8')).length > 0);
+  assert.ok((await readFile(path.join(root, '.alp', 'settings.json'), 'utf8')).length > 0);
 });
 test('mapping resolves defaults/custom, combines instructions, normalizes MCP and validates overrides', async t => {
   const root = await fixture(t);
@@ -143,6 +145,7 @@ test('lifecycle: open, prompt, steering, cancellation, persistence/reload preser
   assert.equal(persistence.version, 2);
   assert.deepEqual(persistence.data, { alpdSessionId: 's', agent: 'main', cwd: root });
   await conn.send({ type: 'session.close', sessionId: 's', requestId: 'close' });
+  console.log('DBG', runtimes.map(r => [r.closed, r.calls.map(c => c.method + ':' + (c.params?.developerInstructions ?? '').slice(0, 60))]));
   assert.equal(runtimes[0].closed, true);
   await writeFile(path.join(root, 'ALP.md'), 'Updated project');
   await conn.send({ type: 'session.open', sessionId: 's', requestId: 'resume', config: config(root), persistence, history: 'replay' });

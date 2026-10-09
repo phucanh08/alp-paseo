@@ -1317,3 +1317,48 @@ Goal (D22): alpd is up whenever Paseo is, without the user starting it, and Pase
   - with an in-process alpd over a durable store, a Paseo connection survives two alpd crashes. It shows the lost and reconnected notices, never `runtime_failed`. The next prompt resumes the native thread, and Paseo sees the session opened once. A prompt sent while alpd is down waits and is accepted.
 - While this was built, a version of `test/panel.test.js` loaded the plugin without a temporary home and started an alpd in the real `~/.alp`. It was found, stopped, and its files were removed; the global `ALP_HOME` in `npm test` prevents a repeat.
 
+
+## 41. Agent library as built (2026-10-09)
+
+Goal (D23, phase 13, step 1): agents, skills, MCP servers and hooks resolve from three layers, and new projects stop copying the built-in agents.
+
+- **Layers** (`src/core/resolver.js`):
+  - `agentSources(root, { library, templates })` maps each agent name to its source. The sources are:
+    - the built-ins, read with `builtinText` from the package's `templates/agents/<name>/`, or from the bundle's `templates` map;
+    - the library, `$ALP_HOME/agents/<name>/`, which counts only with an `AGENT.md`;
+    - the project, `.alp/agents/<name>/`, which always counts and reports a missing `AGENT.md` when used.
+  - A later layer replaces an agent whole and records what it `overrides`. `discoverAgents` returns the sorted names.
+  - `resolveAgent` reads `AGENT.md` and the optional `agent.json` from the winning layer:
+    - `validateAgentConfig` checks the keys, with did-you-mean suggestions;
+    - `provider`, `model` and `thinking` overlay the project's runtime settings, and `mode` becomes the session's default mode in `resolveSession`;
+    - named `skills`, `mcp` and `hooks` resolve from the project's `.alp/<kind>/`, then the library's;
+    - role skills from `role-skills.json` are replaced by a project skill of the same name;
+    - the agent's own `skills/` and `.mcp.json` come last, and a server named twice is an error;
+    - named hooks are checked with `validateHook`.
+  - `libraryEntries(kind, root, options)` lists `agents`, `skills`, `mcp` or `hooks` with source, overrides, path, description and `usedBy`.
+- **Validation** (`src/core/validation.js`): `AGENT_SETTINGS` and `validateAgentConfig`; `HOOK_EVENTS`, `BLOCKING_HOOK_EVENTS` and `validateHook` (only `handoff`, `task.close` and `merge` block; `timeoutSec` 1–3600; `match` by agent or label).
+- **Init and upgrade:**
+  - `initProject` creates only `ALP.md` and `.alp/settings.json`. `resolveSession` initializes when either is missing. The supervisor's starter-file branch is gone, since the supervisor is built in.
+  - `upgradeProject` ends with `retireAgentCopies`. For each built-in agent's copy whose `AGENT.md` is shipped (current, legacy, or a team-v1 hash):
+    - a copy with nothing else (an empty `.mcp.json`, empty `skills/` and `hooks/`) has its files moved to the backup, and the directory is removed (`removed`);
+    - a copy with additions stays, with `AGENT.md` replaced by the template (`updated`);
+    - customized instructions go to `customInstructions`.
+  - An empty `.alp/agents` is removed.
+- **CLI and doctor:**
+  - `alp agents|skills|mcp|hooks [--project DIR] [--json]` print `libraryEntries`. The upgrade output separates archived skills from agent copies put away.
+  - `alp doctor`'s agents check resolves every agent with the library. A broken reference fails it, and overrides are listed as info.
+- Hooks are validated but not run; an agent with hooks is still refused by the adapter until step 5. Providers and teams are listed with their steps (2 and 6).
+
+**Evidence.**
+- `test/library.test.js` covers:
+  - the three layers and whole replacement;
+  - `agent.json` runtime, mode and named entries, with the project winning;
+  - every missing or malformed reference and hook, with its file named;
+  - upgrade keeping a copy with an added MCP server while putting the rest away;
+  - the CLI listing.
+- `test/init.test.js`, `skills.test.js`, `upgrade.test.js` and `paseo.test.js` changed to the new starter:
+  - init writes two files, and the built-ins resolve with their template text;
+  - upgrade of team-v1 and legacy copies removes them, with backups;
+  - a project skill in `.alp/skills` replaces the library's.
+- `test/support/legacy.js` builds a project as the old init made it.
+- Paseo fixtures turn the supervisor off: the built-in supervisor now always exists, and its review keeps a released tree running. The golden and digest tests are unchanged.

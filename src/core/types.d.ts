@@ -25,4 +25,9 @@ export interface ResolvedAgent {
   hooks: ResolvedResource[];
   mcp: ResolvedMcpConfig;
   runtime: { provider?: string; model?: string; reasoning?: string };
+  /** Where the agent is defined: ALP's built-ins, the user's library, or the project (ALPD §41). */
+  source?: 'builtin' | 'library' | 'project';
+  /** The permission mode the agent runs in unless its caller asks for another. */
+  mode?: 'read-only' | 'workspace-write' | 'full-access';
+  description?: string;
 }

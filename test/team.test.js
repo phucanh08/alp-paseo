@@ -19,7 +19,7 @@ async function setup(t, options = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'alp-team-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await initProject(root);
-  await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify(options.workflow ? { workflow: { mode: options.workflow, maxPeers: options.maxPeers ?? 2, supervisor: options.supervisor ?? false } } : { delegation: { main: ['lead'], lead: ['peer'] } }));
+  await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify(options.workflow ? { workflow: { mode: options.workflow, maxPeers: options.maxPeers ?? 2, supervisor: options.supervisor ?? false } } : { delegation: options.delegation ?? { main: ['lead'], lead: ['peer'] } }));
   const runtimes = [];
   const provider = createProvider({ silentForMs: options.timeout ?? 2000, askTimeoutMs: options.askTimeout, runLogDir: options.runLogDir, transport: () => {
     const index = runtimes.length;
@@ -143,9 +143,9 @@ test('timeout and child runtime failure return errors and release owned processe
 });
 
 test('missing target and malformed graph fail without silently switching agents', async t => {
-  const { root, runtimes, connection, events } = await setup(t);
-  await rm(path.join(root, '.alp/agents/lead'), { recursive: true });
-  const failed = await runtimes[0].tool('lead');
+  // The graph names an agent that is neither built in nor in the library or project.
+  const { root, runtimes, connection, events } = await setup(t, { delegation: { main: ['lead', 'scout'], lead: ['peer'] } });
+  const failed = await runtimes[0].tool('scout');
   assert.equal(failed.success, false);
   assert.match(decode(failed).error, /not found/);
   assert.equal(runtimes.length, 1);

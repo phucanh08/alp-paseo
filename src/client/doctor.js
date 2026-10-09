@@ -3,7 +3,7 @@ import path from 'node:path';
 import { runCommand } from './command.js';
 import { daemonPaths, lockAlive, readLock } from './index.js';
 import { installedProgram, serviceFor } from './service.js';
-import { jsonObject, discoverAgents, resolveAgent } from '../core/resolver.js';
+import { jsonObject, agentSources, resolveAgent } from '../core/resolver.js';
 import { settingsWarnings, validateSettings, validateUserSettings } from '../core/validation.js';
 
 /**
@@ -165,9 +165,12 @@ async function projectChecks(project, home) {
     checks.push({ id: 'settings', status: 'fail', summary: error.message });
     return checks;
   }
-  const agents = await discoverAgents(project);
+  const sources = await agentSources(project, { library: home });
+  const agents = [...sources.keys()].sort((a, b) => a.localeCompare(b));
   const broken = [];
   const shadows = [];
+  // An override replaces the whole agent, so it misses later updates to the one it replaces.
+  for (const [agent, { source, overrides }] of sources) if (overrides) shadows.push(`${agent}: the ${source}'s copy replaces the ${overrides === 'builtin' ? 'built-in' : 'library'} agent`);
   for (const agent of agents) {
     try {
       const resolved = await resolveAgent(project, { agent, library: home });
@@ -177,7 +180,7 @@ async function projectChecks(project, home) {
       }
     } catch (error) { broken.push(`${agent}: ${error.message}`); }
   }
-  if (!agents.length) checks.push({ id: 'agents', status: 'fail', summary: `no agents under ${path.join(project, '.alp', 'agents')}; run alp init` });
+  if (!agents.length) checks.push({ id: 'agents', status: 'fail', summary: 'no agents: neither ALP\'s built-ins nor the library nor the project define one' });
   else if (broken.length) checks.push({ id: 'agents', status: 'fail', summary: `${broken.length} of ${agents.length} agents cannot start`, details: broken });
   else checks.push({ id: 'agents', status: shadows.length ? 'info' : 'ok', summary: `${agents.length} agents resolve: ${agents.join(', ')}`, ...(shadows.length ? { details: shadows } : {}) });
   if (settings.defaultAgent && !agents.includes(settings.defaultAgent)) checks.push({ id: 'agents', status: 'fail', summary: `defaultAgent ${settings.defaultAgent} is not an agent of this project` });

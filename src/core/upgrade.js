@@ -74,7 +74,7 @@ export async function upgradeProject(projectRoot) {
     await writeFile(target, after);
     result.updated.push(name);
   }
-  for (const name of new Set([...Object.keys(legacy), ...Object.keys(teamV1)])) {
+  for (const name of ['ALP.md']) {
     const current = await readFile(path.join(root, name), 'utf8');
     const template = name === 'ALP.md' ? 'ALP.md' : name.slice('.alp/'.length);
     const desired = await readFile(new URL(`../../templates/${template}`, import.meta.url), 'utf8');
@@ -123,5 +123,59 @@ export async function upgradeProject(projectRoot) {
       result.removed.push(relative);
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
+  await retireAgentCopies(root, result, backupPath, replace);
   return result;
+}
+
+const known = (name, text) => {
+  const normalized = text.replaceAll('\r\n', '\n');
+  return normalized === legacy[name] || teamV1[name]?.includes(createHash('sha256').update(normalized).digest('hex'));
+};
+
+/** An agent directory's entries apart from AGENT.md, when they hold nothing: an empty .mcp.json and empty skills/ and hooks/. */
+async function onlyInstructions(directory) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (entry.name === 'AGENT.md' && entry.isFile()) continue;
+    if (entry.name === '.mcp.json' && entry.isFile()) {
+      try { const mcp = JSON.parse(await readFile(path.join(directory, entry.name), 'utf8')); if (!Object.keys(mcp.mcpServers ?? {}).length && Object.keys(mcp).every(key => key === 'mcpServers')) continue; } catch {}
+      return false;
+    }
+    if ((entry.name === 'skills' || entry.name === 'hooks') && entry.isDirectory() && !(await readdir(path.join(directory, entry.name))).length) continue;
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Projects used to get a copy of each built-in agent (ALPD §41). A copy that is still
+ * what ALP shipped, with nothing added, is backed up and removed, so the project uses
+ * the built-in and its updates. A shipped copy the user added skills, MCP servers or
+ * hooks to stays as the project's override, with its instructions brought up to date;
+ * customized instructions stay as they are.
+ */
+async function retireAgentCopies(root, result, backupPath, replace) {
+  for (const name of ['main', 'lead', 'peer', 'oracle', 'reviewer', 'supervisor']) {
+    const relative = `.alp/agents/${name}`;
+    const directory = path.join(root, relative);
+    const info = await lstat(directory).catch(() => undefined);
+    if (!info?.isDirectory() || info.isSymbolicLink()) continue;
+    const file = `${relative}/AGENT.md`;
+    const current = await readFile(path.join(root, file), 'utf8').catch(() => undefined);
+    if (current === undefined) continue;
+    const desired = await readFile(new URL(`../../templates/agents/${name}/AGENT.md`, import.meta.url), 'utf8');
+    const shipped = current === desired || known(file, current);
+    if (!shipped) { result.customInstructions.push(file); continue; }
+    if (await onlyInstructions(directory)) {
+      // Its empty skills/ and hooks/ go; its files go to the backup, beside any skills archived above.
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        if (entry.isDirectory()) await rmdir(path.join(directory, entry.name));
+        else await rename(path.join(directory, entry.name), await backupPath(`${relative}/${entry.name}`));
+      }
+      await rmdir(directory);
+      result.removed.push(relative);
+    } else if (current !== desired) {
+      await replace(file, current, desired);
+    }
+  }
+  await rmdir(path.join(root, '.alp/agents')).catch(() => {});
 }

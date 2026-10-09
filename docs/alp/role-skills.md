@@ -60,9 +60,11 @@ remove them. See [team workflow](team-workflow.md#skills-from-lessons).
 
 ## Project skills
 
-New projects get an empty `.alp/agents/<role>/skills/` directory. A skill placed there,
-`.alp/agents/<role>/skills/<skill>/SKILL.md`, applies to that project only and replaces
-a library skill of the same name for that role. Custom agents get only their own
+A skill in the project's `.alp/skills/<skill>/SKILL.md` replaces the library skill of
+the same name for every agent in that project. A project override of an agent,
+`.alp/agents/<role>/`, can also hold `skills/<skill>/SKILL.md`, which applies to that
+role only and replaces both. An agent can also name skills in its `agent.json`; see
+[agent library](agent-library.md). Custom agents get only their own
 project skills unless `role-skills.json` lists skills under their name. A runtime embedded without a library (`libraryDir` unset) uses project skills only.
 
 ```sh

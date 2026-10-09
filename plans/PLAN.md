@@ -21,7 +21,7 @@ Build a small provider-neutral ALP core, integrate it with Paseo first, then sta
 | 10 | Native `alpd` daemon (D12): runtime extraction, daemon + CLI, persistence | `reference/ALPD.md` §11 |
 | 11 | Gas City hardening (D21): crash resilience, hardening, then the next seven | `reference/DECISIONS.md` D21, `reference/ALPD.md` §31 and after |
 | 12 | Later, on demand (D21): event journal, orders, retries, review quorum, reload, PR monitor, mail dedupe, D20 leftovers | `phases/12-gascity-later.md` |
-| 13 | Proposed, awaiting approval: ALP settings in Paseo — teams (Phở and Cafe become teams), agents, skills, MCP, ALP-run hooks, ACP providers | `phases/13-settings-teams-acp.md` |
+| 13 | D23, building: ALP settings in Paseo — teams (Phở and Cafe become teams), agents, skills, MCP, ALP-run hooks, ACP providers | `phases/13-settings-teams-acp.md` |
 | 14 | Noted for later: mains of different teams working together | `phases/14-team-of-teams.md` |
 
 ## Non-goals for early phases

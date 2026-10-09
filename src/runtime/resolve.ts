@@ -84,19 +84,13 @@ export const READ_ONLY_AGENTS = ['oracle', 'reviewer', 'supervisor'];
 export async function resolveSession(spec: SessionSpec, options: { templates?: Record<string, string>; library?: string } = {}) {
   if (!path.isAbsolute(spec.cwd) || !(await stat(spec.cwd)).isDirectory()) throw new Error('Session cwd must be an existing absolute directory');
   if (spec.workdir !== undefined && (!path.isAbsolute(spec.workdir) || !(await stat(spec.workdir)).isDirectory())) throw new Error('Session workdir must be an existing absolute directory');
-  const hasProjectFile = await exists(path.join(spec.cwd, 'ALP.md'));
-  const hasMainAgent = await exists(path.join(spec.cwd, '.alp', 'agents', 'main', 'AGENT.md'));
   const starter = options.templates ? { templates: options.templates } : {};
-  if (!hasProjectFile || !hasMainAgent) await initProject(spec.cwd, starter);
-  // Projects from before the supervisor get only its starter files when it first starts.
-  if ((spec.agent ?? spec.restore?.agent) === 'supervisor' && !(await exists(path.join(spec.cwd, '.alp', 'agents', 'supervisor', 'AGENT.md')))) {
-    await initProject(spec.cwd, { ...starter, agents: ['supervisor'] });
-  }
+  if (!(await exists(path.join(spec.cwd, 'ALP.md'))) || !(await exists(path.join(spec.cwd, '.alp', 'settings.json')))) await initProject(spec.cwd, starter);
   if (options.library) await ensureLibrary(options.library, options.templates ? { templates: options.templates } : {});
   const restored = spec.restore;
   if (restored && spec.agent !== undefined && spec.agent !== restored.agent) throw new Error('Cannot resume a thread as a different ALP agent');
   const workflow = await resolveWorkflow(spec.cwd, spec.workflow, restored?.workflow);
-  const agent = await resolveAgent(spec.cwd, { agent: spec.agent ?? restored?.agent, library: options.library });
+  const agent = await resolveAgent(spec.cwd, { agent: spec.agent ?? restored?.agent, library: options.library, templates: options.templates });
   if (agent.name === 'oracle' && !restored && !ORACLE_MODELS.includes(spec.model ?? '')) throw new Error(`Oracle runs on ${ORACLE_MODELS.join(' or ')}; choose one`);
   const compiled = await compileAgent(new InstructionsAdapter(), agent);
   // Main runs on the profile's model unless settings or the caller choose one.
@@ -112,7 +106,7 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
   if (restored?.runtime && runtimeKind !== restored.runtime) throw new Error('Cannot resume a thread with a different runtime provider');
   // Main has full access unless the caller limits it; a permission profile caps the mode at its base.
   const permissions = await profileFor(agent.projectRoot, options.library, agent.name);
-  const requested = spec.mode ?? (agent.name === 'main' ? 'full-access' : 'read-only');
+  const requested = spec.mode ?? agent.mode ?? (agent.name === 'main' ? 'full-access' : 'read-only');
   const mode = permissions ? capMode(requested, permissions.base) : requested;
   const availableThinking = thinkingOptionsFor(runtimeKind as RuntimeKind, model);
   const thinking = spec.thinking ?? agent.runtime.reasoning ??
