@@ -15,9 +15,22 @@ to Phở and a maximum of two concurrent peers. Writing assignments in the share
 checkout run one at a time; in a git repository, writing peers can run in parallel,
 each in its own worktree, and their changes are merged back with `alp_merge`.
 
+## Tasks panel
+
+Each workspace gets a **Tasks** panel (also in the command center as "Open ALP
+tasks") showing the tasks of its ALP project, in `.alp/tasks`:
+- First, what waits for you: human gates you approve there. Then tasks in review
+  with their handoff, in progress, ready, and blocked or waiting.
+- Recently closed tasks are folded away.
+- You can add a task with a priority, close a task, accept one in review, or
+  reopen one.
+
+The panel reads and writes the task files through the plugin's server, so it
+works without alpd, and it refreshes every five seconds while open.
+
 ## Install
 
-Requires Paseo 0.11.1, Node.js 20+, and an authenticated native Codex or
+Requires Paseo 0.11.1 or a later 0.11 release, Node.js 20+, and an authenticated native Codex or
 Claude Code executable on PATH.
 
 ALP sessions run in `alpd`, a per-user daemon from the `@anhlp/alp` package; Paseo

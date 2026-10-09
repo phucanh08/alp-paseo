@@ -1,0 +1,149 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
+import * as sdk from '@getpaseo/plugin';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import contribute from '../plugins/paseo/server/dist/index.js';
+import { addGate, closeTask, createTask, getTask, startTask, submitTask } from '../src/core/tasks.js';
+
+const require = createRequire(import.meta.url);
+const plugin = fileURLToPath(new URL('../plugins/paseo/', import.meta.url));
+
+// The modules Paseo 0.11.1 supplies to plugin client code (server/plugins/compiler.js); anything else fails to load.
+const HOST = ['@getpaseo/plugin', '@getpaseo/plugin/client', '@getpaseo/plugin/client/react-native', '@getpaseo/plugin/client/ui', '@tanstack/react-query', 'react', 'react/jsx-runtime', 'react-native', 'zod'];
+
+/** Bundles client code the way Paseo's plugin compiler does. */
+async function compileClient(entry) {
+  const result = await build({
+    entryPoints: [path.join(plugin, entry)], bundle: true, format: 'cjs', jsx: 'automatic', write: false, metafile: true,
+    platform: 'neutral', target: 'es2020', mainFields: ['module', 'main'], supported: { 'async-await': false }, external: HOST, logLevel: 'silent',
+  });
+  const externals = new Set(Object.values(result.metafile.inputs).flatMap(input => input.imports.filter(entry => entry.external && !entry.path.startsWith('<')).map(entry => entry.path)));
+  // esbuild's own helpers appear as <runtime>.
+  const inputs = Object.keys(result.metafile.inputs).filter(input => !input.startsWith('<'));
+  return { code: result.outputFiles[0].text, externals: [...externals], inputs };
+}
+
+const tag = name => ({ children, accessibilityLabel, onPress: _onPress, style: _style, contentContainerStyle: _c, ...rest }) =>
+  createElement(name, { 'data-label': accessibilityLabel, ...(rest.value !== undefined ? { 'data-value': rest.value } : {}), ...(rest.placeholder ? { 'data-placeholder': rest.placeholder } : {}) }, children);
+
+/** Host modules for rendering in Node: React Native views become plain elements. */
+function hostModules(overrides = {}) {
+  return {
+    '@getpaseo/plugin': sdk,
+    zod: require('zod'),
+    react: require('react'),
+    'react/jsx-runtime': require('react/jsx-runtime'),
+    'react-native': { View: tag('view'), Text: tag('text'), Pressable: tag('button'), TextInput: tag('input') },
+    '@getpaseo/plugin/client/react-native': { ScrollView: tag('scroll'), useToast: () => ({ show() {}, error() {} }) },
+    '@getpaseo/plugin/client': { useRpc: () => async () => ({}), useWorkspace: () => null },
+    ...overrides,
+  };
+}
+
+function load(code, modules = hostModules()) {
+  const module = { exports: {} };
+  new Function('require', 'module', 'exports', code)(id => {
+    if (!(id in modules)) throw new Error(`Module "${id}" is not available in plugin client code`);
+    return modules[id];
+  }, module, module.exports);
+  return module.exports;
+}
+
+const theme = { colors: { surface0: '#fff', surface1: '#eee', surface2: '#ddd', border: '#ccc', foreground: '#000', foregroundMuted: '#666', accent: '#06c', accentForeground: '#fff', statusSuccess: '#0a0', statusWarning: '#a60', statusDanger: '#c00' } };
+
+test('the client entry bundles with only the modules Paseo supplies and registers the Tasks panel', async () => {
+  const { code, externals, inputs } = await compileClient('index.client.tsx');
+  assert.deepEqual(externals.filter(id => !HOST.includes(id)), []);
+  // Paseo refuses client code outside client/, shared/ and the entry.
+  assert.deepEqual(inputs.filter(input => !/^(index\.client\.tsx|client\/|shared\/)/.test(path.relative(plugin, path.resolve(input)).split(path.sep).join('/'))), []);
+  const panels = [];
+  const commands = [];
+  const cleanup = load(code).default({ addWorkspacePanel: panel => { panels.push(panel); return () => {}; }, addCommandCenterItem: item => { commands.push(item); return () => {}; } });
+  assert.equal(typeof cleanup, 'function');
+  assert.deepEqual(panels.map(panel => [panel.id, panel.title, panel.icon, panel.context, typeof panel.Component]), [['alp-tasks', 'Tasks', 'ListTodo', 'workspace', 'function']]);
+  const opened = [];
+  commands[0].onSelect({ openPanel: id => opened.push(id) });
+  assert.deepEqual([commands[0].context, opened], ['workspace', ['alp-tasks']]);
+});
+
+test('the board shows what waits for the user first, with actions for each section', async () => {
+  const { code } = await compileClient('client/tasks-panel.tsx');
+  const { TaskBoard } = load(code);
+  const row = (id, title, extra = {}) => ({ id, title, type: 'task', priority: 2, status: 'open', ready: false, updatedAt: '2026-10-09T00:00:00Z', ...extra });
+  const tasks = [
+    row('t-0001', 'Ship the release', { approvals: [{ gate: 'g1', note: 'Approve the changelog?' }], waits: ['g1 human: Approve the changelog?'] }),
+    row('t-0002', 'Add --json', { status: 'review', assignee: 'peer', handoff: { outcome: 'complete', summary: 'Added it; npm test passed', agent: 'peer' } }),
+    row('t-0003', 'Normalize', { status: 'in_progress', assignee: 'lead', priority: 1 }),
+    row('t-0004', 'Fix colors', { ready: true, priority: 3 }),
+    row('t-0005', 'Docs', { blockedBy: ['t-0002'] }),
+    row('t-0006', 'Old', { status: 'closed', closed: { reason: 'done', summary: 'Merged', at: '2026-10-08T00:00:00Z' } }),
+  ];
+  const html = renderToStaticMarkup(createElement(TaskBoard, { theme, compact: false, directory: '/p', projectRoot: '/p', tasks, unreadable: 1, error: null, onAdd: async () => true, onAction() {}, onRefresh() {} }));
+  const order = ['Waiting for your approval · 1', 'In review · 1', 'In progress · 1', 'Ready · 1', 'Blocked or waiting · 1', 'Show 1 recently closed'];
+  const positions = order.map(text => html.indexOf(text));
+  assert.ok(positions.every(position => position >= 0), html);
+  assert.deepEqual([...positions].sort((a, b) => a - b), positions);
+  assert.match(html, /Approve the changelog\?<\/text><button[^>]*><text>Approve</);
+  assert.match(html, /Handoff complete from peer: Added it; npm test passed/);
+  assert.match(html, /Accept and close/);
+  assert.match(html, /after t-0002/);
+  assert.match(html, /\/p\/\.alp\/tasks · 1 unreadable file/);
+  assert.match(html, /data-placeholder="Add a task for main"/);
+
+  const empty = renderToStaticMarkup(createElement(TaskBoard, { theme, compact: true, directory: '/q', projectRoot: null, tasks: [], unreadable: 0, error: null, onAdd: async () => true, onAction() {}, onRefresh() {} }));
+  assert.match(empty, /\/q is not an ALP project\. Run alp init to start one\./);
+  assert.match(renderToStaticMarkup(createElement(TaskBoard, { theme, compact: true, directory: null, projectRoot: null, tasks: null, unreadable: 0, error: null, onAdd: async () => true, onAction() {}, onRefresh() {} })), /needs a workspace/);
+});
+
+test('the plugin server lists, adds, closes, reopens and approves tasks as the user', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'alp-panel-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const root = path.join(directory, 'project');
+  await mkdir(path.join(root, '.alp'), { recursive: true });
+  await mkdir(path.join(root, 'src', 'deep'), { recursive: true });
+  const handlers = new Map();
+  contribute({ registerProvider() {}, handle: (contract, handler) => handlers.set(contract.name, { contract, handler }) });
+  assert.deepEqual([...handlers.keys()].sort(), ['alp.tasks.add', 'alp.tasks.change', 'alp.tasks.list']);
+  // Like the SDK's callPluginRpc: input and output are checked against the shared contract.
+  const call = async (name, input) => {
+    const { contract, handler } = handlers.get(name);
+    return contract.output.parseAsync(await handler(await contract.input.parseAsync(input), {}));
+  };
+
+  const gated = await createTask(root, { title: 'Ship' }, 'user');
+  await addGate(root, gated.id, { kind: 'human', note: 'Approve the release?' }, 'main');
+  const reviewed = await createTask(root, { title: 'Add --json' }, 'user');
+  await startTask(root, reviewed.id, { agent: 'peer', assignment: 'a1' }, 'main');
+  await submitTask(root, reviewed.id, { assignment: 'a1', handoff: { outcome: 'complete', summary: 'Done' }, agent: 'peer' }, 'peer');
+
+  // A directory inside the project finds it.
+  const listed = await call('alp.tasks.list', { directory: path.join(root, 'src', 'deep') });
+  assert.equal(listed.projectRoot, root);
+  const byId = new Map(listed.tasks.map(task => [task.id, task]));
+  assert.deepEqual(byId.get(gated.id).approvals, [{ gate: 'g1', note: 'Approve the release?' }]);
+  assert.equal(byId.get(gated.id).ready, false);
+  assert.deepEqual(byId.get(reviewed.id).handoff, { outcome: 'complete', summary: 'Done', agent: 'peer' });
+
+  const { id } = await call('alp.tasks.add', { directory: root, title: 'From the panel', priority: 1 });
+  assert.deepEqual([(await getTask(root, id)).createdBy, (await getTask(root, id)).priority], ['user', 1]);
+  await assert.rejects(call('alp.tasks.add', { directory: root, title: '  ' }));
+
+  assert.equal((await call('alp.tasks.change', { directory: root, id: gated.id, action: 'approve', gate: 'g1' })).status, 'open');
+  assert.equal((await getTask(root, gated.id)).gates[0].resolved.by, 'user');
+  assert.equal((await call('alp.tasks.list', { directory: root })).tasks.find(task => task.id === gated.id).ready, true);
+  assert.equal((await call('alp.tasks.change', { directory: root, id: reviewed.id, action: 'close', note: 'Looks good' })).status, 'closed');
+  assert.equal((await getTask(root, reviewed.id)).closed.summary, 'Looks good');
+  assert.equal((await call('alp.tasks.change', { directory: root, id: reviewed.id, action: 'reopen' })).status, 'open');
+  await assert.rejects(call('alp.tasks.change', { directory: root, id: 't-ffff', action: 'close' }), /No task t-ffff/);
+
+  const outside = await call('alp.tasks.list', { directory });
+  assert.deepEqual(outside, { projectRoot: null, tasks: [], unreadable: [] });
+  await closeTask(root, id, {}, 'user');
+});
