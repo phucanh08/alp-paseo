@@ -64,12 +64,12 @@ test('plugin registers ALP with public SDK contract', async t => {
   const conn = await registration.connect({ versions: [1], capabilities: PROVIDER_CAPABILITIES });
   const events = []; conn.onEvent(e => events.push(e));
   await conn.send({ type: 'catalog', requestId: 'catalog' });
-  assert.equal(events[0].catalog.defaultModel, 'codex:gpt-5.6-sol');
-  assert.ok(events[0].catalog.models.some(model => model.id === 'claude:sonnet'));
-  assert.equal(events[0].catalog.models.filter(model => model.id.startsWith('codex:')).length, 7);
-  assert.equal(events[0].catalog.models.filter(model => model.id.startsWith('claude:')).length, 17);
-  assert.ok(events[0].catalog.models.find(model => model.id === 'codex:gpt-6.1-sol').thinkingOptions.some(option => option.id === 'ultra'));
-  assert.ok(events[0].catalog.models.find(model => model.id === 'claude:claude-opus-5-5').thinkingOptions.some(option => option.id === 'ultracode'));
+  // Paseo offers the two profiles in place of models; each fixes main's model and effort.
+  assert.equal(events[0].catalog.defaultModel, 'pho');
+  assert.deepEqual(events[0].catalog.models.map(model => [model.id, model.label, model.thinkingOptions.length]), [['pho', 'Phở', 0], ['cafe', 'Cafe', 0]]);
+  assert.deepEqual(events[0].catalog.thinkingOptions, []);
+  assert.equal(events[0].catalog.defaultMode, 'full-access');
+  assert.ok(events[0].catalog.modes.some(mode => mode.id === 'full-access'));
   // Permission prompts carry questions agents ask the user; per-tool approval stays unsupported.
   assert.equal(conn.capabilities.includes('permission'), true);
   assert.equal(conn.capabilities.includes('permission.tool_policy'), false);
@@ -106,25 +106,24 @@ test('mapping resolves defaults/custom, combines instructions, normalizes MCP an
   assert.equal(result.instructions, 'Project instructions\n\nAgent main\n\nHost instructions');
   assert.equal(result.mcp.local.cwd, path.join(root, '.alp', 'agents', 'main'));
   assert.equal(result.mcp.remote.http_headers.Accept, 'application/json');
-  const custom = await mapSession({ ...config(root), model: 'explicit-model', thinkingOption: 'low', mode: 'workspace-write', providerOptions: { agent: 'custom' } });
-  assert.equal(custom.agent.name, 'custom'); assert.equal(custom.model, 'explicit-model'); assert.equal(custom.thinking, 'low'); assert.equal(custom.mode, 'workspace-write');
+  // Paseo picks a profile, never a model or effort: those come from settings or the profile.
+  const custom = await mapSession({ ...config(root), model: 'codex:explicit-model', thinkingOption: 'low', mode: 'workspace-write', providerOptions: { agent: 'custom' } });
+  assert.equal(custom.agent.name, 'custom'); assert.equal(custom.model, 'configured-model'); assert.equal(custom.thinking, 'high'); assert.equal(custom.mode, 'workspace-write');
   await writeFile(path.join(root, '.alp', 'settings.json'), JSON.stringify({ runtime: { provider: 'claude', model: 'opus', reasoning: 'high' } }));
   const claude = await mapSession(config(root));
   assert.equal(claude.runtimeKind, 'claude'); assert.equal(claude.model, 'opus');
-  const selected = await mapSession({ ...config(root), model: 'codex:gpt-5.6-sol' });
-  assert.equal(selected.runtimeKind, 'codex'); assert.equal(selected.model, 'gpt-5.6-sol');
-  const newestCodex = await mapSession({ ...config(root), model: 'codex:gpt-6.1-sol', thinkingOption: 'ultra' });
-  assert.equal(newestCodex.runtimeKind, 'codex'); assert.equal(newestCodex.thinking, 'ultra');
-  const newestClaude = await mapSession({ ...config(root), model: 'claude:claude-opus-5-5', thinkingOption: 'ultracode' });
-  assert.equal(newestClaude.runtimeKind, 'claude'); assert.equal(newestClaude.thinking, 'ultracode');
-  for (const change of [{ cwd: '.' }, { mode: 'danger-full-access' }, { thinkingOption: 'invalid' }, { providerOptions: { unknown: true } }, { settings: { x: true } }, { mcpServers: { local: { type: 'stdio', command: 'node' } } }, { mcpServers: { remote2: { type: 'sse', url: 'https://example.test' } } }]) await assert.rejects(mapSession({ ...config(root), ...change }));
+  await writeFile(path.join(root, '.alp', 'settings.json'), '{}');
+  const profile = await mapSession({ ...config(root), model: 'cafe', thinkingOption: 'low' });
+  assert.deepEqual([profile.runtimeKind, profile.model, profile.thinking, profile.mode, profile.workflow.mode], ['claude', 'claude-opus-5-5', 'high', 'full-access', 'cafe']);
+  for (const change of [{ cwd: '.' }, { mode: 'danger-full-access' }, { providerOptions: { unknown: true } }, { settings: { x: true } }, { mcpServers: { local: { type: 'stdio', command: 'node' } } }, { mcpServers: { remote2: { type: 'sse', url: 'https://example.test' } } }]) await assert.rejects(mapSession({ ...config(root), ...change }));
 });
 test('lifecycle: open, prompt, steering, cancellation, persistence/reload preserve project files', async t => {
   const root = await fixture(t);
   const { conn, events, runtimes, environments } = await connection(t, root);
   assert.deepEqual(environments[0], { PATH: 'baseline', ALP_TEST: 'session' });
   const start = runtimes[0].calls[0]; assert.equal(start.method, 'thread/start');
-  assert.equal(start.params.approvalPolicy, 'never'); assert.equal(start.params.sandbox, 'read-only');
+  assert.equal(start.params.approvalPolicy, 'never'); assert.equal(start.params.sandbox, 'full-access');
+  assert.equal(start.params.model, 'claude-opus-5-5'); assert.equal(start.params.thinking, 'high');
   assert.match(start.params.developerInstructions, /Project instructions[\s\S]*Agent main/);
   await conn.send(prompt('m1')); await conn.send(prompt('m1'));
   assert.equal(events.filter(e => e.type === 'session.prompt_result' && e.clientMessageId === 'm1').length, 1);
@@ -196,12 +195,13 @@ test('session permissions can change while idle and apply to the next Codex turn
 test('invalid permission changes leave the session mode unchanged', async t => {
   const root = await fixture(t);
   const { conn, events, runtimes } = await connection(t, root);
-  for (const [requestId, changes] of [['invalid', { mode: 'danger-full-access' }], ['model', { model: 'claude:sonnet' }], ['workflow', { settings: { workflow: 'smart' } }]]) {
+  for (const [requestId, changes] of [['invalid', { mode: 'danger-full-access' }], ['model', { model: 'cafe' }], ['workflow', { settings: { workflow: 'cafe' } }], ['thinking', { thinkingOption: 'low' }]]) {
     await conn.send({ type: 'session.configure', sessionId: 's', requestId, changes });
     assert.ok(events.some(e => e.type === 'request.failed' && e.requestId === requestId));
   }
-  await conn.send(prompt('still-read-only'));
-  assert.equal(runtimes[0].calls.find(c => c.method === 'turn/start').params.sandboxPolicy.type, 'readOnly');
+  assert.match(events.find(e => e.type === 'request.failed' && e.requestId === 'model').error.message, /profile is fixed/);
+  await conn.send(prompt('still-full-access'));
+  assert.equal(runtimes[0].calls.find(c => c.method === 'turn/start').params.sandboxPolicy.type, 'dangerFullAccess');
 });
 
 test('Claude permission changes reach the runtime and failed changes are not published', async t => {
@@ -250,4 +250,30 @@ test('Paseo lists alpd roots for import and reopens one under its own id', async
   const missing = { version: 2, data: { alpdSessionId: 'gone', agent: 'main', cwd: root } };
   await conn.send({ type: 'session.open', requestId: 'gone', sessionId: 'x', config: config(root), persistence: missing, history: 'skip' });
   assert.match(events.find(e => e.type === 'request.failed' && e.requestId === 'gone').error.message, /no longer exists/);
+});
+
+test('a profile session shows Phở and Cafe, and main starts its supervisor as a child on Sonnet 4.6', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'alp-paseo-profile-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const runtimes = [];
+  const conn = await createProvider({ transport: () => { const r = fakeRuntime(); r.onRequest = fn => { r.serverRequest = fn; }; runtimes.push(r); return r; } }).connect({ versions: [1], capabilities: PROVIDER_CAPABILITIES });
+  t.after(() => conn.close());
+  const events = []; conn.onEvent(e => { ProviderEventSchema.parse(e); events.push(e); });
+  await conn.send({ type: 'session.open', requestId: 'open', sessionId: 's', config: { ...config(root), model: 'cafe' }, history: 'skip' });
+  assert.ok(events.some(e => e.type === 'session.ready' && e.sessionId === 's'), JSON.stringify(events));
+  const rootConfig = events.find(e => e.type === 'session.config' && e.sessionId === 's').config;
+  assert.equal(rootConfig.model, 'cafe');
+  assert.deepEqual(rootConfig.models.map(model => model.label), ['Phở', 'Cafe']);
+  assert.deepEqual(rootConfig.settings, []);
+  for (let i = 0; i < 100 && !events.some(e => e.type === 'session.ready' && e.sessionId !== 's'); i++) await new Promise(resolve => setTimeout(resolve, 5));
+  const child = events.find(e => e.type === 'session.opened' && e.sessionId !== 's');
+  assert.equal(child.parentSessionId, 's');
+  assert.equal(child.title, 'ALP supervisor (claude)');
+  const childConfig = events.find(e => e.type === 'session.config' && e.sessionId === child.sessionId).config;
+  assert.equal(childConfig.model, 'claude:claude-sonnet-4-6');
+  assert.equal(childConfig.mode, 'read-only');
+  const start = runtimes[1].calls.find(c => c.method === 'thread/start').params;
+  assert.deepEqual(start.dynamicTools.map(tool => tool.name), ['alp_send', 'alp_board']);
+  assert.match(start.developerInstructions, /Supervisor — process reviewer for main/);
+  assert.ok(runtimes[0].calls.find(c => c.method === 'thread/start').params.dynamicTools.some(tool => tool.name === 'alp_lesson'));
 });

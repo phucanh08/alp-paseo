@@ -16,7 +16,8 @@ import { fileURLToPath } from 'node:url';
 import { createAlpRuntime, type RuntimeOptions, type SessionSnapshot, type TimelineItem, type Envelope } from '../../../src/runtime/index.js';
 import { createDaemonServer, type DaemonConnection } from '../../../src/daemon/server.js';
 import { alpHome, connect, ensureDaemon } from '../../../src/client/index.js';
-import { alpdSessionOf, DEFAULT_MODEL, handleFor, models, modes, templates, thinkingOptions, thinkingOptionsFor, toSessionSpec } from './mapping.js';
+import { alpdSessionOf, configModels, DEFAULT_PROFILE, handleFor, modes, profileFor, profileModels, templates, toSessionSpec } from './mapping.js';
+import { profiles } from '../../../src/core/workflow.js';
 
 /**
  * Paseo is a viewer of alpd: this provider translates Paseo inputs into daemon
@@ -79,7 +80,15 @@ const errorData = (error: unknown) => ({
   message: error instanceof Error ? error.message : String(error),
 });
 
-const workflowSetting = (mode: string) => ({ type: 'select' as const, id: 'workflow', label: 'Workflow (new session only)', value: mode, options: [{ value: 'smart', label: 'Smart' }, { value: 'supervised', label: 'Supervised' }] });
+/** A session's config: the profile (or a child's own model), its permission mode; model and effort are fixed. */
+const sessionConfig = (session: SessionSnapshot, thinking: string) => ({
+  ...configModels(session),
+  mode: session.mode,
+  thinkingOption: thinking,
+  modes,
+  thinkingOptions: [],
+  settings: [],
+});
 
 function timelineItem(item: TimelineItem): ProviderTimelineItem {
   if (item.kind === 'user_message') return { type: 'user_message', id: item.id, text: item.text, ...(item.clientMessageId ? { clientMessageId: item.clientMessageId } : {}) };
@@ -151,19 +160,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
                 : {}),
               ...(session.persistent ? { persistence: handleFor(session) } : {}),
             });
-            emit({
-              type: 'session.config',
-              sessionId,
-              config: {
-                model: event.effective.model,
-                mode: session.mode,
-                thinkingOption: event.effective.thinking,
-                models,
-                modes,
-                thinkingOptions: thinkingOptionsFor(session.runtime, session.model),
-                settings: [workflowSetting(session.workflow.mode)],
-              },
-            });
+            emit({ type: 'session.config', sessionId, config: sessionConfig({ ...session, model: event.effective.model }, event.effective.thinking) });
             return;
           }
           case 'session.ready':
@@ -171,11 +168,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
             return;
           case 'session.updated': {
             const { session } = event;
-            emit({ type: 'session.config', sessionId, config: {
-              model: session.model, mode: session.mode, thinkingOption: session.thinking,
-              models, modes, thinkingOptions: thinkingOptionsFor(session.runtime, session.model),
-              settings: [workflowSetting(session.workflow.mode)],
-            } });
+            emit({ type: 'session.config', sessionId, config: sessionConfig(session, session.thinking) });
             return;
           }
           case 'session.closed':
@@ -253,12 +246,11 @@ export function createProvider(options: Options = {}): ProviderRegistration {
             type: 'catalog',
             requestId: input.requestId,
             catalog: {
-              models,
+              models: profileModels,
               modes,
-              thinkingOptions,
-              defaultModel: `codex:${DEFAULT_MODEL}`,
-              defaultMode: 'read-only',
-              defaultThinkingOption: 'medium',
+              thinkingOptions: [],
+              defaultModel: DEFAULT_PROFILE,
+              defaultMode: 'full-access',
             },
           });
           return;
@@ -277,7 +269,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
                 persistence: handleFor(session),
                 cwd: session.projectRoot,
                 title: session.title ? `${session.agent}: ${session.title}` : `ALP ${session.agent}`,
-                description: `${session.runtime}:${session.model} · ${session.status}`,
+                description: `${profiles[profileFor(session.workflow?.mode) as keyof typeof profiles]?.label ?? 'ALP'} · ${session.runtime}:${session.model} · ${session.status}`,
                 ...(session.updatedAt ? { updatedAt: session.updatedAt } : {}),
               })),
           });
@@ -336,7 +328,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
 
         // The daemon checks that the session is open, in order with earlier inputs.
         if (input.type === 'session.configure') {
-          if (input.changes.settings?.workflow !== undefined) throw new Error('Workflow is fixed for this session; select Smart or Supervised when creating a new session');
+          if (input.changes.model !== undefined || input.changes.settings?.workflow !== undefined) throw new Error('The profile is fixed for this session; choose Phở or Cafe when creating a new session');
           if (Object.keys(input.changes).some(key => key !== 'mode')) throw new Error('Only permission mode can be changed in an existing ALP session');
           await client.request('session.configure', { sessionId: toAlpd(input.sessionId), mode: input.changes.mode === undefined ? undefined : input.changes.mode ?? 'read-only' });
         } else if (input.type === 'session.close') {
