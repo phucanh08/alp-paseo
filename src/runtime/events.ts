@@ -29,7 +29,7 @@ export type SessionSnapshot = {
   model: string;
   mode: string;
   thinking: string;
-  workflow: { mode: string; maxPeers: number };
+  workflow: { mode: string; maxPeers: number; supervisor: boolean };
   threadId: string;
   /** The native thread is kept and the session can be resumed. */
   persistent: boolean;

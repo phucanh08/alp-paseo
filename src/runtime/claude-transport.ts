@@ -16,7 +16,7 @@ type ClaudeQuery = AsyncGenerator<SDKMessage, void> & {
   supportedModels(): Promise<Array<{ value: string; displayName: string; description: string; supportedEffortLevels?: string[] }>>;
   usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(options: { skipBehaviors: boolean }): Promise<any>;
   interrupt(): Promise<unknown>;
-  setPermissionMode(mode: 'default' | 'acceptEdits'): Promise<void>;
+  setPermissionMode(mode: 'default' | 'acceptEdits' | 'bypassPermissions'): Promise<void>;
   close(): void;
 };
 
@@ -29,12 +29,33 @@ export const toolShapes: Record<string, Record<string, z.ZodType>> = {
     model: z.string().min(1).optional(),
     thinking: z.string().min(1).optional(),
     modelReason: z.string().min(1).optional(),
-    mode: z.enum(['read-only', 'workspace-write']).optional(),
+    mode: z.enum(['read-only', 'workspace-write', 'full-access']).optional(),
     isolation: z.enum(['shared', 'worktree']).optional(),
     wait: z.boolean().optional(),
   },
   alp_merge: {
     assignmentId: z.string().min(1),
+  },
+  alp_lesson: {
+    scope: z.enum(['project', 'user']),
+    lesson: z.string().min(1).max(600),
+  },
+  alp_skill: {
+    name: z.string().min(1),
+    description: z.string().min(1).max(300),
+    body: z.string().min(1).max(20_000),
+    roles: z.array(z.string().min(1)).min(1).max(10),
+    lessons: z.array(z.string().min(1).max(600)).max(50).optional(),
+    replace: z.boolean().optional(),
+  },
+  alp_issue: {
+    action: z.enum(['search', 'create', 'comment']),
+    target: z.enum(['project', 'alp']),
+    query: z.string().min(1).max(200).optional(),
+    title: z.string().min(1).max(200).optional(),
+    body: z.string().min(1).max(20_000).optional(),
+    issue: z.number().int().positive().optional(),
+    labels: z.array(z.string().min(1).max(50)).max(10).optional(),
   },
   alp_discard: {
     assignmentId: z.string().min(1),
@@ -128,6 +149,9 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
   }
 }
 
+/** Claude's permission mode for an ALP mode; full-access skips every permission check. */
+export const claudePermissionMode = (sandbox: string) => sandbox === 'read-only' ? 'default' : sandbox === 'full-access' ? 'bypassPermissions' : 'acceptEdits';
+
 export function claudePermissions(sandbox: string, currentSandbox?: () => string) {
   const readOnly = sandbox === 'read-only';
   const readers = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'];
@@ -135,7 +159,9 @@ export function claudePermissions(sandbox: string, currentSandbox?: () => string
     // Plan mode permits writes to plan files and requires ExitPlanMode approval.
     // Fixed read-only callers restrict the tool surface; live sessions keep
     // tools available and consult the current sandbox at the permission gate.
-    permissionMode: readOnly ? 'default' : 'acceptEdits',
+    permissionMode: claudePermissionMode(sandbox),
+    // Lets a live session switch to full-access later; it bypasses nothing by itself.
+    allowDangerouslySkipPermissions: true,
     ...(readOnly && !currentSandbox ? { tools: readers } : {}),
     disallowedTools: ['Agent', 'Task', 'TeamCreate', 'EnterPlanMode', 'ExitPlanMode'],
     canUseTool: async (name: string, input: Record<string, unknown>) => {
@@ -211,7 +237,7 @@ export class ClaudeTransport {
 
     if (method === 'session/configure') {
       if (!this.query || !this.config) throw new Error('Claude thread is not initialized');
-      await this.query.setPermissionMode(params.sandbox === 'read-only' ? 'default' : 'acceptEdits');
+      await this.query.setPermissionMode(claudePermissionMode(params.sandbox));
       this.config.sandbox = params.sandbox;
       return {};
     }

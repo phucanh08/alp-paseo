@@ -15,6 +15,8 @@ export type MailEvent = {
   redelivered?: boolean;
   /** Informational; never steers or wakes a session by itself. */
   passive?: boolean;
+  /** Delivered between turns, never steered into a running one or taken by alp_wait. */
+  defer?: boolean;
   /** Turn that received the event; acknowledged when that turn completes. */
   deliveredTurn?: string;
 };
@@ -25,7 +27,7 @@ export const USER = 'user';
 export const MAIL_BATCH_CHARS = 9000;
 export const MAIL_BODY_CHARS = 8000;
 
-export const publicEvent = ({ passive: _passive, deliveredTurn: _turn, ...event }: MailEvent) => event;
+export const publicEvent = ({ passive: _passive, defer: _defer, deliveredTurn: _turn, ...event }: MailEvent) => event;
 
 /** Oldest undelivered events accepted by `accept`, within the batch budget; never empty when one matches. */
 export function takeBatch(mail: MailEvent[], accept: (event: MailEvent) => boolean, limit = MAIL_BATCH_CHARS) {

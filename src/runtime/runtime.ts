@@ -4,14 +4,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { workflowGraphs } from '../core/workflow.js';
 import { resolveDelegation } from '../core/delegation.js';
+import { discoverAgents } from '../core/resolver.js';
 import { CodexTransport } from './transport.js';
 import { ClaudeTransport } from './claude-transport.js';
-import { modes } from './catalog.js';
-import { resolveSession, type ResolvedSession, type RuntimeKind, type SessionSpec } from './resolve.js';
+import { modes, ORACLE_MODELS, SUPERVISOR_MODEL, SUPERVISOR_THINKING, withinMode, writes } from './catalog.js';
+import { LESSONS_FILE, READ_ONLY_AGENTS, resolveSession, type ResolvedSession, type RuntimeKind, type SessionSpec } from './resolve.js';
 import { MAIL_BODY_CHARS, publicEvent, renderMail, takeBatch, USER, type MailEvent } from './mailbox.js';
 import type { AlpEvent, AssignmentSnapshot, Envelope, SessionSnapshot, TreeStatus, TurnOrigin, UserQuestion } from './events.js';
 import { BOARD_KEEP, live, normalizePaths, overlapping, PIN_BODY_CHARS, PIN_KINDS, renderBoard, renderPin, type Pin, type PinKind } from './board.js';
 import { checkoutKey, commitWorktree, createWorktree, mergeWorktree, removeWorktree, type Worktree, type WorktreeChange } from './workspace.js';
+import { ALP_REPO, gh, projectRepo, type GitHubRunner } from './github.js';
 
 export type RuntimeTransport = {
   request(method: string, params: any): Promise<any>;
@@ -56,6 +58,15 @@ export type RuntimeOptions = {
 
   /** Where project boards are kept (JSONL per project). Omitted keeps them in memory only. */
   boardDir?: string;
+
+  /** The user's skill library and lessons (ALP_HOME). Omitted: only skills inside the project, and project lessons. */
+  libraryDir?: string;
+
+  /** False starts no supervisors, for hosts and tests that do not want them. Default true. */
+  supervisor?: boolean;
+
+  /** Runs the GitHub CLI for alp_issue. Default: `gh` (or ALP_GH_BIN) on PATH. */
+  github?: GitHubRunner;
 };
 
 export type OpenOptions = {
@@ -143,6 +154,19 @@ type Session = {
   worktrees: Map<string, { agent: string; worktree: Worktree; change: WorktreeChange }>;
 
   settle?: (state: string, error?: unknown) => void;
+
+  /** This session is the supervisor of its parent, not an assignment. */
+  role?: 'supervisor';
+  /** A root's supervisor session. */
+  supervisor?: string;
+  /** What happened in the tree during this root's turn, for its supervisor. */
+  journal: string[];
+  /** The turn answers only the supervisor's questions; it is not reviewed again. */
+  supervisorWake?: boolean;
+  /** A digest waits for the supervisor: queued, or behind its current review. */
+  reviewPending?: boolean;
+  /** A review start is queued behind client operations. */
+  reviewQueued?: boolean;
 
   /** Requesting agent for a child assignment; enables alp_handoff and alp_ask. */
   parentAgent?: string;
@@ -322,6 +346,75 @@ const ASK_TOOL = {
   },
 };
 
+const LESSON_TOOL = {
+  type: 'function',
+  name: 'alp_lesson',
+  description: 'Record a lesson about your process, so you follow it in later sessions. Write it as a rule: what to do, and when. scope project: this project only; user: every project of this user.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      scope: { type: 'string', enum: ['project', 'user'] },
+      lesson: { type: 'string', description: 'One rule, at most 600 characters.' },
+    },
+    required: ['scope', 'lesson'],
+    additionalProperties: false,
+  },
+};
+
+const SKILL_TOOL = {
+  type: 'function',
+  name: 'alp_skill',
+  description: 'Propose a skill distilled from your lessons. ALP shows the whole skill to the user, and saves it to the user\'s skill library and gives it to the roles only when the user approves; any other answer comes back as feedback.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Directory name: lowercase letters, digits and hyphens.' },
+      description: { type: 'string', description: 'One line: what the skill is for and when to use it.' },
+      body: { type: 'string', description: 'The SKILL.md body in Markdown, without frontmatter: when to use it, the method as steps, and the checks.' },
+      roles: { type: 'array', items: { type: 'string' }, description: 'The roles whose work the skill guides, and only those: any of main (yourself), lead, peer, oracle, reviewer, supervisor, or a custom agent of this project.' },
+      lessons: { type: 'array', items: { type: 'string' }, description: 'The exact text of the lessons this skill replaces; they leave the lessons files once it is saved.' },
+      replace: { type: 'boolean', description: 'Propose a new version of an existing skill of this name.' },
+    },
+    required: ['name', 'description', 'body', 'roles'],
+    additionalProperties: false,
+  },
+};
+
+const ISSUE_TOOL = {
+  type: 'function',
+  name: 'alp_issue',
+  description: 'GitHub issues of this project (target project, from its origin remote) or of ALP itself (target alp). search needs no approval. create and comment show the whole draft to the user and post it only when the user approves; any other answer comes back as feedback.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['search', 'create', 'comment'] },
+      target: { type: 'string', enum: ['project', 'alp'] },
+      query: { type: 'string', description: 'For search: GitHub search terms.' },
+      title: { type: 'string', description: 'For create.' },
+      body: { type: 'string', description: 'For create and comment: Markdown. Facts, reproduction and evidence; no secrets.' },
+      issue: { type: 'integer', description: 'For comment: the issue number.' },
+      labels: { type: 'array', items: { type: 'string' }, description: 'For create: existing labels of the repository.' },
+    },
+    required: ['action', 'target'],
+    additionalProperties: false,
+  },
+};
+
+/** Answers that approve a proposal; anything else is feedback. */
+const APPROVALS = ['approve', 'approved', 'yes', 'y', 'ok', 'đồng ý', 'duyệt', 'có'];
+const SKILL_BODY_CHARS = 20_000;
+const STARTER_ROLES = ['main', 'lead', 'peer', 'oracle', 'reviewer', 'supervisor'];
+const ISSUE_BODY_CHARS = 20_000;
+const ISSUE_FOOTER = '\n\n---\n_Drafted by an ALP agent and posted with the user\'s approval._';
+
+const LESSON_CHARS = 600;
+const DIGEST_CHARS = 12_000;
+const JOURNAL_LINE_CHARS = 400;
+const clip = (text: string, limit = JOURNAL_LINE_CHARS) => {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
+};
+
 /** Returns the normalized handoff, or an error message for the child. */
 function parseHandoff(args: any): Handoff | string {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return 'Handoff must be an object';
@@ -385,7 +478,31 @@ function nativeSessionConfig(
   mapping: ResolvedSession,
   targets: string[],
   parentAgent?: string,
+  role?: 'supervisor',
+  supervised = false,
+  lessonFiles: string[] = [],
 ) {
+  if (role === 'supervisor') {
+    return {
+      runtime: runtimeKind,
+      cwd: mapping.workdir,
+      model: mapping.model,
+      sandbox: mapping.mode,
+      approvalPolicy: 'never',
+      developerInstructions: [
+        mapping.instructions,
+        `Profile: ${mapping.workflow.mode}. ALP runtime identity: supervisor of ${parentAgent}. You are not an assignment: you file no handoff and delegate nothing. ` +
+          `After each turn of ${parentAgent}, ALP sends you a digest of what happened in its session tree. ` +
+          `When you find process mistakes, send ${parentAgent} one alp_send to: "parent", kind note, asking about them; it answers and records a lesson. ` +
+          'Otherwise send nothing. Read files and alp_board when the digest is not enough; never change anything. End each review with a one-line verdict.',
+        `Lessons main has recorded: ${lessonFiles.join(' and ')}. Read them when you review. When three or more cover one theme, or a recorded lesson recurred, also suggest that ${parentAgent} distill them into a skill with alp_skill. When a mistake comes from ALP itself (an unclear instruction, a missing tool, a runtime bug), suggest that ${parentAgent} propose an ALP issue with alp_issue. The user approves both.`,
+      ].join('\n\n'),
+      mcpServers: mapping.mcp,
+      thinking: mapping.thinking,
+      nativeMultiAgent: false,
+      dynamicTools: [SEND_TOOL, BOARD_TOOL],
+    };
+  }
   const delegationInstruction = targets.length
     ? `Use alp_delegate to assign bounded work to: ${targets.join(', ')}. ` +
       'By default it waits and returns the result, or returns early with the child\'s first question. ' +
@@ -409,13 +526,20 @@ function nativeSessionConfig(
     runtime: runtimeKind,
     cwd: mapping.workdir,
     model: mapping.model,
-    sandbox: mapping.mode,
+    sandbox: runtimeKind === 'codex' && mapping.mode === 'full-access' ? 'danger-full-access' : mapping.mode,
     approvalPolicy: 'never',
 
     developerInstructions: [
       mapping.instructions,
-      `Workflow: ${mapping.workflow.mode}; fixed for this session. In Smart, main implements or directly delegates to peer; do not create lead. In Supervised, main supervises lead; lead may implement or delegate to peer. The technical coordinator chooses each peer's model and effort. Use oracle for significant uncertainty; use reviewer for logic changes and risky changes, not mandatory for typo/format fixes. Advisors return only to their requesting coordinator.`,
-      'Oracle must use the highest-capability available model, chosen from runtime catalog evidence, never a fixed model name or inherited default. Supply model, thinking, and modelReason explaining the premium choice; do not silently downgrade. If availability or ranking is unknown, say so. Usage context is advisory, may be unavailable or stale; never infer quota from token counts. Respect known exhausted limits and report them.',
+      `Profile: ${mapping.workflow.mode}; fixed for this session. In Phở (pho), main implements or directly delegates to peer; do not create lead. In Cafe (cafe), main supervises lead; lead may implement or delegate to peer. The technical coordinator chooses each peer's model and effort. Use oracle for significant uncertainty; use reviewer for logic changes and risky changes, not mandatory for typo/format fixes. Advisors return only to their requesting coordinator.`,
+      `Oracle runs on ${ORACLE_MODELS.join(' or ')}; pass one as model (thinking defaults to high). For two independent opinions, start one oracle on each model with wait: false and compare their advice. If the model you need is unavailable, say so rather than choosing another. Usage context is advisory, may be unavailable or stale; never infer quota from token counts. Respect known exhausted limits and report them.`,
+      ...(supervised
+        ? ['A supervisor reviews your process after each turn. Its notes ask about process mistakes: answer them in your reply, then record each lesson with alp_lesson (scope project for this project, user for every project). Do not argue a note away; when it is wrong, say why in one line. ' +
+          'When three or more lessons cover one theme, or a lesson recurs, distill them into a skill with alp_skill: a method with steps and checks, listing the lessons it replaces. Scope it to the roles whose work it guides: yourself, lead, peer, oracle, reviewer, supervisor, or a custom agent; a lesson about briefing peers is yours, a lesson about verifying a change belongs to whoever makes it. The user approves it first.']
+        : []),
+      ...(!parentAgent && mapping.agent.name === 'main'
+        ? ['When you find a problem outside the task that is worth tracking (a bug or gap in this project, or in ALP itself: its process, tools, agent instructions or runtime), search with alp_issue action search, then propose a comment on a matching issue or a new issue. Include facts, reproduction and evidence, never secrets. The user approves every post; never post issues or comments any other way, such as with gh in a shell.']
+        : []),
 
       `ALP runtime identity: ${mapping.agent.name}. ${delegationInstruction}`,
 
@@ -459,12 +583,13 @@ function nativeSessionConfig(
                   description:
                     'Complete brief: objective, scope, constraints, verification, handoff.',
                 },
-                model: { type: 'string', description: 'Explicit runtime-prefixed model ID from the available catalog.' },
+                model: { type: 'string', description: `Explicit runtime-prefixed model ID from the available catalog. Oracle: ${ORACLE_MODELS.join(' or ')}.` },
                 thinking: { type: 'string', description: 'Effort supported by the selected model.' },
-                modelReason: { type: 'string', description: 'For oracle: evidence that this is the highest-capability available model.' },
+                modelReason: { type: 'string', description: 'Why this model suits the task.' },
                 mode: {
                   type: 'string',
-                  enum: ['read-only', 'workspace-write'],
+                  enum: ['read-only', 'workspace-write', 'full-access'],
+                  description: 'Never more than your own mode.',
                 },
                 isolation: { type: 'string', enum: ['shared', 'worktree'], description: 'Default shared: your checkout. worktree: a writing peer works in its own git worktree, so it can run beside other peers; apply its change with alp_merge.' },
                 wait: { type: 'boolean', description: 'Default true: wait for the result or the first question. false: return the assignmentId immediately.' },
@@ -478,6 +603,8 @@ function nativeSessionConfig(
       ...(targets.length ? [WAIT_TOOL, MERGE_TOOL, DISCARD_TOOL] : []),
       ...(targets.length || parentAgent ? [SEND_TOOL] : []),
       ...(parentAgent ? [HANDOFF_TOOL] : []),
+      ...(supervised ? [LESSON_TOOL, SKILL_TOOL] : []),
+      ...(!parentAgent && mapping.agent.name === 'main' ? [ISSUE_TOOL] : []),
       ASK_TOOL,
       PIN_TOOL,
       BOARD_TOOL,
@@ -497,6 +624,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       graph: Record<string, string[]>;
       workflow: ResolvedSession['workflow'];
       ancestry: string[];
+      role?: 'supervisor';
     }
   >();
 
@@ -544,7 +672,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       ...(session.parent ? { parentId: session.parent } : {}),
       ...(session.toolCallId ? { toolCallId: session.toolCallId } : {}),
       ...(session.active ? { activeTurnId: session.active } : {}),
-      busy: !!(session.active || session.pending || session.children.size || session.assignments.size || hasActiveMail(session)),
+      busy: !!(session.active || session.pending || session.children.size || session.assignments.size || hasActiveMail(session) || reviewing(session)),
     };
   }
 
@@ -579,6 +707,16 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     for (const event of session.mail) {
       if (event.deliveredTurn === turnId) { event.deliveredTurn = undefined; event.redelivered = true; }
     }
+
+    if (session.supervisor) {
+      const final = [...session.text.values()].at(-1);
+      if (final) session.journal.push(`${session.mapping.agent.name} final message: ${clip(final, 1500)}`);
+      session.journal.push(`turn ended: ${state}${error ? ` (${clip(errorData(error).message, 200)})` : ''}`);
+      // Answering the supervisor is not reviewed again, or the two would loop.
+      if (session.supervisorWake) session.journal.length = 0;
+      else review(sessionId);
+    }
+    if (session.role === 'supervisor' && session.parent && sessions.get(session.parent)?.reviewPending) review(session.parent);
 
     // A requester is not done while its assignments run or mail awaits it.
     if (state === 'completed' && (session.assignments.size || hasActiveMail(session))) {
@@ -616,6 +754,9 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
           : item.success === false || item.status === 'failed'
             ? 'failed'
             : 'completed';
+      if (session.supervisor && status !== 'running' && item.tool !== 'alp_delegate') {
+        session.journal.push(`${session.mapping.agent.name} tool ${item.tool} ${status}: ${clip(JSON.stringify(item.arguments ?? {}))}`);
+      }
 
       emit(sessionId, {
         type: 'item',
@@ -643,6 +784,9 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
           : item.status === 'completed'
             ? 'completed'
             : 'failed';
+      if (session.supervisor && status !== 'running') {
+        session.journal.push(`${session.mapping.agent.name} shell ${status}${item.exitCode != null ? ` (exit ${item.exitCode})` : ''}: ${clip(String(item.command ?? ''))}`);
+      }
 
       emit(sessionId, {
         type: 'item',
@@ -727,7 +871,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     releaseClaims(sessionId, session.mapping.agent.projectRoot);
 
     await Promise.all(
-      [...session.children].map(closeSession),
+      [...session.children, ...(session.supervisor ? [session.supervisor] : [])].map(closeSession),
     );
 
     terminal(sessionId, session, 'canceled');
@@ -744,7 +888,9 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     sessions.delete(sessionId);
 
     if (session.parent) {
-      sessions.get(session.parent)?.children.delete(sessionId);
+      const parent = sessions.get(session.parent);
+      parent?.children.delete(sessionId);
+      if (parent?.supervisor === sessionId) parent.supervisor = undefined;
     }
 
     emit(sessionId, { type: 'session.closed' });
@@ -768,6 +914,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
   /** Best effort: an unwritable log never blocks or fails delegation. */
   function runLog(rootId: string, entry: Record<string, unknown>) {
+    record(rootId, entry);
     const directory = options.runLogDir;
     if (!directory) return;
     const file = path.join(directory, `${rootId.replace(/[^\w.-]/g, '_')}.jsonl`);
@@ -797,6 +944,270 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
   function hasActiveMail(session: Session) {
     return session.mail.some(event => !event.deliveredTurn && !event.passive);
+  }
+
+  /** Main of a Phở or Cafe tree gets a supervisor, when the host shows child sessions. */
+  function supervises(session: Session) {
+    return options.supervisor !== false && !session.parent && session.mapping.agent.name === 'main' && session.mapping.workflow.supervisor && session.delegation;
+  }
+
+  /** A root's supervisor is reviewing it, or a review waits to start. */
+  function reviewing(session: Session) {
+    const supervisor = session.supervisor ? sessions.get(session.supervisor) : undefined;
+    return !!supervisor && !supervisor.closed && !!(supervisor.active || supervisor.pending || session.reviewPending);
+  }
+
+  /** Notes a run-log entry in a supervised root's journal; the supervisor's own activity is left out. */
+  function record(rootId: string, entry: Record<string, any>) {
+    const root = sessions.get(rootId);
+    if (!root?.supervisor || entry.from === 'supervisor' || entry.agent === 'supervisor') return;
+    const line =
+      entry.event === 'assignment.started' ? `${entry.parentAgent} → ${entry.agent} assignment ${entry.assignmentId} (${entry.model}, ${entry.thinking ?? 'default effort'}, ${entry.mode}, ${entry.isolation}${entry.wait ? '' : ', async'}): ${clip(entry.task)}`
+      : entry.event === 'assignment.finished' ? `${entry.agent} assignment ${entry.assignmentId} ${entry.status}${entry.handoff ? `, handoff ${entry.handoff.outcome}: ${clip(entry.handoff.summary)}` : ', no handoff'}${entry.error ? ` (${clip(entry.error, 200)})` : ''}`
+      : entry.event === 'mail' && entry.kind !== 'result' && entry.kind !== 'board' ? `mail ${entry.kind} from ${entry.from}${entry.replyTo ? ` (reply to ${entry.replyTo})` : ''}: ${clip(entry.body ?? '')}`
+      : entry.event === 'human.question' ? `${entry.agent} asked the user: ${clip(entry.body)}`
+      : entry.event === 'human.answer' ? `user ${entry.outcome} ${entry.questionId}${entry.answer ? `: ${clip(entry.answer)}` : ''}`
+      : entry.event === 'board.pin' ? `${entry.agent} pinned ${entry.kind}${entry.paths ? ` ${entry.paths.join(', ')}` : ''}: ${clip(entry.body)}`
+      : entry.event === 'lesson' ? `${entry.agent} recorded a ${entry.scope} lesson: ${clip(entry.lesson)}`
+      : entry.event === 'skill' ? `${entry.agent} saved skill ${entry.name} for ${entry.roles.join(', ')} with the user's approval`
+      : entry.event === 'issue' ? `${entry.action === 'create' ? `opened issue "${clip(entry.title, 200)}"` : `commented on issue #${entry.issue}`} in ${entry.repo} with the user's approval: ${entry.url}`
+      : entry.event?.startsWith('worktree.') ? `${entry.event.slice('worktree.'.length)} worktree of ${entry.assignmentId} (${entry.branch})${entry.status ? `: ${entry.status}` : ''}`
+      : undefined;
+    if (line) root.journal.push(line);
+  }
+
+  /** Whether a journal holds more than the end of a turn that did nothing. */
+  const eventful = (journal: string[]) => journal.some(line => !line.startsWith('turn ended:'));
+
+  /**
+   * Sends a root's journal to its supervisor, or keeps it until the supervisor's
+   * current review ends. reviewPending keeps the tree busy until the review starts,
+   * so an idle-tree reap cannot close it in between.
+   */
+  function review(rootId: string) {
+    const root = sessions.get(rootId);
+    const supervisorId = root?.supervisor;
+    const supervisor = supervisorId ? sessions.get(supervisorId) : undefined;
+    if (!root || !supervisorId || !supervisor || supervisor.closed) return;
+    if (!eventful(root.journal)) {
+      root.journal.length = 0;
+      return;
+    }
+    root.reviewPending = true;
+    // A running review takes the next digest when it ends; a queued one takes this journal too.
+    if (supervisor.active || supervisor.pending || root.reviewQueued) return;
+    root.reviewQueued = true;
+    void enqueue(async () => {
+      root.reviewQueued = false;
+      if (supervisor.closed) {
+        root.reviewPending = false;
+        return;
+      }
+      if (supervisor.active || supervisor.pending) return;
+      const lines = root.journal.splice(0);
+      root.reviewPending = false;
+      if (!eventful(lines)) return;
+      let size = 0;
+      const kept: string[] = [];
+      for (const line of lines) {
+        if (size + line.length > DIGEST_CHARS) {
+          kept.push(`… ${lines.length - kept.length} more events left out; read the run log or files if they matter.`);
+          break;
+        }
+        kept.push(`- ${line}`);
+        size += line.length + 3;
+      }
+      const agent = root.mapping.agent.name;
+      const text = `Digest of ${agent}'s turn (profile ${root.mapping.workflow.mode}), oldest first:\n${kept.join('\n')}\n\n` +
+        `Review the process against ALP.md, ${agent}'s AGENT.md and the recorded lessons. Ask ${agent} about each mistake with one alp_send to: "parent", kind note, or send nothing when the process was sound.`;
+      await startPrompt(supervisorId, { clientMessageId: `alp-review-${randomUUID()}`, delivery: 'auto', content: [{ type: 'text', text }] }, 'assignment');
+    }).catch(error => runLog(rootId, { event: 'supervisor.failed', error: errorData(error).message }));
+  }
+
+  /** Starts a root's supervisor beside it; a supervisor that cannot start never fails its root. */
+  async function openSupervisor(rootId: string) {
+    const root = sessions.get(rootId);
+    if (!root || root.closed || root.supervisor || root.parent) return;
+    const id = `alp-supervisor-${randomUUID()}`;
+    childContexts.set(id, { parent: rootId, callId: `supervisor-${rootId}`, graph: {}, workflow: root.mapping.workflow, ancestry: [...root.ancestry, 'supervisor'], role: 'supervisor' });
+    const { restore: _restore, ...inherited } = root.spec;
+    try {
+      await openSession(id, { ...inherited, persist: false, agent: 'supervisor', model: SUPERVISOR_MODEL, thinking: SUPERVISOR_THINKING, mode: 'read-only', workflow: root.mapping.workflow.mode }, 'skip', root.delegation);
+      if (root.closed) await closeSession(id);
+      else {
+        root.supervisor = id;
+        runLog(rootId, { event: 'supervisor.started', sessionId: id, model: SUPERVISOR_MODEL });
+      }
+    } catch (error) {
+      runLog(rootId, { event: 'supervisor.failed', error: errorData(error).message });
+    } finally {
+      childContexts.delete(id);
+    }
+  }
+
+  const lessonWrites = new Map<string, Promise<unknown>>();
+
+  async function lessonTool(sessionId: string, session: Session, args: unknown) {
+    if (!plainObject(args, ['scope', 'lesson']) || !['project', 'user'].includes(args.scope) || typeof args.lesson !== 'string' || !args.lesson.trim() || args.lesson.length > LESSON_CHARS) {
+      return toolResult(false, { error: `A lesson needs scope (project or user) and one rule of at most ${LESSON_CHARS} characters` });
+    }
+    if (args.scope === 'user' && !options.libraryDir) return toolResult(false, { error: 'This host keeps no user lessons; record it with scope project' });
+    const file = args.scope === 'user' ? path.join(options.libraryDir!, LESSONS_FILE) : path.join(session.mapping.agent.projectRoot, '.alp', LESSONS_FILE);
+    const line = `- ${new Date().toISOString().slice(0, 10)}: ${args.lesson.replace(/\s+/g, ' ').trim()}\n`;
+    const header = '# ALP lessons\n\nRules main recorded after supervisor reviews. Main follows them in every session; edit or delete them freely.\n\n';
+    const write = (lessonWrites.get(file) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      await mkdir(path.dirname(file), { recursive: true });
+      const existing = await readFile(file, 'utf8').catch(() => undefined);
+      await appendFile(file, existing === undefined ? header + line : line);
+    });
+    lessonWrites.set(file, write);
+    try {
+      await write;
+    } catch (error) {
+      return toolResult(false, { error: errorData(error).message });
+    }
+    runLog(rootOf(sessionId), { event: 'lesson', scope: args.scope, agent: session.mapping.agent.name, lesson: args.lesson });
+    return toolResult(true, { recorded: true, scope: args.scope, file });
+  }
+
+  /** The project's lessons file, then the user's when this host keeps a library. */
+  function lessonFiles(mapping: ResolvedSession) {
+    return [path.join(mapping.agent.projectRoot, '.alp', LESSONS_FILE), ...(options.libraryDir ? [path.join(options.libraryDir, LESSONS_FILE)] : [])];
+  }
+
+  /**
+   * Asks the user to approve a proposal and waits for the answer. Only an approving
+   * answer approves; a dismissal, a timeout or another answer does not.
+   */
+  async function confirm(sessionId: string, session: Session, body: string): Promise<{ approved: boolean; feedback?: string; outcome?: string }> {
+    if ([...userQuestions.values()].some(pending => pending.question.sessionId === sessionId)) return { approved: false, outcome: 'busy', feedback: 'A question is already waiting for the user' };
+    const result = await askUser(sessionId, session, undefined, body, ['Approve', 'Reject']) as { contentItems: Array<{ text: string }> };
+    let value: any;
+    try { value = JSON.parse(result.contentItems[0].text); } catch { value = {}; }
+    if (value.status !== 'answered') return { approved: false, outcome: value.status ?? 'canceled', ...(value.reason ? { feedback: value.reason } : {}) };
+    const answer = String(value.answer).trim();
+    return APPROVALS.includes(answer.toLowerCase()) ? { approved: true } : { approved: false, outcome: 'answered', feedback: answer };
+  }
+
+  const declined = (decision: { feedback?: string; outcome?: string }) => toolResult(true, {
+    approved: false,
+    outcome: decision.outcome,
+    ...(decision.feedback ? { feedback: decision.feedback } : {}),
+    next: 'Nothing was saved or posted. Revise from the feedback and propose again, or drop it.',
+  });
+
+  const text = (value: unknown, limit: number) => typeof value === 'string' && !!value.trim() && value.length <= limit;
+
+  async function skillTool(sessionId: string, session: Session, args: unknown) {
+    if (
+      !plainObject(args, ['name', 'description', 'body', 'roles', 'lessons', 'replace']) ||
+      typeof args.name !== 'string' || !/^[a-z0-9][a-z0-9-]{1,62}$/.test(args.name) ||
+      !text(args.description, 300) || !text(args.body, SKILL_BODY_CHARS) ||
+      !Array.isArray(args.roles) || !args.roles.length || args.roles.length > 10 || !args.roles.every((role: unknown) => typeof role === 'string' && /^[\w.-]+$/.test(role) && role !== '.' && role !== '..') ||
+      (args.lessons !== undefined && (!Array.isArray(args.lessons) || args.lessons.length > 50 || !args.lessons.every((lesson: unknown) => text(lesson, LESSON_CHARS)))) ||
+      (args.replace !== undefined && typeof args.replace !== 'boolean')
+    ) {
+      return toolResult(false, { error: `A skill needs a name (lowercase letters, digits, hyphens), a one-line description, a body of at most ${SKILL_BODY_CHARS} characters, and the roles that get it` });
+    }
+    if (!options.libraryDir) return toolResult(false, { error: 'This host keeps no user skill library' });
+    const known = new Set([...STARTER_ROLES, ...await discoverAgents(session.mapping.agent.projectRoot)]);
+    const unknown = args.roles.filter((role: string) => !known.has(role));
+    if (unknown.length) return toolResult(false, { error: `Unknown roles: ${unknown.join(', ')}. Roles are ${[...known].join(', ')}` });
+    const file = path.join(options.libraryDir, 'skills', args.name, 'SKILL.md');
+    const existing = await readFile(file, 'utf8').catch(() => undefined);
+    if (existing !== undefined && !args.replace) return toolResult(false, { error: `The library already has a skill named ${args.name} (${file}); read it, then pass replace: true to propose a new version, or choose another name` });
+    const rolesFile = path.join(options.libraryDir, 'role-skills.json');
+    const readRoles = async () => {
+      const raw = await readFile(rolesFile, 'utf8').catch(() => '{}');
+      const roles = JSON.parse(raw);
+      if (!roles || typeof roles !== 'object' || Array.isArray(roles)) throw new Error(`${rolesFile} must be an object of role names to skill lists`);
+      return roles as Record<string, unknown>;
+    };
+    try { await readRoles(); } catch (error) { return toolResult(false, { error: errorData(error).message }); }
+    const content = `---\nname: ${args.name}\ndescription: ${JSON.stringify(args.description.replace(/\s+/g, ' ').trim())}\n---\n\n${args.body.trim()}\n`;
+    const lessons: string[] = (args.lessons ?? []).map((lesson: string) => lesson.replace(/\s+/g, ' ').trim());
+    const decision = await confirm(sessionId, session,
+      `${session.mapping.agent.name} proposes a skill distilled from its lessons${existing !== undefined ? `, replacing the skill of that name` : ''}. ` +
+      `Approve to save it as ${file}. Roles that get it: ${args.roles.join(', ')}.` +
+      (lessons.length ? ` These lessons move into it and leave the lessons files:\n${lessons.map(lesson => `- ${lesson}`).join('\n')}` : '') +
+      `\nAnswer Approve or Reject; any other answer goes back to ${session.mapping.agent.name} as feedback.\n\n${content}`);
+    if (!decision.approved) return declined(decision);
+    try {
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file, content);
+      const roles = await readRoles();
+      for (const role of args.roles) {
+        const list = Array.isArray(roles[role]) ? roles[role] as string[] : [];
+        if (!list.includes(args.name)) list.push(args.name);
+        roles[role] = list;
+      }
+      await writeFile(rolesFile, JSON.stringify(roles, null, 2) + '\n');
+    } catch (error) {
+      return toolResult(false, { error: errorData(error).message });
+    }
+    // The lessons the skill replaces leave both files; a lesson matches only by its exact text.
+    const removed = new Set<string>();
+    for (const lessonFile of lessonFiles(session.mapping)) {
+      const current = await readFile(lessonFile, 'utf8').catch(() => undefined);
+      if (current === undefined) continue;
+      const kept = current.split('\n').filter(line => {
+        const match = /^- \d{4}-\d\d-\d\d: (.*)$/.exec(line);
+        if (!match || !lessons.includes(match[1].trim())) return true;
+        removed.add(match[1].trim());
+        return false;
+      });
+      if (kept.length !== current.split('\n').length) await writeFile(lessonFile, kept.join('\n')).catch(() => {});
+    }
+    runLog(rootOf(sessionId), { event: 'skill', agent: session.mapping.agent.name, name: args.name, roles: args.roles, replaced: existing !== undefined, lessons: [...removed] });
+    return toolResult(true, {
+      approved: true, saved: file, roles: args.roles, lessonsRemoved: [...removed],
+      ...(lessons.length > removed.size ? { lessonsNotFound: lessons.filter(lesson => !removed.has(lesson)) } : {}),
+      next: 'New sessions of those roles list the skill; read the file now if you need it in this one.',
+    });
+  }
+
+  async function issueTool(sessionId: string, session: Session, args: unknown) {
+    if (!plainObject(args, ['action', 'target', 'query', 'title', 'body', 'issue', 'labels']) || !['search', 'create', 'comment'].includes(args.action) || !['project', 'alp'].includes(args.target)) {
+      return toolResult(false, { error: 'An issue call needs action (search, create or comment) and target (project or alp)' });
+    }
+    const project = session.mapping.agent.projectRoot;
+    let repo: string;
+    try { repo = args.target === 'alp' ? ALP_REPO : await projectRepo(project); }
+    catch (error) { return toolResult(false, { error: errorData(error).message }); }
+    const github = options.github ?? gh;
+    if (args.action === 'search') {
+      if (!text(args.query, 200)) return toolResult(false, { error: 'search needs a query of at most 200 characters' });
+      try {
+        const output = await github(['issue', 'list', '-R', repo, '--state', 'all', '--limit', '10', '--search', args.query, '--json', 'number,title,state,url'], { cwd: project });
+        return toolResult(true, { repo, issues: JSON.parse(output || '[]') });
+      } catch (error) {
+        return toolResult(false, { repo, error: errorData(error).message });
+      }
+    }
+    if (!text(args.body, ISSUE_BODY_CHARS)) return toolResult(false, { error: `${args.action} needs a body of at most ${ISSUE_BODY_CHARS} characters` });
+    if (args.action === 'create' && !text(args.title, 200)) return toolResult(false, { error: 'create needs a title of at most 200 characters' });
+    if (args.action === 'comment' && (!Number.isSafeInteger(args.issue) || args.issue < 1)) return toolResult(false, { error: 'comment needs the issue number' });
+    if (args.labels !== undefined && (args.action !== 'create' || !Array.isArray(args.labels) || args.labels.length > 10 || !args.labels.every((label: unknown) => text(label, 50)))) {
+      return toolResult(false, { error: 'labels are up to 10 existing label names, for create' });
+    }
+    const where = `${repo}${args.target === 'alp' ? ' (ALP itself)' : ''}`;
+    const decision = await confirm(sessionId, session,
+      `${session.mapping.agent.name} wants to ${args.action === 'create' ? `open an issue in ${where}` : `comment on issue #${args.issue} in ${where}`}. ` +
+      `It is posted with your GitHub account, and anyone who can see the repository can read it.\n` +
+      `Answer Approve or Reject; any other answer goes back to ${session.mapping.agent.name} as feedback.\n\n` +
+      (args.action === 'create' ? `Title: ${args.title}\n${args.labels?.length ? `Labels: ${args.labels.join(', ')}\n` : ''}\n` : '') + args.body);
+    if (!decision.approved) return declined(decision);
+    const body = args.body.trim() + ISSUE_FOOTER;
+    try {
+      const output = args.action === 'create'
+        ? await github(['issue', 'create', '-R', repo, '--title', args.title, '--body-file', '-', ...(args.labels ?? []).flatMap((label: string) => ['--label', label])], { cwd: project, input: body })
+        : await github(['issue', 'comment', String(args.issue), '-R', repo, '--body-file', '-'], { cwd: project, input: body });
+      const url = output.trim().split('\n').at(-1) ?? '';
+      runLog(rootOf(sessionId), { event: 'issue', action: args.action, repo, ...(args.title ? { title: args.title } : {}), ...(args.issue ? { issue: args.issue } : {}), url });
+      return toolResult(true, { approved: true, posted: true, repo, url });
+    } catch (error) {
+      return toolResult(false, { approved: true, posted: false, repo, error: errorData(error).message, next: 'Tell the user; the GitHub CLI may need `gh auth login`.' });
+    }
   }
 
   /** Activity anywhere in a subtree keeps its ancestors' assignments alive. */
@@ -830,7 +1241,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   function deliver(sessionId: string, session: Session) {
     if (session.closed) return;
     for (const waiter of [...session.waiters]) {
-      const batch = takeBatch(session.mail, event => event.kind !== 'board' && waiter.accept(event));
+      const batch = takeBatch(session.mail, event => event.kind !== 'board' && !event.defer && waiter.accept(event));
       if (!batch.length) continue;
       for (const event of batch) event.deliveredTurn = session.active;
       session.waiters.splice(session.waiters.indexOf(waiter), 1);
@@ -841,7 +1252,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     if (session.pending) {
       void session.acknowledged.then(() => deliver(sessionId, session));
     } else if (session.active) {
-      void steerMail(sessionId, session);
+      // Deferred mail waits for the turn to end.
+      if (session.mail.some(event => !event.deliveredTurn && !event.passive && !event.defer)) void steerMail(sessionId, session);
     } else if (!session.wakeBlocked && session.wakes < MAX_WAKES) {
       autoWake(sessionId, session);
     } else if (session.parent && !session.wakeBlocked) {
@@ -852,7 +1264,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
   async function steerMail(sessionId: string, session: Session) {
     const turnId = session.active!;
-    const batch = takeBatch(session.mail, () => true);
+    const batch = takeBatch(session.mail, event => !event.defer);
     if (!batch.length) return;
     for (const event of batch) event.deliveredTurn = STEERING;
     const id = `alp-mail-${randomUUID()}`;
@@ -905,7 +1317,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
    * A waiting delegate goes first so a concurrent catch-all alp_wait cannot take its result.
    */
   function waitFor(session: Session, accept: (event: MailEvent) => boolean, timeoutMs?: number, first = false) {
-    const ready = takeBatch(session.mail, event => event.kind !== 'board' && accept(event));
+    const ready = takeBatch(session.mail, event => event.kind !== 'board' && !event.defer && accept(event));
     if (ready.length) {
       for (const event of ready) event.deliveredTurn = session.active;
       return Promise.resolve<MailEvent[] | null>(ready);
@@ -1014,7 +1426,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       runLog(rootOf(sessionId), { event: 'worktree.discarded', assignmentId: args.assignmentId, branch: worktree.branch });
       return toolResult(true, { discarded: args.assignmentId, branch: worktree.branch });
     }
-    if (session.mapping.mode !== 'workspace-write') return toolResult(false, { error: 'Merging needs workspace-write' });
+    if (!writes(session.mapping.mode)) return toolResult(false, { error: 'Merging needs workspace-write or full-access' });
     if ([...session.assignments.values()].some(assignment => assignment.mode !== 'read-only' && assignment.isolation === 'shared')) {
       return toolResult(false, { error: 'A writer assignment is working in this checkout; merge after its result' });
     }
@@ -1108,7 +1520,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
 
     if (
-      !['alp_delegate', 'alp_handoff', 'alp_wait', 'alp_send', 'alp_ask', 'alp_merge', 'alp_discard', 'alp_pin', 'alp_board', 'alp_unpin'].includes(params.tool) ||
+      !['alp_delegate', 'alp_handoff', 'alp_wait', 'alp_send', 'alp_ask', 'alp_merge', 'alp_discard', 'alp_pin', 'alp_board', 'alp_unpin', 'alp_lesson', 'alp_skill', 'alp_issue'].includes(params.tool) ||
       params.namespace != null ||
       typeof params.callId !== 'string'
     ) {
@@ -1121,8 +1533,15 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     if (cached) return cached;
 
     const args = params.arguments;
+    // The supervisor only reads the board and writes to main.
+    if (session.role === 'supervisor' && !['alp_send', 'alp_board'].includes(params.tool)) return toolResult(false, { error: 'The supervisor only uses alp_send and alp_board' });
+    if ((params.tool === 'alp_lesson' || params.tool === 'alp_skill') && !supervises(session)) return toolResult(false, { error: 'Only a supervised main records lessons and skills' });
+    if (params.tool === 'alp_issue' && (session.parent || session.mapping.agent.name !== 'main')) return toolResult(false, { error: 'Only main files issues; report the problem to your requester' });
     const work =
-      params.tool === 'alp_delegate' ? runDelegation(sessionId, session, params)
+      params.tool === 'alp_lesson' ? lessonTool(sessionId, session, args)
+      : params.tool === 'alp_skill' ? skillTool(sessionId, session, args)
+      : params.tool === 'alp_issue' ? issueTool(sessionId, session, args)
+      : params.tool === 'alp_delegate' ? runDelegation(sessionId, session, params)
       : params.tool === 'alp_wait' ? waitTool(session, args)
       : params.tool === 'alp_ask' ? askTool(sessionId, session, args)
       : params.tool === 'alp_pin' ? pinTool(sessionId, session, args)
@@ -1159,7 +1578,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
     const ids: Set<string> | undefined = args.assignments?.length ? new Set(args.assignments) : undefined;
     const accept = (event: MailEvent) => !ids || ids.has(event.assignment);
-    const pending = [...session.assignments.keys()].some(id => !ids || ids.has(id)) || takeBatch(session.mail, event => event.kind !== 'board' && accept(event)).length > 0;
+    const pending = [...session.assignments.keys()].some(id => !ids || ids.has(id)) || takeBatch(session.mail, event => event.kind !== 'board' && !event.defer && accept(event)).length > 0;
     const events = pending ? await waitFor(session, accept, Math.min(args.timeoutMs ?? 300_000, 900_000)) : [];
     if (!events) return toolResult(false, { error: 'Turn ended' });
     return toolResult(true, { events: events.map(publicEvent), running: running(session) });
@@ -1179,7 +1598,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     if (args.to === 'parent') {
       if (!session.parent || !session.parentAgent) return toolResult(false, { error: 'This session has no requester' });
       if (args.kind !== 'note') return toolResult(false, { error: 'Mail to your requester is a note; ask with alp_ask and report with alp_handoff' });
-      return toolResult(true, { sent: post(session.parent, { kind: 'note', from, assignment: sessionId, body: args.body }).id });
+      // The supervisor's questions reach main between turns, never in the middle of its work.
+      return toolResult(true, { sent: post(session.parent, { kind: 'note', from, assignment: sessionId, body: args.body, ...(session.role === 'supervisor' ? { defer: true } : {}) }).id });
     }
     // Models often address an assignment by its agent name; accept that when it is unambiguous.
     const named = [...session.assignments.values()].filter(candidate => candidate.agent === args.to);
@@ -1453,7 +1873,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       args.task.length > 32000 ||
       (
         args.mode !== undefined &&
-        !['read-only', 'workspace-write'].includes(args.mode)
+        !modes.some(mode => mode.id === args.mode)
       ) ||
       (args.wait !== undefined && typeof args.wait !== 'boolean') ||
       (args.isolation !== undefined && !['shared', 'worktree'].includes(args.isolation))
@@ -1467,13 +1887,13 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       if (args[key] !== undefined && (typeof args[key] !== 'string' || !args[key].trim())) return toolResult(false, { error: `Invalid ${key}` });
     }
     if (args.model !== undefined && !/^(codex|claude):[^\s]+$/.test(args.model)) return toolResult(false, { error: 'Use a runtime-prefixed model ID' });
-    if (args.agent === 'oracle' && (!args.model || !args.thinking || !args.modelReason)) return toolResult(false, { error: 'Oracle requires an explicit premium model, effort, and selection rationale; no default fallback' });
-    const childMode = ['oracle', 'reviewer'].includes(args.agent) ? 'read-only' : args.mode ?? session.mapping.mode;
+    if (args.agent === 'oracle' && !ORACLE_MODELS.includes(args.model)) return toolResult(false, { error: `Oracle runs on ${ORACLE_MODELS.join(' or ')}; pass one as model. For two opinions, start one on each with wait: false` });
+    const childMode = READ_ONLY_AGENTS.includes(args.agent) ? 'read-only' : args.mode ?? session.mapping.mode;
     const isolation: Assignment['isolation'] = args.isolation ?? 'shared';
-    if (isolation === 'worktree' && childMode !== 'workspace-write') return toolResult(false, { error: 'Worktree isolation is for writing assignments (mode workspace-write)' });
+    if (isolation === 'worktree' && !writes(childMode)) return toolResult(false, { error: 'Worktree isolation is for writing assignments (mode workspace-write or full-access)' });
     const parallel = (mode: string, kind: Assignment['isolation']) => mode === 'read-only' || kind === 'worktree';
-    if (session.assignments.size && (args.agent !== 'peer' || !parallel(childMode, isolation) || [...session.assignments.values()].some(assignment => !parallel(assignment.mode, assignment.isolation)))) {
-      return toolResult(false, { error: 'A child assignment is already running; wait for its handoff. Only peers that are read-only or use isolation "worktree" run in parallel' });
+    if (session.assignments.size && (!['peer', 'oracle'].includes(args.agent) || !parallel(childMode, isolation) || [...session.assignments.values()].some(assignment => !parallel(assignment.mode, assignment.isolation)))) {
+      return toolResult(false, { error: 'A child assignment is already running; wait for its handoff. Only oracles, and peers that are read-only or use isolation "worktree", run in parallel' });
     }
 
     if (
@@ -1486,8 +1906,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
 
     if (
-      session.mapping.mode === 'read-only' &&
-      args.mode === 'workspace-write'
+      args.mode !== undefined &&
+      !withinMode(args.mode, session.mapping.mode)
     ) {
       return toolResult(false, {
         error: 'Child cannot exceed parent permissions',
@@ -1504,7 +1924,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
 
     if (args.agent === 'peer' && root.peerCount >= session.mapping.workflow.maxPeers) return toolResult(false, { error: 'Concurrent peer limit reached; wait or ask the user to increase workflow.maxPeers for a new session' });
-    const sharedWriter = childMode === 'workspace-write' && isolation === 'shared';
+    const sharedWriter = writes(childMode) && isolation === 'shared';
     const holder = sharedWriter ? leases.get(checkout) : undefined;
     if (holder && !lineage(sessionId).includes(holder.assignment)) {
       return toolResult(false, { error: `${holder.agent} in another session is writing ${checkout}; wait for it, or use isolation "worktree"` });
@@ -1647,7 +2067,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       );
     }
 
-    const mapping = await resolveSession(spec, { templates: options.templates });
+    const mapping = await resolveSession(spec, { templates: options.templates, library: options.libraryDir });
 
     const runtimeKind = mapping.runtimeKind;
 
@@ -1668,12 +2088,13 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         ? graph[mapping.agent.name]
         : [];
 
+    // An assignment opens inside its requester's turn; a supervisor opens beside an idle root.
     if (
       context &&
       (
         !sessions.has(context.parent) ||
         sessions.get(context.parent)!.closed ||
-        !sessions.get(context.parent)!.active
+        (!sessions.get(context.parent)!.active && context.role !== 'supervisor')
       )
     ) {
       throw new Error(
@@ -1727,6 +2148,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       parentAgent: context
         ? sessions.get(context.parent)?.mapping.agent.name
         : undefined,
+      ...(context?.role ? { role: context.role } : {}),
+      journal: [],
 
       children: new Set(),
       peerCount: 0,
@@ -1822,6 +2245,9 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
           mapping,
           targets,
           session.parentAgent,
+          session.role,
+          supervises(session),
+          lessonFiles(mapping),
         );
 
       const result = mapping.threadId
@@ -1918,8 +2344,9 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     if (session.active || session.pending || session.children.size) throw new Error('Wait for the current turn and child sessions to finish before changing permissions');
     const mode = changes.mode ?? session.mapping.mode;
     if (!modes.some(candidate => candidate.id === mode)) throw new Error(`Unsupported mode '${mode}'`);
-    if (['oracle', 'reviewer'].includes(session.mapping.agent.name) && mode !== 'read-only') throw new Error('Advisors must remain read-only');
-    if (session.parent && sessions.get(session.parent)?.mapping.mode === 'read-only' && mode !== 'read-only') throw new Error('Child cannot exceed parent permissions');
+    if (READ_ONLY_AGENTS.includes(session.mapping.agent.name) && mode !== 'read-only') throw new Error('Advisors and the supervisor must remain read-only');
+    const parent = session.parent ? sessions.get(session.parent) : undefined;
+    if (parent && !withinMode(mode, parent.mapping.mode)) throw new Error('Child cannot exceed parent permissions');
     if (session.runtimeKind === 'claude') await session.runtime.request('session/configure', { sandbox: mode });
     session.mapping.mode = mode;
     session.spec = { ...session.spec, mode };
@@ -2027,6 +2454,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     ) {
       session.text.clear();
       session.toolCalls.clear();
+      session.supervisorWake = !!wake?.length && wake.every(event => event.defer);
 
       // A wake continues the same assignment: keep its handoff and limits.
       if (!wake) {
@@ -2078,7 +2506,9 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
                   session.mapping.thinking,
                 sandboxPolicy: session.mapping.mode === 'read-only'
                   ? { type: 'readOnly', networkAccess: false }
-                  : { type: 'workspaceWrite', writableRoots: [session.mapping.workdir], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+                  : session.mapping.mode === 'full-access'
+                    ? { type: 'dangerFullAccess' }
+                    : { type: 'workspaceWrite', writableRoots: [session.mapping.workdir], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
               },
             );
 
@@ -2102,6 +2532,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
           text,
         },
       });
+      if (session.supervisor && origin === 'user') session.journal.push(`user ${prompt.delivery === 'steer' ? 'steered' : 'asked'} ${session.mapping.agent.name}: ${clip(text, 1500)}`);
 
       emit(sessionId, {
         type: 'prompt.accepted',
@@ -2148,7 +2579,13 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       };
     },
 
-    open: (sessionId, spec, { history = 'skip', delegation = true } = {}) => enqueue(() => openSession(sessionId, spec, history, delegation)),
+    open: (sessionId, spec, { history = 'skip', delegation = true } = {}) => enqueue(async () => {
+      const opened = await openSession(sessionId, spec, history, delegation);
+      const root = sessions.get(sessionId)!;
+      // Main starts its supervisor beside it, without delaying its own open.
+      if (supervises(root)) void enqueue(() => openSupervisor(sessionId));
+      return opened;
+    }),
 
     prompt: (sessionId, input) => enqueue(async () => {
       try {
@@ -2186,6 +2623,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         if (!session || session.closed) return;
         tree.push([id, session]);
         for (const child of session.children) visit(child);
+        if (session.supervisor) visit(session.supervisor);
       };
       visit(rootId);
       const questions = [...userQuestions.values()].map(pending => pending.question).filter(question => question.rootId === rootId);

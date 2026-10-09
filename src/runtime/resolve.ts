@@ -1,12 +1,13 @@
 import path from 'node:path';
-import { access, stat } from 'node:fs/promises';
+import { access, readFile, stat } from 'node:fs/promises';
 import { resolveWorkflow } from '../core/workflow.js';
 import { initProject } from '../core/init.js';
 import { resolveAgent } from '../core/resolver.js';
+import { ensureLibrary } from '../core/library.js';
 import { compileAgent } from '../core/adapter.js';
 import type { ResolvedAgent } from '../core/types.js';
 import type { AlpRuntimeAdapter } from '../core/adapter.js';
-import { DEFAULT_CLAUDE_MODEL, DEFAULT_MODEL, modes, thinkingOptions, thinkingOptionsFor } from './catalog.js';
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_MODEL, MAIN_MODEL, MAIN_THINKING, ORACLE_MODELS, ORACLE_THINKING, modes, thinkingOptions, thinkingOptionsFor } from './catalog.js';
 
 export type RuntimeKind = 'codex' | 'claude';
 
@@ -30,7 +31,7 @@ export type SessionSpec = {
   mcpServers?: Record<string, HostMcpServer>;
   /** Keep the native thread so the session can be resumed. */
   persist?: boolean;
-  restore?: { agent: string; threadId: string; runtime?: string; model?: string; workflow?: { mode: string; maxPeers: number } };
+  restore?: { agent: string; threadId: string; runtime?: string; model?: string; workflow?: { mode: string; maxPeers: number; supervisor?: boolean } };
   /** Where the native harness works, when not the project root: an assignment's git worktree. ALP files are still read from cwd. */
   workdir?: string;
 };
@@ -60,29 +61,52 @@ export class InstructionsAdapter implements AlpRuntimeAdapter<{ instructions: st
   }
 }
 
-export async function resolveSession(spec: SessionSpec, options: { templates?: Record<string, string> } = {}) {
+/** Lessons main recorded after supervisor reviews; the newest are kept when the file grows. */
+export const LESSONS_FILE = 'lessons.md';
+const LESSON_CHARS = 6000;
+
+async function lessons(file: string) {
+  const text = (await readFile(file, 'utf8').catch(() => '')).trim();
+  return text.length > LESSON_CHARS ? `…\n${text.slice(-LESSON_CHARS)}` : text;
+}
+
+/** Agents that never write: they advise, review, or watch. */
+export const READ_ONLY_AGENTS = ['oracle', 'reviewer', 'supervisor'];
+
+export async function resolveSession(spec: SessionSpec, options: { templates?: Record<string, string>; library?: string } = {}) {
   if (!path.isAbsolute(spec.cwd) || !(await stat(spec.cwd)).isDirectory()) throw new Error('Session cwd must be an existing absolute directory');
   if (spec.workdir !== undefined && (!path.isAbsolute(spec.workdir) || !(await stat(spec.workdir)).isDirectory())) throw new Error('Session workdir must be an existing absolute directory');
   const hasProjectFile = await exists(path.join(spec.cwd, 'ALP.md'));
   const hasMainAgent = await exists(path.join(spec.cwd, '.alp', 'agents', 'main', 'AGENT.md'));
-  if (!hasProjectFile || !hasMainAgent) await initProject(spec.cwd, options.templates ? { templates: options.templates } : {});
+  const starter = options.templates ? { templates: options.templates } : {};
+  if (!hasProjectFile || !hasMainAgent) await initProject(spec.cwd, starter);
+  // Projects from before the supervisor get only its starter files when it first starts.
+  if ((spec.agent ?? spec.restore?.agent) === 'supervisor' && !(await exists(path.join(spec.cwd, '.alp', 'agents', 'supervisor', 'AGENT.md')))) {
+    await initProject(spec.cwd, { ...starter, agents: ['supervisor'] });
+  }
+  if (options.library) await ensureLibrary(options.library, options.templates ? { templates: options.templates } : {});
   const restored = spec.restore;
   if (restored && spec.agent !== undefined && spec.agent !== restored.agent) throw new Error('Cannot resume a thread as a different ALP agent');
   const workflow = await resolveWorkflow(spec.cwd, spec.workflow, restored?.workflow);
-  const agent = await resolveAgent(spec.cwd, { agent: spec.agent ?? restored?.agent });
-  if (agent.name === 'oracle' && !restored && (!spec.model || !spec.thinking)) throw new Error('Oracle requires an explicit premium model and effort');
+  const agent = await resolveAgent(spec.cwd, { agent: spec.agent ?? restored?.agent, library: options.library });
+  if (agent.name === 'oracle' && !restored && !ORACLE_MODELS.includes(spec.model ?? '')) throw new Error(`Oracle runs on ${ORACLE_MODELS.join(' or ')}; choose one`);
   const compiled = await compileAgent(new InstructionsAdapter(), agent);
+  // Main runs on the profile's model unless settings or the caller choose one.
+  const profileModel = agent.name === 'main' && !agent.runtime.model && !agent.runtime.provider && spec.model === undefined &&
+    (restored?.model === undefined || `${restored.runtime}:${restored.model}` === MAIN_MODEL);
   let runtimeKind = restored?.runtime ?? agent.runtime.provider ?? 'codex';
-  let model = restored?.model ?? spec.model ?? agent.runtime.model ?? (runtimeKind === 'claude' ? DEFAULT_CLAUDE_MODEL : DEFAULT_MODEL);
+  let model = restored?.model ?? spec.model ?? agent.runtime.model ?? (profileModel ? MAIN_MODEL : runtimeKind === 'claude' ? DEFAULT_CLAUDE_MODEL : DEFAULT_MODEL);
   if (model.startsWith('codex:')) { runtimeKind = 'codex'; model = model.slice('codex:'.length); }
   if (model.startsWith('claude:')) { runtimeKind = 'claude'; model = model.slice('claude:'.length); }
   if (model.startsWith('codex/')) { runtimeKind = 'codex'; model = model.slice('codex/'.length); }
   if (model.startsWith('claude/')) { runtimeKind = 'claude'; model = model.slice('claude/'.length); }
   if (!['codex', 'claude'].includes(runtimeKind)) throw new Error(`Unsupported ALP runtime provider '${runtimeKind}'`);
   if (restored?.runtime && runtimeKind !== restored.runtime) throw new Error('Cannot resume a thread with a different runtime provider');
-  const mode = ['oracle', 'reviewer'].includes(agent.name) ? 'read-only' : spec.mode ?? 'read-only';
+  // Main has full access unless the caller limits it.
+  const mode = READ_ONLY_AGENTS.includes(agent.name) ? 'read-only' : spec.mode ?? (agent.name === 'main' ? 'full-access' : 'read-only');
   const availableThinking = thinkingOptionsFor(runtimeKind as RuntimeKind, model);
-  const thinking = spec.thinking ?? agent.runtime.reasoning ?? (availableThinking.length ? 'medium' : 'none');
+  const thinking = spec.thinking ?? agent.runtime.reasoning ??
+    (profileModel ? MAIN_THINKING : agent.name === 'oracle' ? ORACLE_THINKING : availableThinking.length ? 'medium' : 'none');
   if (!model.trim()) throw new Error('Model must be nonempty');
   if (!modes.some(m => m.id === mode)) throw new Error(`Unsupported mode '${mode}'`);
   if (!thinkingOptions.some(m => m.id === thinking)) throw new Error(`Unsupported thinking option '${thinking}'`);
@@ -100,10 +124,20 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
       : { url: value.url, http_headers: value.headers ?? {} };
     Object.defineProperty(mcp, name, { value: server, enumerable: true, writable: true });
   }
+  // Main follows its lessons; the supervisor checks them.
+  let learned = '';
+  if (['main', 'supervisor'].includes(agent.name) && workflow.supervisor) {
+    const user = options.library ? await lessons(path.join(options.library, LESSONS_FILE)) : '';
+    const project = await lessons(path.join(agent.projectRoot, '.alp', LESSONS_FILE));
+    if (user || project) {
+      learned = 'Lessons main recorded after earlier supervisor reviews. Follow them; they are the user\'s process, not a task.' +
+        (user ? `\n\nFor every project:\n${user}` : '') + (project ? `\n\nFor this project:\n${project}` : '');
+    }
+  }
   return {
     agent, workflow, runtimeKind: runtimeKind as RuntimeKind, model, mode, thinking, threadId: restored?.threadId,
     workdir: spec.workdir ?? agent.projectRoot,
-    instructions: [compiled.material.instructions, spec.systemPrompt].filter(Boolean).join('\n\n'),
+    instructions: [compiled.material.instructions, learned, spec.systemPrompt].filter(Boolean).join('\n\n'),
     mcp, env: { ...spec.env }, persist: spec.persist ?? false,
   };
 }
