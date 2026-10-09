@@ -72,7 +72,7 @@ test('an assignment past the ETA its requester gave ends the requester\'s wait w
   Date.now = () => real() + 61_000;
   const late = await waiting;
   assert.equal(late.status, 'running');
-  assert.match(late.next, /A check-in, not a result/);
+  assert.match(late.next, /Not a result: the assignment keeps running/);
   assert.equal(late.events[0].kind, 'checkin');
   assert.match(late.events[0].body, /^1 assignment still running; peer past the ETA you gave:/);
   assert.match(late.events[0].body, /past its ETA by \d+ s/);
@@ -92,4 +92,23 @@ test('main is told to ask once about unclear requests and to stay reachable whil
   assert.match(instructions, /Stay reachable while others work\. .*wait: false and etaMinutes/);
   const delegate = main.config.dynamicTools.find(tool => tool.name === 'alp_delegate');
   assert.equal(delegate.inputSchema.properties.etaMinutes.maximum, 1440);
+});
+
+test('a steer from its requester ends a lead\'s wait for its peer, which keeps running', async t => {
+  const { agents, main } = await tree(t, { open: { workflow: 'cafe' }, options: () => ({ checkInMs: 0 }) });
+  const { assignmentId: leadId } = await main.call('alp_delegate', { agent: 'lead', task: 'Build the site', wait: false });
+  await until(() => agents[1]?.started.length, 'lead to start');
+  const lead = agents[1];
+  // Lead waits for its peer, as in alp_delegate's default, and then for a named assignment.
+  const waiting = lead.call('alp_delegate', { agent: 'peer', task: 'Write the pages', mode: 'read-only' });
+  await until(() => agents[2]?.started.length, 'peer to start');
+  await main.call('alp_send', { to: leadId, kind: 'steer', body: 'The user wants a Notion-like style' });
+  const early = await waiting;
+  assert.equal(early.status, 'running');
+  assert.deepEqual(early.events.map(event => [event.kind, event.from, event.body]), [['steer', 'main', 'The user wants a Notion-like style']]);
+  assert.match(early.next, /pass that on with alp_send/);
+  assert.equal(agents[2].closed, false, 'the peer keeps running');
+  const named = lead.call('alp_wait', { assignments: [early.assignmentId], timeoutMs: 60_000 });
+  await main.call('alp_send', { to: leadId, kind: 'note', body: 'Also a dark mode' });
+  assert.deepEqual((await named).events.map(event => event.body), ['Also a dark mode']);
 });

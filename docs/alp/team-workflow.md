@@ -908,6 +908,10 @@ Main talks with the user, so it never goes quiet while others work:
   `alp_delegate` or `alp_wait`, the wait returns at once with `userMessage: true`.
   Main answers you first, steers an assignment your words change, then waits
   again. The assignments keep running.
+- **Every requester hears its own mail while it waits.** A steer or note from
+  its requester, or your message to it, ends a lead's wait for its peer just
+  as your message ends main's. Lead acts on it, passes on what changes the
+  peer's work, and waits again.
 - **Check-ins.** While main's assignments run, ALP sends main a `checkin` about
   every ten minutes: each assignment's running time, last activity, ETA and last
   note. A check-in ends a wait, steers a running turn, or wakes an idle main;
