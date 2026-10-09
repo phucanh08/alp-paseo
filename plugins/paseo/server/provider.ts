@@ -10,12 +10,14 @@ import {
   type ProviderPersistence,
   type ProviderTimelineItem,
 } from './compat.js';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAlpRuntime, type RuntimeOptions, type SessionSnapshot, type TimelineItem, type Envelope } from '../../../src/runtime/index.js';
 import { createDaemonServer, type DaemonConnection } from '../../../src/daemon/server.js';
-import { alpHome, connect, ensureDaemon } from '../../../src/client/index.js';
+import { alpHome, connect, lockAlive, readLock } from '../../../src/client/index.js';
+import { daemonHeld, startDaemon } from '../../../src/client/supervise.js';
 import { alpdSessionOf, configModels, DEFAULT_PROFILE, handleFor, modes, profileFor, profileModels, templates, toSessionSpec } from './mapping.js';
 import { profiles } from '../../../src/core/workflow.js';
 
@@ -48,7 +50,15 @@ type Options = Omit<RuntimeOptions, 'templates'> & {
   daemonEntry?: string;
 };
 
-type Backend = { client: DaemonConnection; shutdown(): Promise<void> };
+type Backend = {
+  client: DaemonConnection;
+  shutdown(client: DaemonConnection): Promise<void>;
+  /**
+   * A new connection to alpd after the last one closed (ALPD §40): it starts alpd unless
+   * the user stopped it on purpose and nobody has asked for it since (`demand`).
+   */
+  relink?(demand: boolean): Promise<DaemonConnection>;
+};
 
 declare const __ALP_DAEMON_ENTRY__: string | undefined;
 
@@ -57,7 +67,7 @@ declare const __ALP_DAEMON_ENTRY__: string | undefined;
  * bundle. Beyond these candidates (the build machine's path among them), ensureDaemon
  * looks where alpd last recorded itself and for the ALP CLI on PATH.
  */
-function daemonEntry(explicit?: string) {
+export function daemonEntry(explicit?: string) {
   const beside = () => { try { return fileURLToPath(new URL('./alpd.js', import.meta.url)); } catch { return undefined; } };
   const candidates = [explicit, process.env.ALP_DAEMON_ENTRY, typeof __ALP_DAEMON_ENTRY__ === 'string' ? __ALP_DAEMON_ENTRY__ : undefined, beside()];
   return candidates.find(candidate => candidate && existsSync(candidate));
@@ -71,10 +81,17 @@ async function openBackend(options: Options): Promise<Backend> {
     const client = server.local();
     return { client, async shutdown() { client.close(); await runtime.shutdown(); } };
   }
-  const socket = await ensureDaemon({ home: home ?? alpHome(), entry: daemonEntry(entry) });
-  const client = await connect(socket, { name: 'alp-paseo', version: '1' });
-  return { client, async shutdown() { client.close(); } };
+  const where = home ?? alpHome();
+  const open = async (demand: boolean) => {
+    const lock = await readLock(where);
+    if (!demand && !(lockAlive(lock) && lock.ready) && await daemonHeld(where)) throw new Error('alpd was stopped with alp daemon stop');
+    return connect(await startDaemon({ home: where, entry: daemonEntry(entry) }), { name: 'alp-paseo', version: '1' });
+  };
+  return { client: await open(true), async shutdown(client) { client.close(); }, relink: open };
 }
+
+/** How long a request waits for alpd to come back before it fails. */
+const RELINK_WAIT_MS = 20_000;
 
 const errorData = (error: unknown) => ({
   message: error instanceof Error ? error.message : String(error),
@@ -121,7 +138,8 @@ export function createProvider(options: Options = {}): ProviderRegistration {
         supported,
       );
 
-      const { client, shutdown } = await openBackend(options);
+      const backend = await openBackend(options);
+      let client = backend.client;
       const delegation = capabilities.includes('session.subsession');
       /** Questions to the user appear as Paseo question prompts on the root agent; without them, answer with the CLI. */
       const asksUser = capabilities.includes('permission');
@@ -137,6 +155,14 @@ export function createProvider(options: Options = {}): ProviderRegistration {
       const toAlpd = (sessionId: string) => alpdIds.get(sessionId) ?? sessionId;
       const toPaseo = (sessionId: string) => paseoIds.get(sessionId) ?? sessionId;
       let closed = false;
+      /** Roots' directories, to reopen one that alpd no longer has open after a restart. */
+      const cwds = new Map<string, string>();
+      /** Roots alpd did not reopen after a restart: the next prompt reopens them. */
+      const dormant = new Set<string>();
+      /** A reconnection to alpd in progress; `demanded` once the user asks for something meanwhile. */
+      let relinking: Promise<void> | undefined;
+      let demanded = false;
+      let lastError: unknown;
 
       const emit = (event: ProviderEvent) => {
         const checked = ProviderEventSchema.parse(event);
@@ -149,6 +175,11 @@ export function createProvider(options: Options = {}): ProviderRegistration {
         switch (event.type) {
           case 'session.opened': {
             const { session } = event;
+            // A root Paseo already shows, reopened after alpd restarted: only its config may have changed.
+            if (roots.has(sessionId) && !opening.has(envelope.sessionId)) {
+              emit({ type: 'session.config', sessionId, config: sessionConfig({ ...session, model: event.effective.model }, event.effective.thinking) });
+              return;
+            }
             const parentId = session.parentId && toPaseo(session.parentId);
             emit({
               type: 'session.opened',
@@ -166,6 +197,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
             return;
           }
           case 'session.ready':
+            if (roots.has(sessionId) && !opening.has(envelope.sessionId)) return;
             emit({ type: 'session.ready', requestId: opening.get(envelope.sessionId) ?? `open-${sessionId}`, sessionId });
             return;
           case 'session.updated': {
@@ -230,12 +262,79 @@ export function createProvider(options: Options = {}): ProviderRegistration {
         }
       }
 
-      client.onEvent(project);
-      client.onClose(error => {
+      const notify = (sessionId: string, level: 'info' | 'warning' | 'error', message: string) =>
+        emit({ type: 'timeline.item', sessionId, item: { type: 'notification', id: `alp-link-${randomUUID()}`, level, message } as ProviderTimelineItem });
+
+      function wire(connection: DaemonConnection) {
+        connection.onEvent(project);
+        connection.onClose(error => lost(error));
+      }
+
+      /** alpd went away. In-process backends end their sessions; alpd is started again and its sessions picked up. */
+      function lost(error: unknown) {
         if (closed) return;
-        for (const sessionId of roots) emit({ type: 'session.runtime_failed', sessionId, error: errorData(error) });
-        roots.clear();
-      });
+        if (!backend.relink) {
+          for (const sessionId of roots) emit({ type: 'session.runtime_failed', sessionId, error: errorData(error) });
+          roots.clear();
+          return;
+        }
+        for (const sessionId of roots) notify(sessionId, 'warning', `ALP lost its connection to alpd (${errorData(error).message}); reconnecting. Work that was running continues once alpd is back.`);
+        relinking ??= relink().finally(() => { relinking = undefined; });
+      }
+
+      async function relink() {
+        for (let attempt = 0; !closed; attempt++) {
+          try {
+            const next = await backend.relink!(demanded);
+            if (closed) { next.close(); return; }
+            client = next;
+            wire(next);
+            for (const sessionId of [...roots]) await reattach(sessionId);
+            demanded = false;
+            for (const sessionId of roots) notify(sessionId, 'info', 'ALP reconnected to alpd.');
+            return;
+          } catch (error) {
+            lastError = error;
+            await new Promise(resolve => setTimeout(resolve, Math.min(250 * 2 ** attempt, 5_000)));
+          }
+        }
+      }
+
+      /** Follows a root again in the new alpd; one alpd did not reopen waits for its next prompt. */
+      async function reattach(sessionId: string) {
+        const alpdId = toAlpd(sessionId);
+        try {
+          const { session } = await client.request('session.get', { sessionId: alpdId });
+          await client.request('session.attach', { sessionId: alpdId, replay: false });
+          if (session.status === 'idle' || session.status === 'running') dormant.delete(sessionId);
+          else dormant.add(sessionId);
+        } catch (error) {
+          roots.delete(sessionId);
+          emit({ type: 'session.runtime_failed', sessionId, error: errorData(error) });
+        }
+      }
+
+      /** Reopens a dormant root before it is used, unless alpd reopened it meanwhile. */
+      async function wake(sessionId: string) {
+        if (!dormant.has(sessionId)) return;
+        const alpdId = toAlpd(sessionId);
+        const { session } = await client.request('session.get', { sessionId: alpdId });
+        if (session.status !== 'idle' && session.status !== 'running') {
+          await client.request('session.create', { sessionId: alpdId, spec: { cwd: cwds.get(sessionId) ?? session.projectRoot }, resume: true, delegation });
+        }
+        dormant.delete(sessionId);
+      }
+
+      /** Waits for alpd when it is coming back; asking makes it start even after a deliberate stop. */
+      async function linked() {
+        if (!relinking) return;
+        demanded = true;
+        let timer: NodeJS.Timeout | undefined;
+        const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`alpd is not reachable${lastError ? `: ${errorData(lastError).message}` : ''}; ALP keeps trying to start it`)), RELINK_WAIT_MS); });
+        try { await Promise.race([relinking, timeout]); } finally { clearTimeout(timer); }
+      }
+
+      wire(client);
 
       async function handle(input: ProviderInput) {
         requireProviderCapabilities(
@@ -287,6 +386,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
           try {
             await client.request('session.create', { sessionId: alpdId, spec: toSessionSpec(input.config, input.persistence), history: input.history, delegation, resume: named !== undefined });
             roots.add(input.sessionId);
+            cwds.set(input.sessionId, input.config.cwd);
           } catch (error) {
             alpdIds.delete(input.sessionId);
             paseoIds.delete(alpdId);
@@ -319,6 +419,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
 
         if (input.type === 'session.prompt') {
           const { prompt } = input;
+          await wake(input.sessionId);
           await client.request('session.prompt', {
             sessionId: toAlpd(input.sessionId),
             clientMessageId: prompt.clientMessageId,
@@ -332,11 +433,14 @@ export function createProvider(options: Options = {}): ProviderRegistration {
         if (input.type === 'session.configure') {
           if (input.changes.model !== undefined || input.changes.settings?.workflow !== undefined) throw new Error('The profile is fixed for this session; choose Phở or Cafe when creating a new session');
           if (Object.keys(input.changes).some(key => key !== 'mode')) throw new Error('Only permission mode can be changed in an existing ALP session');
+          await wake(input.sessionId);
           await client.request('session.configure', { sessionId: toAlpd(input.sessionId), mode: input.changes.mode === undefined ? undefined : input.changes.mode ?? 'read-only' });
         } else if (input.type === 'session.close') {
           // Closing a view: alpd closes the session once idle, or lets running work finish.
           await client.request('session.release', { sessionId: toAlpd(input.sessionId) });
           roots.delete(input.sessionId);
+          cwds.delete(input.sessionId);
+          dormant.delete(input.sessionId);
         } else if (input.type === 'session.interrupt') {
           await client.request('session.interrupt', { sessionId: toAlpd(input.sessionId) });
         } else {
@@ -374,6 +478,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
             );
 
           try {
+            await linked();
             await handle(input);
           } catch (error) {
             if (input.type === 'session.prompt') {
@@ -398,7 +503,7 @@ export function createProvider(options: Options = {}): ProviderRegistration {
           closed = true;
           await Promise.all([...roots].map(sessionId => client.request('session.release', { sessionId: toAlpd(sessionId) }).catch(() => {})));
           roots.clear();
-          await shutdown();
+          await backend.shutdown(client);
           listeners.clear();
         },
       };

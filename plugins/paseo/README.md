@@ -49,7 +49,14 @@ paseo plugin add npm:alp-paseo-plugin
 paseo provider models alp
 ```
 
-From then on the plugin starts alpd by itself when needed. If the provider
+From then on the plugin keeps alpd running while Paseo runs. It starts alpd when
+Paseo starts, checks every 5 seconds, and starts it again when alpd is down; with
+`alp daemon install`, it starts alpd through that service. Sessions open in Paseo
+stay open across the restart: the plugin reconnects, shows that it lost and
+regained alpd, and a session alpd did not reopen resumes from its thread at the
+next prompt. After `alp daemon stop` the plugin leaves alpd stopped until you
+prompt in Paseo, run `alp daemon start`, or start Paseo again. Set
+`ALP_SUPERVISE=0` in the Paseo daemon's environment to turn the watching off. If the provider
 reports that alpd.js was not found, run `alp daemon start` once, or set
 `ALP_DAEMON_ENTRY` to the absolute path of `alpd.js` in the Paseo daemon's
 environment. `ALP_HOME` (default `~/.alp`) selects the daemon's directory and

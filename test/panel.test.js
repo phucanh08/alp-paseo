@@ -109,7 +109,12 @@ test('the plugin server lists, adds, closes, reopens and approves tasks as the u
   await mkdir(path.join(root, '.alp'), { recursive: true });
   await mkdir(path.join(root, 'src', 'deep'), { recursive: true });
   const handlers = new Map();
-  contribute({ registerProvider() {}, handle: (contract, handler) => handlers.set(contract.name, { contract, handler }) });
+  // Only the task handlers matter here: the plugin must not start or watch an alpd.
+  const supervise = process.env.ALP_SUPERVISE;
+  process.env.ALP_SUPERVISE = '0';
+  const dispose = contribute({ registerProvider() {}, handle: (contract, handler) => handlers.set(contract.name, { contract, handler }) });
+  if (supervise === undefined) delete process.env.ALP_SUPERVISE; else process.env.ALP_SUPERVISE = supervise;
+  t.after(() => dispose());
   assert.deepEqual([...handlers.keys()].sort(), ['alp.tasks.add', 'alp.tasks.change', 'alp.tasks.list']);
   // Like the SDK's callPluginRpc: input and output are checked against the shared contract.
   const call = async (name, input) => {

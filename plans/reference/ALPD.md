@@ -1287,3 +1287,33 @@ Goal (D21, C6): test what users read, and the failures that matter, without Code
   - `ps`: running, waiting, parked, failed and idle sessions in two trees.
   - `task-report`: a landed epic with a nested epic, rework, a handback, mixed verification, and a task closed unverified.
 - `ALP_UPDATE_GOLDEN=1` rewrites the files. A missing file fails the test and tells how to create it.
+
+## 40. Paseo keeps alpd running as built (2026-10-09)
+
+Goal (D22): alpd is up whenever Paseo is, without the user starting it, and Paseo sessions outlive an alpd restart.
+
+- `src/client/supervise.js`:
+  - `startDaemon({ home, entry })` lifts a hold and starts alpd: through the login service when one is installed (§37), otherwise detached with `ensureDaemon`. The CLI's `start`, `restart` and `install` use it too.
+  - `holdDaemon(home)` writes `state/alpd.held` on `alp daemon stop`. alpd removes the file when it starts, so a hold only exists while alpd is stopped.
+  - `superviseDaemon({ home, entry, intervalMs = 5000, misses = 2 })`:
+    - starts alpd at once;
+    - checks the lock every interval, and starts alpd again after two checks in a row find it down, unless it is held;
+    - two misses (5–10 s) give `alp daemon restart` and `install` time to stop and start alpd themselves, and must stay longer than alpd takes to start, or a second launcher can outlive the first;
+    - `stop()` ends watching and waits for a start in flight.
+- The plugin's `contribute` runs `superviseDaemon` for `$ALP_HOME`, with the plugin's alpd.js, unless `ALP_SUPERVISE=0`. Its dispose stops the watching; alpd keeps running.
+- Provider connections reconnect (`relink`) instead of failing their sessions:
+  - When alpd's connection closes, each open root gets a warning item, and the provider reconnects with backoff (250 ms doubling to 5 s). It starts alpd only when not held, or once a request asked for it.
+  - After reconnecting, each root is re-attached with `session.get` and `session.attach` (no replay):
+    - a root alpd reopened (§31) keeps streaming;
+    - a root alpd did not reopen is dormant, and the next prompt or configure reopens it from its thread with `session.create { resume: true }`;
+    - a root alpd no longer knows fails as before.
+  - Duplicate `session.opened` and `session.ready` for a root Paseo already shows are suppressed; only its config is re-sent.
+  - A request made while alpd is away waits up to 20 s for it.
+- `npm test` runs with a temporary `ALP_HOME`, so no test can reach `~/.alp`. Tests that load the plugin turn the watching off or dispose it.
+
+**Evidence.**
+- `test/supervise.test.js` checks two things:
+  - with a real alpd in a temporary home, the plugin's watcher starts alpd, starts a new one after `SIGKILL`, leaves it stopped after a held stop for two seconds, and `startDaemon` lifts the hold;
+  - with an in-process alpd over a durable store, a Paseo connection survives two alpd crashes. It shows the lost and reconnected notices, never `runtime_failed`. The next prompt resumes the native thread, and Paseo sees the session opened once. A prompt sent while alpd is down waits and is accepted.
+- While this was built, a version of `test/panel.test.js` loaded the plugin without a temporary home and started an alpd in the real `~/.alp`. It was found, stopped, and its files were removed; the global `ALP_HOME` in `npm test` prevents a repeat.
+

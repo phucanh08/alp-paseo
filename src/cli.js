@@ -15,11 +15,12 @@ import { commandDecision, profileFor } from './core/permissions.js';
 import { describeVerification, runVerify, verifyConfig } from './core/verify.js';
 import { diagnose, repair } from './client/doctor.js';
 import { ago, duration, renderLog, renderPs } from './client/render.js';
-import { installedProgram, installService, serviceFor, startService, uninstallService } from './client/service.js';
+import { installedProgram, installService, serviceFor, uninstallService } from './client/service.js';
+import { holdDaemon, startDaemon } from './client/supervise.js';
 import { discoverAgents } from './core/resolver.js';
 import { parse as toml } from 'smol-toml';
 import { addGate, blockersOf, checkGates, childrenOf, closeTask, compactTasks, createTask, describeGate, gateOpen, epicReport, gatesOf, getTask, isTaskId, linkTask, recordVerification, listTasks, loadTasks, readyTasks, reopenTask, resolveGate, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
-import { alpHome, connect, ensureDaemon, lockAlive, readLock } from './client/index.js';
+import { alpHome, connect, lockAlive, readLock } from './client/index.js';
 
 const USAGE = `Usage:
   alp <init|upgrade> [directory]
@@ -109,11 +110,7 @@ async function installed() {
 /** Starts alpd: through its service when installed, so the service keeps it running; else detached. */
 async function start() {
   await built();
-  const service = await installed();
-  const lock = await readLock(alpHome());
-  if (!service || lockAlive(lock)) return ensureDaemon({ entry: DAEMON_ENTRY });
-  await startService(service);
-  return ready();
+  return startDaemon({ home: alpHome(), entry: DAEMON_ENTRY });
 }
 
 /** Connects to a running daemon without starting one. */
@@ -140,7 +137,10 @@ async function daemon([action, ...rest]) {
     const lock = await readLock(alpHome());
     console.log(`alpd ${lock.version} running (pid ${lock.pid}) on ${socket}`);
   } else if (action === 'stop') {
-    console.log(await stop() ? `alpd stopped${await installed() ? '; its service starts it again at login, or with alp daemon start' : ''}` : 'alpd is not running');
+    const stopped = await stop();
+    // On purpose: the Paseo plugin leaves it stopped until something asks for it.
+    await holdDaemon(alpHome());
+    console.log(stopped ? `alpd stopped; it stays stopped until alp daemon start, a prompt in Paseo, or ${await installed() ? 'the next login' : 'Paseo starting again'}` : 'alpd is not running');
   } else if (action === 'restart') {
     const client = await running().catch(() => undefined);
     const status = client && await client.request('daemon.status').finally(() => client.close());

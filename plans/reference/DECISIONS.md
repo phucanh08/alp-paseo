@@ -198,3 +198,10 @@ The daemon follows seven invariants from Gas City's controller, listed in [alpd 
 **Not taken:** adopting live processes (they end with alpd), HTTP/SSE with a typed OpenAPI, signed grants and SSRF guards, reconciler v2, agent pools and idle-sleep policy, a multi-city supervisor and pack registry, Dolt and SQLite, tmux and herdr, and an external messaging fabric.
 
 Step A was built on 2026-10-09. Details: [alpd §31](ALPD.md). Step B was built the same day; verify gains `idleSec`, and exit 75 marks a step that could not run. Details: [alpd §32](ALPD.md). C5 was built the same day. Details: [alpd §33](ALPD.md). C4 was built the same day. Details: [alpd §34](ALPD.md). C1 was built the same day. Details: [alpd §35](ALPD.md). C2 was built the same day. Details: [alpd §36](ALPD.md). C3 was built the same day. Details: [alpd §37](ALPD.md). C7 was built the same day. Details: [alpd §38](ALPD.md). C6 was built the same day, completing C. Details: [alpd §39](ALPD.md).
+
+## D22 — Paseo keeps alpd running
+
+Decided by the user on 2026-10-09: while Paseo runs, alpd runs. The plugin starts alpd when Paseo starts and starts it again whenever it goes down, and Paseo sessions survive the restart.
+
+A deliberate `alp daemon stop` is respected: the plugin leaves alpd stopped until someone asks for it (a prompt in Paseo, `alp daemon start`, or Paseo starting again). When `alp daemon install` set up a login service, starts go through it. Details: [alpd §40](ALPD.md).
+

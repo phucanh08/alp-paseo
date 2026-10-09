@@ -157,7 +157,7 @@ Work survives alpd: after a crash, `alp daemon stop` or `alp daemon restart`, th
 
 When a runtime hits its usage limit, ALP pauses it by itself. Assignments the limit stopped are parked instead of failed, and every open session shows a notice saying when the limit resets. Agents on the other runtime keep working. `alp resume codex` continues the parked assignments; `"limits": { "autoResume": true }` in `$ALP_HOME/settings.json` resumes after the reset instead. Details: [Pause and usage limits](docs/alp/team-workflow.md#pause-and-usage-limits).
 
-Finished assignments stay recallable for 14 days: main, or the agent that assigned one, asks it with `alp_recall` why it did something, and you ask with `alp recall <assignment|task> "question"`. ALP forks the assignment's session read-only, asks, and drops the fork; the question never changes the assignment's own session. ALP keeps the native threads of assignments for this, and deletes them after 14 days. The Paseo plugin starts the same daemon automatically.
+Finished assignments stay recallable for 14 days: main, or the agent that assigned one, asks it with `alp_recall` why it did something, and you ask with `alp recall <assignment|task> "question"`. ALP forks the assignment's session read-only, asks, and drops the fork; the question never changes the assignment's own session. ALP keeps the native threads of assignments for this, and deletes them after 14 days. The Paseo plugin keeps the same daemon running while Paseo runs: it starts alpd with Paseo and again whenever alpd goes down, except after `alp daemon stop`, and its sessions reconnect.
 
 ## Paseo
 

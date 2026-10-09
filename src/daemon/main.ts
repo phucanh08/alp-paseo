@@ -107,6 +107,8 @@ async function run(home: string) {
   // Review copies of interrupted assignments hold nothing to keep.
   const copyDir = path.join(home, 'copies');
   await reclaimCopies(copyDir).catch(() => 0);
+  // A hold (ALPD §40) only means something while alpd is stopped.
+  await unlink(path.join(home, 'state', 'alpd.held')).catch(() => {});
   const marker = path.join(home, 'state', 'alpd.running');
   const exit = await previousExit(marker);
   if (exit.kind === 'crash') console.log(`${new Date().toISOString()} the previous alpd stopped unexpectedly around ${exit.at}`);
