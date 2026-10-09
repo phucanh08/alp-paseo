@@ -1465,3 +1465,42 @@ Goal (D23, phase 13, step 3): one set of core functions edits agents, skills, MC
   - `probeMcp` over stdio (paging, a crash with its stderr, a missing command) and over HTTP (JSON, then SSE, with the session id and the user's headers);
   - every RPC through the contracts;
   - the CLI from creating entries to removing them.
+
+## 44. The ALP settings screen as built (2026-10-09)
+
+Goal (D23, phase 13, step 4): manage the library and a project's overrides in Paseo.
+
+- **`index.client.tsx`** registers:
+  - `addSettingsScreen({ id: 'alp-settings', title: 'ALP', icon: 'Bot' })`, with `LibrarySettings`;
+  - the workspace panel `alp-project`, "ALP project", with `ProjectLibraryPanel`;
+  - the Tasks panel, as before.
+- **`client/library.tsx`:**
+  - `LibraryManager` loads `alp.library.list` for each kind, and `alp.library.get` for the open entry.
+    - The library scope sends no directory.
+    - The project scope sends the workspace directory and saves into the project.
+    - After every action it reloads, so the next save carries the new revision.
+  - The views take data and callbacks only, so tests render them without RPC:
+    - `LibraryLists`: five sections with source, override and user badges, New, Duplicate (with a name), and in the project scope Override in this project and Use library;
+    - `EntryEditor`: a built-in or lower-layer entry is saved with `revision: null`, which creates the scope's own; Remove appears only for the scope's own entry and says what applies again;
+    - `AgentForm`;
+    - `TeamForm`, with role selects, member model and thinking, a delegation switch per pair (never into main), a cycle warning (`delegationCycle`), the supervisor, and the house rules;
+    - `McpForm`, for stdio or HTTP;
+    - `HookForm`, where the blocking switch shows only for `handoff`, `task.close` and `merge`;
+    - Test buttons for MCP servers and hooks.
+  - Team edits go through the pure functions `withMain`, `withMember` and `withDelegation`:
+    - a new main takes over the old main's targets;
+    - removed members leave the graph;
+    - main is never a target.
+- **Kit:**
+  - It uses the SDK's settings kit (`SettingsSection`, `SettingsRow`, `SettingsSwitch`, `SettingsSelect`, `SettingsInput`, `SettingsAction`) and React Native primitives.
+  - `SettingsInput` is uncontrolled, so the editor is keyed by entry and revision.
+
+**Evidence.**
+- `test/settings-screen.test.js` checks:
+  - the bundle uses only the modules Paseo 0.11.1 supplies, and the screen and panel register;
+  - the library and project lists render with badges, actions and order;
+  - the agent, team, hook and new MCP editors render;
+  - the team edit functions;
+  - `delegationCycle` and `blank`.
+- `test/panel.test.js` gets a stub of the kit.
+- Not tried in a running Paseo: installing the plugin there means changing the user's Paseo, which this work does not do.

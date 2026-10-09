@@ -43,6 +43,8 @@ function hostModules(overrides = {}) {
     'react-native': { View: tag('view'), Text: tag('text'), Pressable: tag('button'), TextInput: tag('input') },
     '@getpaseo/plugin/client/react-native': { ScrollView: tag('scroll'), useToast: () => ({ show() {}, error() {} }) },
     '@getpaseo/plugin/client': { useRpc: () => async () => ({}), useWorkspace: () => null },
+    // The settings kit; test/settings-screen.test.js renders it.
+    '@getpaseo/plugin/client/ui': {},
     ...overrides,
   };
 }
@@ -65,9 +67,9 @@ test('the client entry bundles with only the modules Paseo supplies and register
   assert.deepEqual(inputs.filter(input => !/^(index\.client\.tsx|client\/|shared\/)/.test(path.relative(plugin, path.resolve(input)).split(path.sep).join('/'))), []);
   const panels = [];
   const commands = [];
-  const cleanup = load(code).default({ addWorkspacePanel: panel => { panels.push(panel); return () => {}; }, addCommandCenterItem: item => { commands.push(item); return () => {}; } });
+  const cleanup = load(code).default({ addWorkspacePanel: panel => { panels.push(panel); return () => {}; }, addCommandCenterItem: item => { commands.push(item); return () => {}; }, addSettingsScreen: () => () => {} });
   assert.equal(typeof cleanup, 'function');
-  assert.deepEqual(panels.map(panel => [panel.id, panel.title, panel.icon, panel.context, typeof panel.Component]), [['alp-tasks', 'Tasks', 'ListTodo', 'workspace', 'function']]);
+  assert.deepEqual(panels.filter(panel => panel.id === 'alp-tasks').map(panel => [panel.id, panel.title, panel.icon, panel.context, typeof panel.Component]), [['alp-tasks', 'Tasks', 'ListTodo', 'workspace', 'function']]);
   const opened = [];
   commands[0].onSelect({ openPanel: id => opened.push(id) });
   assert.deepEqual([commands[0].context, opened], ['workspace', ['alp-tasks']]);
