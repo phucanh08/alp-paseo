@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initProject } from '../src/core/init.js';
-import { blockersOf, closeTask, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, releaseTask, reopenTask, startTask, submitTask, taskDigest, updateTask } from '../src/core/tasks.js';
+import { addGate, blockersOf, checkGates, gatesOf, closeTask, compactTasks, createTask, resolveGate, startRefusal, getTask, linkTask, listTasks, loadTasks, readyTasks, releaseTask, reopenTask, startTask, submitTask, taskDigest, updateTask } from '../src/core/tasks.js';
 import { createAlpRuntime, claudeToolShapes } from '../dist/runtime/index.js';
 
 const CLI = fileURLToPath(new URL('../src/cli.js', import.meta.url));
@@ -264,7 +264,7 @@ test('main changes tasks with alp_task; assignments and the supervisor only read
   const [main, supervisor] = runtimes;
 
   const mainTool = tool(main, 'alp_task');
-  assert.deepEqual(mainTool.inputSchema.properties.action.enum, ['create', 'update', 'link', 'start', 'close', 'reopen', 'show', 'list', 'ready']);
+  assert.deepEqual(mainTool.inputSchema.properties.action.enum, ['create', 'update', 'link', 'start', 'close', 'reopen', 'gate', 'clear', 'show', 'list', 'ready']);
   assert.deepEqual(Object.keys(mainTool.inputSchema.properties).sort(), Object.keys(claudeToolShapes.alp_task).sort());
   assert.match(main.config.developerInstructions, /Tasks: the project's task graph lives in \.alp\/tasks[\s\S]*Only you and the user create or change tasks/);
   assert.deepEqual(tool(supervisor, 'alp_task').inputSchema.properties.action.enum, ['show', 'list']);
@@ -359,13 +359,13 @@ test('main sees tasks in review, in progress and ready at the start of a turn', 
   assert.equal(lines.at(-1), '2 more ready · 1 blocked · 1 unreadable: .alp/tasks/t-bad0.json');
 });
 
-async function runtimeSetup(t, settings) {
+async function runtimeSetup(t, settings, options = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'alp-task-flow-'));
   const root = path.join(directory, 'project');
   await initProject(root);
   if (settings) await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify(settings));
   const runtimes = [];
-  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: path.join(directory, 'home'), runLogDir: path.join(directory, 'runs'), boardDir: path.join(directory, 'boards') });
+  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: path.join(directory, 'home'), runLogDir: path.join(directory, 'runs'), boardDir: path.join(directory, 'boards'), ...options });
   // Shut down before removing the directory: the runtime may still be writing logs and boards into it.
   t.after(async () => { await runtime.shutdown(); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
   const events = [];
@@ -492,4 +492,140 @@ test('a task whose paths another tree claimed is not delegated, and only main gi
   void lead.call('alp_delegate', { agent: 'peer', task: 'Edit src/cli.js', mode: 'workspace-write', wait: false });
   await until(() => runtimes.length === 4 && runtimes[3].started.length === 1);
   assert.equal((await runtimes[3].call('alp_pin', { kind: 'claim', body: 'CLI', paths: ['src/cli.js'] })).task, task.id);
+});
+
+// --- step 3: gates and compaction -------------------------------------------------
+
+test('gates hold a task, or the children of an epic, back until they clear', async t => {
+  const { root } = await project(t);
+  const task = await createTask(root, { title: 'Release' }, 'user');
+  await assert.rejects(addGate(root, task.id, { kind: 'human' }, 'main'), /note must be nonempty/);
+  await assert.rejects(addGate(root, task.id, { kind: 'vote' }, 'main'), /kind must be one of human, timer, gh:pr, gh:run/);
+  await assert.rejects(addGate(root, task.id, { kind: 'timer', until: 'soon' }, 'main'), /ISO time, or \+30m/);
+  await assert.rejects(addGate(root, task.id, { kind: 'gh:pr', ref: 'pull/12' }, 'main'), /a number, or owner\/repo#number/);
+  let current = await addGate(root, task.id, { kind: 'human', note: 'Approve the changelog?' }, 'main');
+  current = await addGate(root, task.id, { kind: 'timer', until: '+2h' }, 'main');
+  current = await addGate(root, task.id, { kind: 'gh:pr', ref: 'acme/widgets#12' }, 'main');
+  assert.deepEqual(current.gates.map(gate => [gate.id, gate.kind, gate.repo ?? null, gate.ref ?? null]), [['g1', 'human', null, null], ['g2', 'timer', null, null], ['g3', 'gh:pr', 'acme/widgets', '12']]);
+  assert.ok(Date.parse(current.gates[1].until) - Date.now() > 7_100_000);
+  let { tasks } = await loadTasks(root);
+  assert.deepEqual(ids(readyTasks(tasks)), []);
+  assert.match(startRefusal(tasks[0], tasks), /waits on g1 human: Approve the changelog\?; g2 timer: until .*; g3 gh:pr: acme\/widgets#12/);
+  assert.match(taskDigest(tasks), new RegExp(`- waiting on g1 human: Approve the changelog\\?; g2 timer.*: ${task.id} P2 Release`));
+
+  await resolveGate(root, task.id, 'g1', { by: 'user', note: 'Looks right' });
+  await assert.rejects(resolveGate(root, task.id, 'g1', { by: 'user' }), /already clear/);
+  await resolveGate(root, task.id, 'g2', { by: 'user', remove: true });
+  // A timer in the past no longer holds the task.
+  await addGate(root, task.id, { kind: 'timer', until: '2020-01-01T00:00:00Z' }, 'main');
+  // GitHub gates clear when the pull request merges or the run succeeds.
+  await addGate(root, task.id, { kind: 'gh:run', ref: '77' }, 'main');
+  const calls = [];
+  const gh = async args => {
+    calls.push(args);
+    if (args[0] === 'pr') return JSON.stringify({ state: 'MERGED' });
+    throw new Error('HTTP 404');
+  };
+  let checked = await checkGates(root, gh);
+  assert.deepEqual(calls, [['pr', 'view', '12', '--json', 'state', '-R', 'acme/widgets'], ['run', 'view', '77', '--json', 'status,conclusion']]);
+  assert.deepEqual(checked.cleared, [{ task: task.id, gate: 'g3', detail: 'merged' }]);
+  assert.deepEqual(checked.errors, [{ task: task.id, gate: 'g5', error: 'HTTP 404' }]);
+  checked = await checkGates(root, async () => JSON.stringify({ status: 'in_progress', conclusion: '' }));
+  assert.deepEqual(checked.pending, [{ task: task.id, gate: 'g5', detail: 'in_progress' }]);
+  await checkGates(root, async () => JSON.stringify({ status: 'completed', conclusion: 'success' }));
+  current = await getTask(root, task.id);
+  assert.deepEqual(current.gates.map(gate => [gate.id, gate.resolved?.by ?? null]), [['g1', 'user'], ['g3', 'github'], ['g4', null], ['g5', 'github']]);
+  ({ tasks } = await loadTasks(root));
+  assert.deepEqual(ids(readyTasks(tasks)), [task.id]);
+
+  // An epic's gate holds back its children.
+  const epic = await createTask(root, { title: 'Epic', type: 'epic' }, 'user');
+  const child = await createTask(root, { title: 'Child', parent: epic.id }, 'user');
+  await addGate(root, epic.id, { kind: 'human', note: 'Start the epic?' }, 'main');
+  ({ tasks } = await loadTasks(root));
+  assert.ok(!ids(readyTasks(tasks)).includes(child.id));
+  assert.deepEqual(gatesOf(tasks.find(entry => entry.id === child.id), tasks), [`${epic.id} g1 human: Start the epic?`]);
+});
+
+
+test('compaction shrinks tasks closed long enough ago and keeps how they closed', async t => {
+  const { root } = await project(t);
+  const old = await createTask(root, { title: 'Old', description: 'x'.repeat(900), labels: ['cli'] }, 'user');
+  await startTask(root, old.id, { agent: 'peer', assignment: 'a1' }, 'main');
+  await submitTask(root, old.id, { assignment: 'a1', handoff: { outcome: 'complete', summary: 's'.repeat(900), verification: ['npm test'] }, agent: 'peer' }, 'peer');
+  for (let i = 0; i < 5; i++) await updateTask(root, old.id, { note: `note ${i}` }, 'main');
+  await closeTask(root, old.id, { summary: 'Merged in #12' }, 'main');
+  const open = await createTask(root, { title: 'Open', description: 'y'.repeat(900) }, 'user');
+
+  assert.deepEqual(await compactTasks(root, { days: 30 }, 'user'), []);
+  const preview = await compactTasks(root, { days: 0, dryRun: true }, 'user');
+  assert.deepEqual(preview.map(entry => entry.id), [old.id]);
+  assert.ok(preview[0].after < preview[0].before / 2);
+  assert.equal((await getTask(root, old.id)).compacted, undefined);
+
+  await compactTasks(root, { days: 0 }, 'user');
+  const compacted = await getTask(root, old.id);
+  assert.equal(compacted.description.length, 300);
+  assert.equal(compacted.handoff.summary.length, 300);
+  assert.equal(compacted.handoff.verification, undefined);
+  assert.deepEqual(compacted.log.map(entry => entry.event), ['created', 'closed']);
+  assert.deepEqual([compacted.title, compacted.labels, compacted.closed.summary, compacted.compacted.by], ['Old', ['cli'], 'Merged in #12', 'user']);
+  assert.equal((await getTask(root, open.id)).description.length, 900);
+  // Compacted tasks are not compacted again.
+  assert.deepEqual(await compactTasks(root, { days: 0 }, 'user'), []);
+  await assert.rejects(compactTasks(root, { days: -1 }, 'user'), /days must be/);
+});
+
+test('main gates tasks, cannot clear a human gate, and GitHub gates clear at the start of its turn', async t => {
+  const calls = [];
+  const github = async args => { calls.push(args); return JSON.stringify({ state: 'MERGED' }); };
+  const { root, runtime, runtimes, prompt } = await runtimeSetup(t, { workflow: { mode: 'pho', maxPeers: 2, supervisor: false } }, { github });
+  await runtime.open('root', { cwd: root });
+  await until(() => runtimes.length === 1);
+  const [main] = runtimes;
+  const task = await createTask(root, { title: 'Deploy' }, 'user');
+  await prompt('root', 'm1', 'Plan the deploy');
+  assert.equal(calls.length, 0);
+  assert.equal((await main.call('alp_task', { action: 'gate', id: task.id, kind: 'human', note: 'Deploy on Friday?' })).task.gates[0], 'g1 human: Deploy on Friday?');
+  assert.match((await main.call('alp_task', { action: 'clear', id: task.id, gate: 'g1' })).error, /Only the user clears a human gate/);
+  await main.call('alp_task', { action: 'gate', id: task.id, kind: 'gh:pr', ref: '12' });
+  assert.equal((await main.call('alp_task', { action: 'gate', id: task.id, kind: 'timer', until: '+1d' })).task.gates.length, 3);
+  assert.equal((await main.call('alp_task', { action: 'clear', id: task.id, gate: 'g3', note: 'Not needed' })).task.gates.length, 2);
+  main.finish('Planned');
+  await resolveGate(root, task.id, 'g1', { by: 'user' });
+
+  await prompt('root', 'm2', 'Go');
+  assert.deepEqual(calls, [['pr', 'view', '12', '--json', 'state']]);
+  assert.equal((await getTask(root, task.id)).gates[1].resolved.by, 'github');
+  assert.match(main.started[1].params.input[1].text, new RegExp(`- ready: ${task.id} P2 Deploy`));
+  main.finish('ok');
+  // Checked at most once a minute per project.
+  await prompt('root', 'm3', 'Again');
+  assert.equal(calls.length, 1);
+});
+
+test('the CLI adds, lists and clears gates, checks GitHub ones, and compacts', async t => {
+  const { directory, root } = await project(t);
+  const home = path.join(directory, 'home');
+  const fake = path.join(directory, 'gh.mjs');
+  await writeFile(fake, '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify(process.argv[2] === "pr" ? { state: "OPEN" } : { status: "completed", conclusion: "success" }));\n', { mode: 0o755 });
+  const run = (...args) => spawnSync(process.execPath, [CLI, ...args], { cwd: root, encoding: 'utf8', env: { ...process.env, ALP_HOME: home, ALP_GH_BIN: fake } });
+  const task = JSON.parse(run('task', 'add', 'Release', '--json').stdout);
+  assert.match(run('task', 'gate', 'add', task.id, '--human', 'Ship it?').stdout, /⏸ g1 human: Ship it\?/);
+  run('task', 'gate', 'add', task.id, '--pr', '12');
+  run('task', 'gate', 'add', task.id, '--run', 'acme/w#9');
+  assert.match(run('tasks').stdout, /waits on g1 human: Ship it\?; g2 gh:pr: #12; g3 gh:run: acme\/w#9/);
+  const gates = run('tasks', 'gates');
+  assert.match(gates.stdout, new RegExp(`✓ ${task.id} g3 cleared: completed success`));
+  assert.match(gates.stdout, new RegExp(`⏸ ${task.id} g2 gh:pr: #12 \\(open\\)  Release`));
+  assert.match(gates.stdout, new RegExp(`⏸ ${task.id} g1 human: Ship it\\?  Release`));
+  run('task', 'gate', 'clear', task.id, 'g1', '-m', 'Yes');
+  run('task', 'gate', 'rm', task.id, 'g2');
+  assert.equal(JSON.parse(run('tasks', 'ready', '--json').stdout)[0].id, task.id);
+  assert.match(run('task', 'show', task.id).stdout, /✓ gate g1 human: Ship it\? \(cleared by user: Yes\)\n  ✓ gate g3 gh:run: acme\/w#9 \(cleared by github: completed success\)/);
+  assert.equal(run('task', 'gate', 'add', task.id, '--human', 'x', '--pr', '1').status, 1);
+  run('task', 'close', task.id);
+  assert.match(run('tasks', 'compact', '--days', '0', '--dry-run').stdout, /Would compact 1 closed task/);
+  assert.match(run('tasks', 'compact', '--days', '0').stdout, /Compacted 1 closed task/);
+  assert.match(run('task', 'show', task.id).stdout, /compacted \d{4}-\d\d-\d\d from \d+ characters/);
 });
