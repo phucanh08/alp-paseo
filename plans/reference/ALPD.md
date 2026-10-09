@@ -1172,3 +1172,27 @@ Goal (D21, C1): a session that fills its context loses detail when the runtime c
 - the run log holds exactly those three entries;
 - main between turns gets a passive note that arrives with its next prompt, and no turn is started for it;
 - `ClaudeTransport` counts cache tokens, takes the window from the result, and ignores sub-agent messages.
+
+## 36. alp doctor as built (2026-10-09)
+
+Goal (D21, C2): one command that says why ALP does not work here, and cleans up what crashes and old runs leave. Gas City's `gc doctor` runs registered checks, each with an optional fix.
+
+- `src/client/doctor.js`: `diagnose({ home, project, env, run, sandbox, daemonEntry })` returns checks `{ id, status, summary, details?, hint?, fix? }`. Statuses are `ok`, `info`, `warn` and `fail`. `repair(checks)` applies the fixes in order.
+- Checks:
+  - `build`: `dist/alpd.js` exists.
+  - `codex`, `claude`: the executable (`ALP_CODEX_BIN` / `ALP_CLAUDE_BIN`, else PATH), `--version`, and login (`codex login status` exit code; `claude auth status` JSON `loggedIn`). A missing runtime warns; it fails only when neither works.
+  - `alpd`: running, or the lock and socket a dead one left (fix: remove them, after checking again that no alpd started). A leftover `state/alpd.running` is reported as info: the next start continues the work.
+  - `sandbox`: `claudeSandboxAvailable()`.
+  - `permissions`: `$ALP_HOME`, its settings, lock and records, and `state`, `runs`, `logs`, `boards` and their files, with any group or other bit (fix: `chmod` to the owner bits).
+  - `user settings`: `validateUserSettings` and `settingsWarnings`; a failure means alpd ignores the file.
+  - `skills`: names in `role-skills.json` without `skills/<name>/SKILL.md`.
+  - `live work`: `state/live.json` entries whose project directory is gone (fix, only with alpd stopped: drop them).
+  - In a project: `settings` (`validateSettings`, `settingsWarnings`), `agents` (`resolveAgent` for each, with the library; project skills that replace library ones as info; a `defaultAgent` that does not exist), `worktrees` (prunable; fix `git worktree prune`), `branches`.
+- Branches: an `alp/*` branch merged into HEAD, not checked out in any worktree and not in a live entry, is dead weight (fix: `git branch -d`). Unmerged ones hold kept work and are listed as info, never deleted.
+- `alp doctor [--project DIR] [--fix] [--json]`: without `--project` it checks the current directory when it is an ALP project. After fixes it runs the checks again and prints both. Exit code 1 when a check fails.
+
+**Evidence.** `test/doctor.test.js` builds a temporary `ALP_HOME` and project with fake `codex` and `claude`:
+- one run finds a not-logged-in Codex, a stale lock, an open file, invalid user settings, a missing library skill, live work of a gone project, a mistyped project key, a prunable worktree, and a merged, an unmerged and a live branch;
+- the fixes then remove the lock, tighten the mode, drop only the gone entry, prune, and delete only the merged branch;
+- with no runtime both fail, and with Codex alone Claude only warns;
+- `alp doctor --json` through the CLI.
