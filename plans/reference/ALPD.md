@@ -422,7 +422,34 @@ Goal: the user and main talk without main ending its turn, the user can reach an
 
 **Not built.** A web dashboard; notifications outside Paseo and the terminal; persisting open questions across a daemon restart (the asking turn ends with the daemon).
 
-**Next: a group channel per project (user direction, 2026-10-09; noted, not designed).** Instead of direct mail between sibling agents, each project or workspace gets one group. Agents pin their findings to its chat channel, where the others (and the user) can read them. Later there will also be a channel for pinning tasks, and tools to show these channels to the user.
+**Next: a group channel per project (user direction, 2026-10-09).** Built in §18.
 
 **Evidence.** `test/human.test.js` covers the runtime, alpd and the Paseo bridge, including the refusal and the notes to the requester. `scripts/human-e2e.mjs` has three modes. In `cli` and `paseo`, main asks the user for a code word, answered with `alp answer` by prefix or with Paseo's question prompt. In `relay`, the user writes the word to a running peer with `alp send`, main is told, and the peer returns it. All pass on Codex and Claude.
 
+## 18. The project board as built (2026-10-09)
+
+Goal: agents working independently on one project, in one tree or in several, neither edit each other's files nor pursue different ideas (D15).
+
+**The board.** Each project root has one board that every agent working on it shares, across trees and clients. A pin is `{ id, project, kind, body, paths?, agent, sessionId, rootId, at, released? }` with one of three kinds:
+
+- `claim`: paths the agent is about to change, project-relative files or directories (`.` is the whole project). Paths outside the project are refused.
+- `decision`: the approach others should follow.
+- `finding`: something others need to know.
+
+**Tools.** Every session gets three tools:
+
+- `alp_pin { kind, body, paths? }`. A claim is refused when another agent holds a live claim on overlapping paths; the error lists each holder (pin id, agent, session, paths, body). Claims are shared within one line of delegation: a requester's claim covers its assignments, and theirs covers it. A read-only session cannot claim.
+- `alp_board { kinds?, limit? }` returns the live claims and the most recent decisions and findings (30 by default).
+- `alp_unpin { pinId }` takes down the caller's own pin.
+
+A session's claims end with the session; decisions and findings stay.
+
+**Distribution.** A new assignment's prompt ends with a digest of the board: live claims first, then the most recent decisions and findings, capped at 3,000 characters. A new pin goes as passive `board` mail to every other session on the project whose turn is running, and is steered into that turn. Waiters (`alp_wait`, a waiting delegate) never take board mail. Idle sessions are not woken; they read the board with `alp_board` or in their next assignment. The instructions tell every agent to read the board and claim paths before changing files, to leave paths claimed by others alone and ask its requester instead, and to treat board mail as information that never overrides its requester.
+
+**Storage.** `boardDir` (alpd: `$ALP_HOME/boards`) holds one JSONL file per project, named by a hash of the project root, with `{pin}` and `{release, at}` lines. On first use after a restart, claims are marked released (their sessions ended with the daemon), the board is pruned to the 200 most recent decisions and findings, and the file is compacted. Without `boardDir` the board lives in memory.
+
+**Observability.** The runtime emits `pin` and `unpin { pinId, reason: unpinned | session_ended }` on the pinning session, and logs `board.pin` and `board.unpin` to the run log. `runtime.board(projectRoot)` and alpd's `board.list { projectRoot }` return the live pins. `TreeStatus.claims` lists the tree's claims. The CLI adds `alp board [--project DIR] [--json]`, shows claims in `alp top`, and shows pins and releases in `alp log`. The Paseo plugin ignores pin events.
+
+**Not built (next phase).** A channel for pinning tasks, and showing the board in Paseo.
+
+**Evidence.** `test/board.test.js` covers conflicts across trees and the lineage exemption, delivery into running turns, the digest in assignments, release on close, validation, persistence across a restart, and `board.list`. `scripts/board-e2e.mjs` runs two independent roots on one project at once. Alice claims `src/auth` and pins a decision. Bob starts later, is refused an overlapping claim, and reports the decision from the board. Bob's finding reaches Alice's running turn. The script passes on Codex and Claude.

@@ -97,14 +97,28 @@ the user with `to: "user"`. Each answer it gets is reported to its requester
 the same way, and its handoff must say what the user asked and what it did. The
 watchdog does not count the wait for the user as silence.
 
+## Project board
+
+Every agent working on a project shares one board, whether it was started by the
+same main or by another `alp run` or Paseo agent. Before changing files an agent
+reads the board with `alp_board` and pins a `claim` on the paths it will change
+with `alp_pin`. A claim that overlaps one held by an agent outside its own line
+of delegation is refused with the holder's name, so the agent leaves those paths
+alone and asks its requester. An agent pins a `decision` when it picks an
+approach others should follow and a `finding` when it learns something others
+need. New pins reach agents whose turns are running as board mail, and every new
+assignment starts with a digest of the board. Claims end with their session, or
+earlier with `alp_unpin`; decisions and findings stay. `alp board` prints the
+board of the current project.
+
 ## Observing a tree
 
 `alp top` shows every live tree, refreshed every second: each agent's state
 (`running`, `waiting` for assignments or mail, `waiting_parent`, `waiting_user`,
 `idle`), idle time, model and mode, worktree, unread mail, open questions,
-unmerged worktree changes and write leases. `alp log <session>` prints the
-tree's assignment log: delegations, results with handoffs, mail, worktree
-events, and questions to the user with their answers.
+unmerged worktree changes, write leases and board claims. `alp log <session>`
+prints the tree's assignment log: delegations, results with handoffs, mail,
+worktree events, board pins, and questions to the user with their answers.
 
 ## Assignment and model selection
 
