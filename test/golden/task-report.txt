@@ -1,0 +1,7 @@
+Landed epic e-1 "Parser": 4/4 tasks closed, took 2h 10m, 2 reworked, 1 handed back, 1 verified, 1 failed verification, 1 skipped, 1 closed unverified.
+The parser landed with tests.
+✓ t-1 Tokenizer — done: Tokenizer with 30 cases
+✓ t-2 Grammar — done: Grammar after two rounds (unverified)
+✓ t-3 Errors — done
+  ✓ t-4 Error messages — done
+  ✗ t-5 Recovery — wontfix: Out of scope
