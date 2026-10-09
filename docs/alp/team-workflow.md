@@ -893,6 +893,14 @@ Logs live outside the project so they never dirty the checkout. Logging is best
 effort: an unwritable directory never blocks or fails delegation. The files contain
 full task briefs and results; delete them as you would other local agent history.
 
+Every session that opens also writes an `instructions` record: a 12-character
+digest of the instructions it runs with, its length, and digests of the
+project's `ALP.md` and the agent's `AGENT.md`. The text itself is not logged.
+`alp log` shows it as `# main instructions 1d892063c42d (ALP.md …, AGENT.md …)`.
+When an agent behaves differently from last week, compare the digests. If the
+sha changed, the parts show which file changed. If neither part changed, the
+difference came from lessons, skills or the profile.
+
 ## Catalog and usage context
 
 Before each native turn, the provider adds a timestamped snapshot for that session's

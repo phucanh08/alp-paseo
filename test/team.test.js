@@ -329,7 +329,7 @@ test('child files a structured handoff; parent gets it with only the final messa
   assert.equal(value.output, 'PROOF_1');
   let lines = [];
   for (let i = 0; i < 200 && lines.length < 2; i++) {
-    lines = (await readFile(path.join(runLogDir, 'root.jsonl'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+    lines = (await readFile(path.join(runLogDir, 'root.jsonl'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line)).filter(entry => entry.event !== 'instructions');
     await new Promise(resolve => setTimeout(resolve, 5));
   }
   const [started, finished] = lines;
@@ -451,7 +451,7 @@ test('an idle parent is woken by mail, without resetting its per-turn limits', a
   runtimes[0].finish('main final');
   let lines = [];
   for (let i = 0; i < 200 && !lines.some(l => l.event === 'mail'); i++) {
-    lines = (await readFile(path.join(runLogDir, 'root.jsonl'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+    lines = (await readFile(path.join(runLogDir, 'root.jsonl'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line)).filter(entry => entry.event !== 'instructions');
     await new Promise(resolve => setTimeout(resolve, 5));
   }
   const mail = lines.find(l => l.event === 'mail');

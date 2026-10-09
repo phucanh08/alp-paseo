@@ -45,7 +45,7 @@ function fakeTransport(runtimes) {
 
 async function project(t) {
   const directory = await mkdtemp(path.join(tmpdir(), 'alp-human-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
   const root = path.join(directory, 'project');
   await initProject(root);
   await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify({ delegation: { main: ['peer'] } }));
@@ -186,8 +186,9 @@ test('alpd lists and answers questions by id prefix, reports tree status and the
   assert.deepEqual(await client.request('question.answer', { questionId: question.id.slice(0, 5), text: 'Orchid' }), { questionId: question.id });
   assert.deepEqual(await asked, { status: 'answered', from: 'user', answer: 'Orchid' });
   await assert.rejects(client.request('question.answer', { questionId: question.id, text: 'x' }), error => error.code === 1001);
-  await until(async () => (await client.request('session.log', { sessionId: 'root' })).entries.length === 2);
-  const { entries } = await client.request('session.log', { sessionId: 'root' });
+  const logged = async () => (await client.request('session.log', { sessionId: 'root' })).entries.filter(entry => entry.event !== 'instructions');
+  await until(async () => (await logged()).length === 2);
+  const entries = await logged();
   assert.deepEqual(entries.map(entry => entry.event), ['human.question', 'human.answer']);
   await assert.rejects(client.request('session.status', { sessionId: 'nope' }), error => error.code === 1001);
 });
