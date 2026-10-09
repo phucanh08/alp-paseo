@@ -4,7 +4,7 @@ import { useToast } from '@getpaseo/plugin/client/react-native';
 import { SettingsAction, SettingsInput, SettingsRow, SettingsSection, SettingsSelect, SettingsSwitch } from '@getpaseo/plugin/client/ui';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
-import { libraryDelete, libraryDuplicate, libraryGet, libraryList, librarySave, libraryTest, type EntryRow } from '../shared/library';
+import { libraryDelete, libraryDuplicate, libraryGet, libraryList, librarySave, librarySkills, libraryTest, type EntryRow } from '../shared/library';
 import { Button, Pill, SideNavLayout, type NavGroup, type Tab } from './side-nav';
 
 /**
@@ -45,7 +45,8 @@ type Lists = Partial<Record<Kind, EntryRow[]>>;
 type Content = Record<string, any>;
 /** What the working area shows: a kind's entries, one entry, or a new entry. */
 export type Selection = { kind: Kind; name?: string; creating?: boolean };
-type Entry = { kind: Kind; name: string; source: string; overrides?: string; content: Content; revision: string | null; usedBy: string[] };
+/** librarySkills: for agents, the skills the library gives it by name (role-skills.json). */
+type Entry = { kind: Kind; name: string; source: string; overrides?: string; content: Content; revision: string | null; usedBy: string[]; librarySkills?: string[] };
 type Where = { projectRoot: string | null; library: string } | null;
 
 /** The settings screen: the library, with the built-ins it starts from. */
@@ -67,6 +68,7 @@ function LibraryManager({ theme, compact, scope, directory }: { theme: PluginThe
   const remove = useRpc(libraryDelete);
   const duplicate = useRpc(libraryDuplicate);
   const probe = useRpc(libraryTest);
+  const give = useRpc(librarySkills);
   const toast = useToast();
   const [lists, setLists] = useState<Lists>({});
   const [where, setWhere] = useState<Where>(null);
@@ -116,6 +118,7 @@ function LibraryManager({ theme, compact, scope, directory }: { theme: PluginThe
       if (saved && creating) setSelection({ kind, name });
       return saved;
     },
+    giveSkills: (agent, skills) => run(() => give({ agent, skills }), `Saved the skills of ${agent}`),
     remove: async (kind, name, revision) => {
       const removed = await run(() => remove({ ...base, kind, name, scope, ...(revision ? { revision } : {}) }), `Removed ${name}`);
       if (removed) setSelection({ kind });
@@ -137,6 +140,8 @@ export type Actions = {
   override(kind: Kind, name: string): Promise<boolean>;
   useLibrary(kind: Kind, name: string): Promise<boolean>;
   save(kind: Kind, name: string, content: Content, revision: string | null, creating: boolean): Promise<boolean>;
+  /** Sets the skills the library gives an agent by name. */
+  giveSkills(agent: string, skills: string[]): Promise<boolean>;
   remove(kind: Kind, name: string, revision?: string | null): Promise<boolean>;
   test(kind: Kind, name: string): Promise<Record<string, any> | null>;
 };
@@ -173,7 +178,7 @@ export function LibraryWorkspace({ theme, compact, scope, where, lists, error, s
   }
   const kind = kindOf(selection.kind);
   if (selection.name || selection.creating) {
-    return <EntryEditor key={`${selection.kind}/${selection.name ?? 'new'}/${entry?.revision ?? 'new'}`} theme={theme} compact={compact} scope={scope} kind={selection.kind} entry={selection.creating ? null : entry}
+    return <EntryEditor key={`${selection.kind}/${selection.name ?? 'new'}/${entry?.revision ?? 'new'}/${(entry?.librarySkills ?? []).join(',')}`} theme={theme} compact={compact} scope={scope} kind={selection.kind} entry={selection.creating ? null : entry}
       lists={lists} actions={actions} layout={{ title, subtitle, groups, onSelect, initialCollapsed }} />;
   }
   return <KindOverview theme={theme} compact={compact} scope={scope} kind={kind.kind} rows={lists[kind.kind]} error={error} where={where} actions={actions} layout={{ title, subtitle, groups, onSelect, initialCollapsed }} styles={styles} />;
@@ -272,8 +277,18 @@ export function EntryEditor({ theme, compact, scope, kind, entry, lists, actions
   const own = entry?.source === scope;
   const update = (change: (draft: Content) => void) => setContent(current => { const draft = clone(current); change(draft); return draft; });
   const valid = NAME.test(name);
-  const dirty = !entry || JSON.stringify(content) !== JSON.stringify(original);
-  const onSave = () => { if (valid) void actions.save(kind, name, content, own ? entry!.revision : null, !entry); };
+  const changed = !entry || JSON.stringify(content) !== JSON.stringify(original);
+  // In the library, an agent's skills live in role-skills.json, so a built-in's change without a copy.
+  const givenOriginal = useMemo(() => entry?.librarySkills ?? [], [entry]);
+  const [given, setGiven] = useState<string[]>(givenOriginal);
+  const givesSkills = kind === 'agents' && scope === 'library';
+  const givenChanged = givesSkills && [...given].sort().join() !== [...givenOriginal].sort().join();
+  const dirty = changed || givenChanged;
+  const onSave = async () => {
+    if (!valid) return;
+    if (changed && !(await actions.save(kind, name, content, own ? entry!.revision : null, !entry))) return;
+    if (givenChanged) await actions.giveSkills(name, given);
+  };
   const note = entry
     ? entry.source === 'builtin' ? `Built into ALP. Saving makes ${scope === 'library' ? 'your library\'s' : 'this project\'s'} own ${entry.name}, which overrides it.`
       : own ? `In ${scope === 'library' ? 'your library' : 'this project'}${entry.overrides ? `; overrides the ${sourceLabel(entry.overrides)} one` : ''}.`
@@ -288,7 +303,7 @@ export function EntryEditor({ theme, compact, scope, kind, entry, lists, actions
       tabs={tabs} tab={tab} onTab={setTab}
       footer={(
         <>
-          <Button theme={theme} kind="primary" label={entry && entry.source === 'builtin' ? 'Save as my own' : 'Save'} disabled={!valid || !dirty} onPress={onSave} />
+          <Button theme={theme} kind="primary" label={entry && entry.source === 'builtin' && (changed || !givenChanged) ? 'Save as my own' : 'Save'} disabled={!valid || !dirty} onPress={() => { void onSave(); }} />
           <Text style={styles.small}>{!valid ? 'Name the entry first' : dirty ? 'Unsaved changes' : own ? 'Saved' : 'No changes'}</Text>
           <View style={{ flex: 1 }} />
           {entry && own ? <Button theme={theme} kind="danger" label={entry.overrides ? `Remove (the ${sourceLabel(entry.overrides)} one applies again)` : 'Remove'} onPress={() => actions.remove(kind, entry.name, entry.revision)} /> : null}
@@ -301,7 +316,7 @@ export function EntryEditor({ theme, compact, scope, kind, entry, lists, actions
         </View>
       ) : null}
       {!entry && tab === tabs[0].key ? <SettingsSection title="Name"><SettingsInput label="Name" hint="Letters, digits, '.', '_' or '-'" error={name && !valid ? 'Not a valid name' : null} initialValue={name} onChangeText={setName} /></SettingsSection> : null}
-      {kind === 'agents' ? <AgentForm {...form} tab={tab} /> : null}
+      {kind === 'agents' ? <AgentForm {...form} tab={tab} given={entry?.librarySkills ?? []} {...(givesSkills ? { draftGiven: given, setGiven } : {})} /> : null}
       {kind === 'teams' ? <TeamForm {...form} tab={tab} /> : null}
       {kind === 'skills' ? <Multiline value={content.body ?? ''} onChange={text => update(draft => { draft.body = text; })} styles={styles} theme={theme} label="SKILL.md" tall /> : null}
       {kind === 'mcp' && tab === 'server' ? <McpForm content={content} update={update} /> : null}
@@ -323,7 +338,11 @@ const toggle = (list: string[] | undefined, name: string, on: boolean) => { cons
 const setOrDelete = (target: Content, key: string, value: unknown) => { if (value === '' || value === undefined || (Array.isArray(value) && !value.length)) delete target[key]; else target[key] = value; };
 
 /** An agent, by tab: what it runs on, its instructions, and the skills, MCP servers and hooks it uses. Without a tab, all of it. */
-export function AgentForm({ content, update, lists, styles, theme, tab }: FormProps) {
+/**
+ * given: the skills the library gives the agent by name. With setGiven (the library scope) the
+ * skill switches edit that list; without (a project), those skills show on and locked.
+ */
+export function AgentForm({ content, update, lists, styles, theme, tab, given = [], draftGiven, setGiven }: FormProps & { given?: string[]; draftGiven?: string[]; setGiven?(skills: string[]): void }) {
   const config: Content = content.config ?? {};
   const field = (key: string) => (text: string) => update(draft => { draft.config ??= {}; setOrDelete(draft.config, key, text.trim()); });
   const show = (key: string) => !tab || tab === key;
@@ -344,9 +363,19 @@ export function AgentForm({ content, update, lists, styles, theme, tab }: FormPr
       {show('capabilities') ? (['skills', 'mcp', 'hooks'] as const).map(kind => (
         <SettingsSection key={kind} title={kindOf(kind).title}>
           {!names(lists, kind).length ? <SettingsRow label={`No ${kindOf(kind).title.toLowerCase()} to choose from yet`} /> : null}
-          {names(lists, kind).map(name => (
-            <SettingsSwitch key={name} label={name} value={(config[kind] ?? []).includes(name)} onValueChange={on => update(draft => { draft.config ??= {}; setOrDelete(draft.config, kind, toggle(draft.config[kind], name, on)); })} />
-          ))}
+          {names(lists, kind).map(name => {
+            const own = (config[kind] ?? []).includes(name);
+            const configToggle = (on: boolean) => update(draft => { draft.config ??= {}; setOrDelete(draft.config, kind, toggle(draft.config[kind], name, on)); });
+            if (kind !== 'skills') return <SettingsSwitch key={name} label={name} value={own} onValueChange={configToggle} />;
+            if (setGiven) {
+              // The library's list: on adds it there; off takes it from the list and from agent.json.
+              const library = (draftGiven ?? given).includes(name);
+              return <SettingsSwitch key={name} label={name} hint={given.includes(name) ? 'Default for this agent' : undefined} value={library || own}
+                onValueChange={on => { setGiven(toggle(draftGiven ?? given, name, on)); if (!on && own) configToggle(false); }} />;
+            }
+            if (given.includes(name)) return <SettingsSwitch key={name} label={name} hint="Given by your library; change it in Settings → ALP" value disabled onValueChange={() => {}} />;
+            return <SettingsSwitch key={name} label={name} value={own} onValueChange={configToggle} />;
+          })}
         </SettingsSection>
       )) : null}
     </>

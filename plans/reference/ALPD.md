@@ -1659,3 +1659,23 @@ Goal (D24): the user reaches main while its assignments run, hears how the work 
   - invalid `etaMinutes` values;
   - main's instructions and schema.
 - `test/team.test.js`: user steering now ends the parent's wait, and `alp_wait` collects the lead's result.
+
+## 49. An agent's library skills in the editor as built (2026-10-09)
+
+Goal: the user saw no skills on main in Settings → ALP, though main gets six. Those come from `role-skills.json` in the library, keyed by agent name (`librarySkills` in `src/core/library.js`). The agent editor showed only `agent.json`'s `skills`.
+
+- **Core (`src/core/library-edit.js`):**
+  - `getEntry('agents', …)` adds `librarySkills`, the agent's list in `role-skills.json`, whatever layer defines the agent.
+  - `setGivenSkills(agent, skills, { library })` writes that list through a temporary file. It drops duplicates, refuses skills not in the library, and removes the key for an empty list.
+- **RPC:** `alp.library.skills { agent, skills }`, and `librarySkills` on `alp.library.get`.
+- **Editor:**
+  - In the library scope, an agent's skill switches show the union of `librarySkills` and `agent.json`. A given skill is hinted "Default for this agent".
+  - Turning a switch on adds the skill to the library's list. Turning it off removes it from the list and from `agent.json`.
+  - Save writes the entry when its content changed, then the list when it changed. A built-in whose only change is its skills is saved as "Save", with no copy, so it keeps ALP's instructions.
+  - In the project scope, given skills show on and locked; the others edit the project copy's `agent.json`.
+  - The editor is keyed by the list too, so a reload shows what was saved.
+
+**Evidence.**
+- `test/library-edit.test.js`: a built-in main's `librarySkills`, setting the list without a copy, resolution, an unknown skill refused, and an empty list removed.
+- `test/settings-screen.test.js`: the hinted switch in the library and the locked one in a project.
+- `test/paseo.test.js` and `test/panel.test.js`: the RPC list.
