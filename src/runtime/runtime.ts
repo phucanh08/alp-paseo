@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,7 +13,8 @@ import { LESSONS_FILE, READ_ONLY_AGENTS, resolveSession, type ResolvedSession, t
 import { MAIL_BODY_CHARS, publicEvent, renderMail, takeBatch, USER, type MailEvent } from './mailbox.js';
 import type { AlpEvent, AssignmentSnapshot, Envelope, SessionSnapshot, TreeStatus, TurnOrigin, UserQuestion } from './events.js';
 import { BOARD_KEEP, live, normalizePaths, overlapping, PIN_BODY_CHARS, PIN_KINDS, renderBoard, renderPin, type Pin, type PinKind } from './board.js';
-import { checkoutKey, commitWorktree, createWorktree, mergeWorktree, removeWorktree, type Worktree, type WorktreeChange } from './workspace.js';
+import { checkoutKey, commitWorktree, createCopy, createWorktree, mergeWorktree, removeCopy, removeWorktree, type Copy, type Worktree, type WorktreeChange } from './workspace.js';
+import { claudeSandboxAvailable } from './claude-transport.js';
 import { ALP_REPO, gh, projectRepo, type GitHubRunner } from './github.js';
 import { parse as toml } from 'smol-toml';
 import { findFormula, formulaDirs, listFormulas, pourFormula } from '../core/formulas.js';
@@ -59,6 +61,9 @@ export type RuntimeOptions = {
 
   /** Where isolated assignments get their git worktrees. Default: a directory in the temp directory. */
   worktreeDir?: string;
+
+  /** Where assignments whose profile has workdir copy get their disposable copies. Default: a directory in the temp directory. */
+  copyDir?: string;
 
   /** Where project boards are kept (JSONL per project). Omitted keeps them in memory only. */
   boardDir?: string;
@@ -192,6 +197,10 @@ type Assignment = {
   /** shared: the requester's checkout; worktree: its own git worktree. */
   isolation: 'shared' | 'worktree';
   worktree?: Worktree;
+  /** A disposable copy of the requester's tree the assignment works in; removed when it ends. */
+  copy?: Copy;
+  /** Commands it ran in the requester's tree instead of its copy. */
+  escapes?: string[];
   /** The checkout this assignment holds the write lease of. */
   lease?: string;
   /** The task this assignment took with alp_delegate { taskId }. */
@@ -580,6 +589,19 @@ function createTransport(
  * The runtime therefore owns orchestration only; the transport adapters
  * preserve the full native harness underneath.
  */
+const isolationOf = (args: { isolation?: string }) => args.isolation ?? 'shared';
+
+/** The mode the native harness runs with: a session in a copy writes the copy, though ALP treats it as read-only. */
+const nativeMode = (mapping: Pick<ResolvedSession, 'mode' | 'copy'>) => mapping.copy ? 'workspace-write' : mapping.mode;
+
+/** The OS sandbox ALP puts a Claude session's Bash in: its profile's base, or the copy it works in. */
+function claudeFloor(mapping: Pick<ResolvedSession, 'mode' | 'copy' | 'permissions' | 'runtimeKind'>): 'read-only' | 'workspace-write' | undefined {
+  if (mapping.runtimeKind !== 'claude' || !claudeSandboxAvailable()) return undefined;
+  if (mapping.copy) return 'workspace-write';
+  const base = mapping.permissions?.base;
+  return base === 'read-only' || base === 'workspace-write' ? base : undefined;
+}
+
 /**
  * Codex runs commands inside its sandbox without asking. With 'on-request' it
  * asks ALP before a command leaves the sandbox, which an allow rule permits;
@@ -594,10 +616,15 @@ function codexApproval(mapping: Pick<ResolvedSession, 'mode' | 'permissions'>) {
 }
 
 /** What the session's permission profile adds to its mode, for its instructions. */
-function permissionNote(mapping: Pick<ResolvedSession, 'mode' | 'permissions' | 'runtimeKind'>) {
+function permissionNote(mapping: Pick<ResolvedSession, 'mode' | 'permissions' | 'runtimeKind' | 'copy' | 'workdir' | 'copyOf'>) {
   const profile = mapping.permissions;
-  if (!profile || (!profile.allow.length && !profile.ask.length && !profile.deny.length && profile.beyondMode !== 'ask')) return [];
-  return [`Permissions: profile ${profile.name}, mode ${mapping.mode}.` +
+  const floor = claudeFloor(mapping);
+  const notes = [
+    ...(mapping.copy ? [`You work in a disposable copy of your requester's tree at ${mapping.workdir}: the same files and git state, uncommitted changes included${mapping.copyOf ? `, mirroring ${mapping.copyOf}` : ''}. Write, build and test there; nothing you change reaches the requester, and the copy is removed when you finish. Where your brief names a path${mapping.copyOf ? ` under ${mapping.copyOf}` : ''}, use the same path in your copy. Never run a command in, or write to, the requester's tree.`] : []),
+    ...(floor ? [`Bash runs in an OS sandbox: ${floor === 'read-only' ? 'it writes nothing but temporary files' : `it writes only ${mapping.workdir} and temporary files`}, and has no network. Run any command you need for your work in it.${profile?.allow.length || profile?.ask.length || profile?.beyondMode === 'ask' ? ' To run a command outside it (one your profile allows, or one for the user to approve), set dangerouslyDisableSandbox on that Bash call.' : ''}`] : []),
+  ];
+  if (!profile || (!profile.allow.length && !profile.ask.length && !profile.deny.length && profile.beyondMode !== 'ask')) return notes;
+  return [...notes, `Permissions: profile ${profile.name}, mode ${mapping.mode}.` +
     (profile.allow.length ? ` Beyond your mode you may also use: ${profile.allow.join(', ')}.` : '') +
     (profile.ask.length ? ` The user approves each use of: ${profile.ask.join(', ')}; ALP asks them and you wait.` : '') +
     (profile.beyondMode === 'ask' ? ' ALP asks the user before anything else your mode does not allow; wait for the answer, and if they refuse, report it rather than working around it.' : '') +
@@ -608,12 +635,13 @@ function permissionNote(mapping: Pick<ResolvedSession, 'mode' | 'permissions' | 
 
 /** The profiles of a coordinator's targets that change what it may expect of them. */
 function targetNote(profiles: Record<string, PermissionProfile | null>) {
-  const shown = Object.entries(profiles).filter(([agent, profile]) => profile && (profile.allow.length || profile.ask.length || profile.deny.length || profile.beyondMode === 'ask' || !ADVISORS.includes(agent)));
+  const shown = Object.entries(profiles).filter(([agent, profile]) => profile && (profile.allow.length || profile.ask.length || profile.deny.length || profile.beyondMode === 'ask' || profile.workdir === 'copy' || !ADVISORS.includes(agent)));
   if (!shown.length) return [];
   return ['Permission profiles of your targets; an assignment never runs above its profile\'s mode, whatever mode you request, and may run what its allow rules name even beyond that mode, so brief it to: ' +
     shown.map(([agent, profile]) => `${agent}: at most ${profile!.base}` + (profile!.allow.length ? `, may also run ${profile!.allow.join(', ')}` : '') +
       (profile!.ask.length ? `, with the user's approval each time ${profile!.ask.join(', ')}` : '') + (profile!.beyondMode === 'ask' ? ', and asks the user before anything else beyond that mode' : '') +
-      (profile!.deny.length ? `, never ${profile!.deny.join(', ')}` : '')).join('; ') + '.'];
+      (profile!.deny.length ? `, never ${profile!.deny.join(', ')}` : '') +
+      (profile!.workdir === 'copy' ? ', and works in a disposable copy of your tree, so name paths relative to the project, not absolute paths in your tree' : '')).join('; ') + '.'];
 }
 
 function nativeSessionConfig(
@@ -631,9 +659,9 @@ function nativeSessionConfig(
       runtime: runtimeKind,
       cwd: mapping.workdir,
       model: mapping.model,
-      sandbox: mapping.mode,
+      sandbox: nativeMode(mapping),
       approvalPolicy: codexApproval(mapping),
-      ...(runtimeKind === 'claude' ? { permissions: mapping.permissions } : {}),
+      ...(runtimeKind === 'claude' ? { permissions: mapping.permissions, ...(claudeFloor(mapping) ? { floor: claudeFloor(mapping) } : {}) } : {}),
       developerInstructions: [
         mapping.instructions,
         `Profile: ${mapping.workflow.mode}. ALP runtime identity: supervisor of ${parentAgent}. You are not an assignment: you file no handoff and delegate nothing. ` +
@@ -672,10 +700,10 @@ function nativeSessionConfig(
     runtime: runtimeKind,
     cwd: mapping.workdir,
     model: mapping.model,
-    sandbox: runtimeKind === 'codex' && mapping.mode === 'full-access' ? 'danger-full-access' : mapping.mode,
+    sandbox: runtimeKind === 'codex' && mapping.mode === 'full-access' ? 'danger-full-access' : nativeMode(mapping),
     approvalPolicy: codexApproval(mapping),
     // Claude only: Codex has a permissions field of its own.
-    ...(runtimeKind === 'claude' ? { permissions: mapping.permissions } : {}),
+    ...(runtimeKind === 'claude' ? { permissions: mapping.permissions, ...(claudeFloor(mapping) ? { floor: claudeFloor(mapping) } : {}) } : {}),
 
     developerInstructions: [
       mapping.instructions,
@@ -793,6 +821,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   /** Write leases: one writing assignment per checkout across all trees, unless nested under the holder. */
   const leases = new Map<string, { assignment: string; agent: string }>();
   const worktreeRoot = options.worktreeDir ?? path.join(os.tmpdir(), 'alp-worktrees');
+  const copyRoot = options.copyDir ?? path.join(os.tmpdir(), 'alp-copies');
   /** Merges into one checkout run one at a time, even when a model calls alp_merge in parallel. */
   const merging = new Map<string, Promise<unknown>>();
   const sequences = new Map<string, number>();
@@ -1000,6 +1029,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       if (params.item?.type !== 'userMessage') {
         nativeItem(sessionId, session, params.item);
       }
+      if (method === 'item/started' && params.item?.type === 'commandExecution') watchCopy(sessionId, session, params.item);
       return;
     }
 
@@ -1039,6 +1069,9 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     session.settle?.('canceled', 'Session closed');
 
     await session.runtime.close();
+
+    // Copies of assignments that did not finish hold nothing to keep.
+    for (const assignment of session.assignments.values()) if (assignment.copy && !assignment.finished) await removeCopy(assignment.copy).catch(() => {});
 
     for (const [assignmentId, { worktree }] of session.worktrees) {
       await removeWorktree(worktree).catch(() => {});
@@ -1096,6 +1129,25 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   const userQuestions = new Map<string, { question: UserQuestion; settle: (outcome: 'answered' | 'dismissed' | 'timeout' | 'canceled', answer?: string, reason?: string, result?: unknown) => void }>();
   let mailSequence = 0;
   let watchdog: NodeJS.Timeout | undefined;
+
+  /**
+   * Codex lets a command write the directory it runs in, so a session in a copy
+   * could still write the requester's tree by running there. ALP cannot stop it in
+   * time; it logs it and tells the requester in the assignment's result.
+   */
+  function watchCopy(sessionId: string, session: Session, item: { command?: string; cwd?: string }) {
+    if (!session.mapping.copy || typeof item.cwd !== 'string' || !session.parent) return;
+    const assignment = sessions.get(session.parent)?.assignments.get(sessionId);
+    if (!assignment?.copy) return;
+    // Paths may differ by symlinks (/var and /private/var on macOS).
+    const real = (target: string) => { try { return realpathSync(target); } catch { return path.resolve(target); } };
+    const cwd = real(item.cwd);
+    const within = (root: string) => { const relative = path.relative(root, cwd); return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative)); };
+    if (within(real(assignment.copy.path)) || !within(real(assignment.copy.checkout))) return;
+    const command = unwrapShell(String(item.command ?? '')).slice(0, 300);
+    (assignment.escapes ??= []).push(`${command} (in ${cwd})`);
+    runLog(rootOf(sessionId), { event: 'copy.escape', assignmentId: sessionId, agent: session.mapping.agent.name, command, cwd });
+  }
 
   /**
    * Answers Codex when it asks to run a command or change files: a deny rule
@@ -1852,6 +1904,11 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     };
 
     await closeSession(assignment.id);
+    if (assignment.copy) {
+      if (assignment.escapes?.length) result.copyWarning = `${assignment.agent} ran commands in your tree, not its copy; they may have changed files there: ${assignment.escapes.join('; ')}`;
+      await removeCopy(assignment.copy).catch(() => {});
+      runLog(rootOf(parentId), { event: 'copy.removed', assignmentId: assignment.id, path: assignment.copy.path });
+    }
     if (assignment.lease && leases.get(assignment.lease)?.assignment === assignment.id) leases.delete(assignment.lease);
     if (assignment.worktree) result.worktree = await settleWorktree(parentId, parent, assignment);
     if (assignment.taskId) result.task = await settleTask(parent, assignment, state, child?.handoff);
@@ -2291,8 +2348,10 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     // The child's permission profile caps its mode, as resolving its session will.
     const childProfile = await profileFor(session.mapping.agent.projectRoot, options.libraryDir, args.agent).catch(() => null);
     const childMode = childProfile ? capMode(args.mode ?? session.mapping.mode, childProfile.base) : args.mode ?? session.mapping.mode;
-    const capped = childProfile && childMode !== (args.mode ?? session.mapping.mode)
-      ? { mode: childMode, modeNote: `${args.agent} runs ${childMode}: its permission profile ${childProfile.name} caps it` } : {};
+    const capped = {
+      ...(childProfile && childMode !== (args.mode ?? session.mapping.mode) ? { mode: childMode, modeNote: `${args.agent} runs ${childMode}: its permission profile ${childProfile.name} caps it` } : {}),
+      ...(childProfile?.workdir === 'copy' && isolationOf(args) === 'shared' ? { workdirNote: `${args.agent} works in a disposable copy of your tree; nothing it changes reaches yours` } : {}),
+    };
     const isolation: Assignment['isolation'] = args.isolation ?? 'shared';
     if (isolation === 'worktree' && !writes(childMode)) return toolResult(false, { error: 'Worktree isolation is for writing assignments (mode workspace-write or full-access)' });
     const project = session.mapping.agent.projectRoot;
@@ -2409,6 +2468,9 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       if (isolation === 'worktree') {
         assignment.worktree = await createWorktree(session.mapping.workdir, worktreeRoot, childId);
         runLog(rootId, { event: 'worktree.created', assignmentId: childId, branch: assignment.worktree.branch, base: assignment.worktree.base });
+      } else if (childProfile?.workdir === 'copy') {
+        assignment.copy = await createCopy(session.mapping.workdir, copyRoot, childId);
+        runLog(rootId, { event: 'copy.created', assignmentId: childId, agent: args.agent, path: assignment.copy.path });
       }
       emit(sessionId, { type: 'assignment', assignment: assignmentSnapshot(assignment, 'running') });
 
@@ -2417,7 +2479,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       const { restore: _restore, ...inherited } = session.spec;
       await openSession(childId, {
         ...inherited,
-        ...(assignment.worktree ? { workdir: assignment.worktree.workdir } : {}),
+        ...(assignment.worktree ? { workdir: assignment.worktree.workdir } : assignment.copy ? { workdir: assignment.copy.workdir, copy: true, copyOf: session.mapping.workdir } : {}),
         persist: false,
         workflow: session.mapping.workflow.mode === 'custom' ? undefined : session.mapping.workflow.mode,
         agent: args.agent,
@@ -2793,7 +2855,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
     const parent = session.parent ? sessions.get(session.parent) : undefined;
     if (parent && !withinMode(mode, parent.mapping.mode)) throw new Error('Child cannot exceed parent permissions');
-    if (session.runtimeKind === 'claude') await session.runtime.request('session/configure', { sandbox: mode });
+    if (session.runtimeKind === 'claude') await session.runtime.request('session/configure', { sandbox: nativeMode({ mode, copy: session.mapping.copy }) });
     session.mapping.mode = mode;
     session.spec = { ...session.spec, mode };
     const updated = snapshot(sessionId, session);
@@ -2956,9 +3018,9 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
                 effort:
                   session.mapping.thinking,
                 approvalPolicy: codexApproval(session.mapping),
-                sandboxPolicy: session.mapping.mode === 'read-only'
+                sandboxPolicy: nativeMode(session.mapping) === 'read-only'
                   ? { type: 'readOnly', networkAccess: false }
-                  : session.mapping.mode === 'full-access'
+                  : nativeMode(session.mapping) === 'full-access'
                     ? { type: 'dangerFullAccess' }
                     : { type: 'workspaceWrite', writableRoots: [session.mapping.workdir], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
               },

@@ -772,3 +772,50 @@ Goal: an agent that needs more than its profile allows asks the user instead of 
   - A Claude reviewer's compound command containing `npm test` raised a question naming it, with Always allow offering `Bash(npm test *)`. Answering Always allow wrote that rule to `.alp/settings.json`, and the command ran.
   - In the next tree, a Codex reviewer's `npm test` was accepted by that rule without a question. Its `npm run lint` raised a question carrying Codex's own reason; Allow once ran it outside the sandbox and the script wrote its marker.
   - The supervisor had main record a lesson: warn the user before delegating work that will raise a permission prompt.
+
+## 26. The sandbox floor and review copies as built, step 3 (2026-10-09)
+
+Goal: what a profile's base promises holds at the OS level, and a reviewer can build and test without touching the tree it reviews (D19).
+
+**Probes** (2026-10-09, macOS):
+- Claude Agent SDK, with `sandbox: { enabled, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: true, filesystem: { denyWrite: [cwd] } }`:
+  - Bash goes through `canUseTool` and runs sandboxed. A write to the project fails with "Operation not permitted", while `node -e` runs.
+  - A command an allow rule covers runs sandboxed. With `dangerouslyDisableSandbox` it runs outside without consulting `canUseTool`.
+  - A command no rule covers that asks to leave reaches `canUseTool` with `dangerouslyDisableSandbox: true`.
+  - The sandbox leaves an empty `.claude/.cc-writes` in the cwd.
+- Codex 0.160.1: `workspaceWrite` lets a command write the directory it runs in (its `workdir`), even outside `writableRoots` and the thread's cwd. `readOnly` holds.
+
+**The floor (Claude).**
+- `claudeSandboxAvailable()` checks for `/usr/bin/sandbox-exec` on macOS, or `bwrap` and `socat` on PATH on Linux. `ALP_CLAUDE_SANDBOX=0` turns it off, and `=1` claims it for tests.
+- `claudeFloor(mapping)` is `workspace-write` for a session in a copy, else the profile's base when it is read-only or workspace-write, else nothing. Main without a profile has none. Advisors' default read-only profile gives them a read-only floor.
+- The runtime passes `floor` in the native config. `claudePermissions` turns it into the SDK `sandbox` option, denying writes to the workspace for a read-only floor.
+- `canUseTool`:
+  - lets sandboxed Bash run in a read-only session with a read-only floor;
+  - treats `dangerouslyDisableSandbox` as leaving the floor: a deny rule refuses it, an allow rule allows it, an ask rule or `beyondMode: 'ask'` asks the user, and otherwise it is refused below full access;
+  - refuses file tools outside the workspace and the temp directory.
+- On close, the transport removes `.claude/.cc-writes` and `.claude` when the session created them and they are empty.
+- `permissionNote` tells the session what its sandbox allows, and how to leave it when its profile can.
+
+**Review copies.**
+- A profile takes `workdir: 'copy'`, valid only with base read-only.
+- `createCopy(workdir, root, id)` (in `workspace.ts`) adds a detached worktree at HEAD, applies `git diff --binary HEAD` there, copies untracked files that are not ignored, and links a top-level `node_modules`. `removeCopy` removes and prunes it. `reclaimCopies` removes leftovers at daemon start (`$ALP_HOME/copies`, `RuntimeOptions.copyDir`).
+- `alp_delegate` creates the copy for a shared assignment whose profile asks for it. The child opens with `workdir` set to the copy, `copy: true` and `copyOf` set to the requester's workdir.
+- `ResolvedSession.copy` keeps the ALP mode read-only (no claims, parallel like an advisor), while `nativeMode` runs the harness `workspace-write` in the copy: Codex `workspaceWrite` with the copy as its writable root, Claude `acceptEdits` with a workspace floor.
+- `resolveSession` refuses a copy on Claude without the sandbox.
+- The copy is removed in `finishAssignment`, and by `closeSession` for assignments that never finished. The run log records `copy.created` and `copy.removed`.
+- The child's note says the copy mirrors `copyOf`, and to use the same paths in it. A coordinator's target note says to name paths relative to the project. `alp_delegate` returns a `workdirNote`.
+- `watchCopy` checks Codex `commandExecution` items as they start. One whose cwd is inside the requester's checkout but outside the copy is logged as `copy.escape` and reported in the result's `copyWarning`, since Codex's sandbox would let it write there.
+
+**Evidence.**
+- `test/permissions.test.js` covers:
+  - the floor in `claudePermissions`: the sandbox option, sandboxed Bash, leaving it with and without rules, and file tools inside and outside the workspace
+  - `createCopy`: diff and status equal to the requester's, untracked and ignored files, the linked `node_modules`, writes not reaching the tree, removal and reclaim
+  - a Codex assignment in a copy: native workspace-write on the copy, refused claims, the escape warning, removal
+  - a Claude assignment with a workspace floor, and the refusal without the sandbox
+  - advisors getting a read-only floor by default
+- The full suite passes with the sandbox claimed and with `ALP_CLAUDE_SANDBOX=0`, which is what CI on Linux without bubblewrap sees.
+- Live on 2026-10-09, with the reviewer profile `{ base: read-only, workdir: copy }` and an `npm test` that writes a file:
+  - A Claude reviewer and a Codex reviewer each ran `npm test` in their copies. The tree kept only the user's change, and both copies were removed.
+  - That run found the first copy built on `stash create`, so `git diff` there was empty. The copy now applies the changes on HEAD, and the next reviewer saw the diff.
+  - A Codex reviewer whose brief named the real root ran `npm test` there and wrote into the tree. The probe confirmed Codex's sandbox behavior. After the notes and the escape warning, the same prompt kept the reviewer in its copy, with no escape.
+  - With no permission settings, a Claude reviewer ran `node --test` in its read-only floor. Before step 3, Bash was refused. Its `npm test` failed with EPERM writing `.last-test`, as the floor should.

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -189,3 +189,61 @@ export async function reclaimWorktrees(root: string) {
   }
   return kept;
 }
+
+/**
+ * A disposable copy of a checkout for an assignment that may build and test but
+ * must not touch the requester's tree (ALPD §26): a detached worktree at the
+ * requester's HEAD with its uncommitted changes applied as uncommitted changes, so
+ * `git diff` and `git status` there show what they show the requester, plus its
+ * untracked files.
+ * A top-level node_modules is linked, not copied. Nothing in it is ever merged.
+ */
+export type Copy = { checkout: string; path: string; workdir: string };
+
+export async function createCopy(workdir: string, root: string, id: string): Promise<Copy> {
+  const checkout = await checkoutOf(workdir);
+  if (!checkout) throw new Error('A review copy needs a git repository');
+  const head = await git(checkout, ['rev-parse', '--verify', 'HEAD']);
+  if (head.code !== 0) throw new Error('A review copy needs at least one commit');
+  const target = path.join(root, id);
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  await checked(checkout, ['worktree', 'add', '--quiet', '--detach', target, head.stdout.trim()]);
+  try {
+    const patch = (await git(checkout, ['diff', '--binary', 'HEAD'])).stdout;
+    if (patch.trim()) await checked(target, ['apply', '--whitespace=nowarn', '--binary'], patch);
+    const untracked = (await checked(checkout, ['ls-files', '--others', '--exclude-standard', '-z'])).split('\0').filter(Boolean);
+    for (const file of untracked) {
+      const from = path.join(checkout, file);
+      if (!(await lstat(from).catch(() => undefined))?.isFile()) continue;
+      await mkdir(path.dirname(path.join(target, file)), { recursive: true });
+      await copyFile(from, path.join(target, file));
+    }
+    const modules = path.join(checkout, 'node_modules');
+    if ((await stat(modules).catch(() => undefined))?.isDirectory()) await symlink(modules, path.join(target, 'node_modules'), 'dir');
+  } catch (error) {
+    await removeCopy({ checkout, path: target, workdir: target });
+    throw error;
+  }
+  const relative = path.relative(checkout, await realpath(workdir));
+  return { checkout, path: target, workdir: path.join(target, relative) };
+}
+
+export async function removeCopy(copy: Copy) {
+  await git(copy.checkout, ['worktree', 'remove', '--force', copy.path]).catch(() => undefined);
+  await rm(copy.path, { recursive: true, force: true });
+  await git(copy.checkout, ['worktree', 'prune']).catch(() => undefined);
+}
+
+/** After a crash: removes copies left under `root`; they hold nothing to keep. */
+export async function reclaimCopies(root: string) {
+  let removed = 0;
+  for (const name of await readdir(root).catch(() => [] as string[])) {
+    const target = path.join(root, name);
+    const common = await git(target, ['rev-parse', '--path-format=absolute', '--git-common-dir']).catch(() => undefined);
+    if (common?.code === 0) await removeCopy({ checkout: path.dirname(common.stdout.trim()), path: target, workdir: target });
+    else await rm(target, { recursive: true, force: true });
+    removed++;
+  }
+  return removed;
+}
+

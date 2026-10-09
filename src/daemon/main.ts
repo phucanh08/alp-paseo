@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import templates from 'alp:templates';
 import { alpHome, daemonPaths, PROTOCOL_VERSION } from '../client/index.js';
-import { createAlpRuntime, reclaimWorktrees } from '../runtime/index.js';
+import { createAlpRuntime, reclaimCopies, reclaimWorktrees } from '../runtime/index.js';
 import { createDaemonServer } from './server.js';
 import { acquireLock, heartbeat, releaseLock, updateLock } from './lock.js';
 import { createStore } from './store.js';
@@ -46,7 +46,10 @@ async function run(home: string) {
   const worktreeDir = path.join(home, 'worktrees');
   // Worktrees of assignments a crash interrupted: their work goes to their branches.
   for (const branch of await reclaimWorktrees(worktreeDir).catch(() => [] as string[])) console.log(`${new Date().toISOString()} kept interrupted work on branch ${branch}`);
-  const runtime = createAlpRuntime({ templates, runLogDir, worktreeDir, boardDir: path.join(home, 'boards'), libraryDir: home });
+  // Review copies of interrupted assignments hold nothing to keep.
+  const copyDir = path.join(home, 'copies');
+  await reclaimCopies(copyDir).catch(() => 0);
+  const runtime = createAlpRuntime({ templates, runLogDir, worktreeDir, copyDir, boardDir: path.join(home, 'boards'), libraryDir: home });
   const store = createStore(path.join(home, 'state'));
   let stopping: Promise<void> | undefined;
   const shutdown = (code = 0) => {

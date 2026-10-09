@@ -147,6 +147,44 @@ they reach. On Codex, read-only and workspace-write sessions ask before a comman
 leaves the sandbox; a full-access session with Bash `ask` rules asks before
 every command it covers.
 
+**The sandbox floor.** A Claude session with a read-only or workspace-write
+profile runs Bash in Claude Code's OS sandbox: Seatbelt on macOS, bubblewrap and
+socat on Linux.
+- A read-only floor writes nothing but temporary files. A workspace-write floor
+  writes only the workspace and temporary files. Neither has network.
+- Inside the floor, any command may run, so a read-only reviewer or oracle can run
+  tests and scripts that only read. Oracle, reviewer and the supervisor get this by default.
+- File tools (Edit, Write) follow the same floor.
+- A command leaves the sandbox only with `dangerouslyDisableSandbox`. Claude
+  allows that itself for allow rules; otherwise ALP asks the user
+  (`beyondMode: "ask"`) or refuses.
+- Without the sandbox (another OS, or Linux without bubblewrap), sessions behave
+  as before, and `ALP_CLAUDE_SANDBOX=0` turns it off.
+
+Codex always runs in its own sandbox.
+
+**A review copy.** `"workdir": "copy"` in a read-only profile runs the agent in a
+disposable copy of its requester's tree:
+- The copy is a detached git worktree at the requester's HEAD, with its
+  uncommitted changes applied as uncommitted changes and its untracked files
+  copied, so `git diff` and `git status` there match. A top-level `node_modules`
+  is linked.
+- The agent may write, build and test there (`npm test` that writes `dist/` is
+  fine). To ALP it stays read-only: it claims nothing, and nothing it does reaches
+  the requester.
+- The copy is removed when the assignment ends, and the daemon removes copies
+  left by a crash.
+- On Claude the copy needs the sandbox floor; without it, the assignment is refused.
+- Codex lets a command write the directory it runs in, even outside its writable
+  roots. A Codex agent told to run in the requester's tree could still write
+  there. ALP tells both sides the copy mirrors the tree, and when a Codex command
+  runs in the requester's tree anyway, the result carries a `copyWarning` and the
+  log a `copy.escape`.
+
+```json
+"review": { "base": "read-only", "workdir": "copy", "allow": ["Bash(npm test *)"] }
+```
+
 `alp permissions` lists every agent's profile. `alp permissions check reviewer "npm test 2>&1"`
 says what a profile decides about a command.
 
