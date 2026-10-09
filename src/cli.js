@@ -479,6 +479,9 @@ async function log(args) {
       case 'assignment.resumed':
         text = `▶ ${entry.agent} ${entry.assignmentId} resumed`;
         break;
+      case 'instructions':
+        text = `# ${entry.agent} instructions ${entry.sha} (ALP.md ${entry.parts?.project}, AGENT.md ${entry.parts?.agent}, ${entry.chars} chars)`;
+        break;
       case 'assignment.interrupted':
         text = `⏹ ${entry.agent} ${entry.assignmentId} interrupted: ${entry.reason}; the next alpd continues it`;
         break;

@@ -45,6 +45,8 @@ export type SessionSnapshot = {
   busy: boolean;
   /** Why a usage limit or a pause parked this assignment (ALPD §29). */
   parked?: string;
+  /** A digest of the instructions the session runs with (ALPD §34). */
+  instructionsSha?: string;
 };
 
 export type AssignmentSnapshot = {

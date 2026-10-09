@@ -1134,3 +1134,20 @@ Goal (D21, C5): a mistyped setting is reported, not silently ignored.
 - the retired-key warnings;
 - a project whose typo stops resolution;
 - a real alpd that starts despite a mistyped user setting and logs it.
+
+## 34. Instructions fingerprint as built (2026-10-09)
+
+Goal (D21, C4): know which instructions a session ran with, so a change in behaviour can be traced to the file that changed. Gas City stores the hash of each session's rendered prompt.
+
+- `openSession` passes the thread's `developerInstructions` to `noteInstructions`, which:
+  - sets `session.instructionsSha` (12 hex characters of SHA-256), shown on `SessionSnapshot.instructionsSha`;
+  - logs `{ event: 'instructions', sessionId, agent, sha, chars, parts: { project, agent } }`, where `parts` digest the project's ALP.md and the agent's AGENT.md as resolved.
+- This covers roots, assignments and supervisors. The text itself is never logged, only its digests and length.
+- `alp log` prints `# main instructions 1d892063c42d (ALP.md 850d6389e73b, AGENT.md fb55cfb0852d, 5210 chars)`.
+- Two assignments with the same sha ran with the same instructions. When the sha differs, `parts` tells whether ALP.md or AGENT.md changed; if neither did, something else changed, such as lessons, skills or the profile.
+
+**Evidence.** `test/instructions.test.js` checks that:
+- the digest matches the text sent;
+- after ALP.md changes, the sha and the project part change while the agent part stays the same.
+
+Two older tests now skip `instructions` entries when they read the run log.

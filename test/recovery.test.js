@@ -155,6 +155,7 @@ test('a runtime process that dies mid-turn is restarted and its assignment conti
   peer = runtimes[2];
   assert.deepEqual(peer.calls.slice(0, 2).map(call => [call.method, call.params.threadId]), [['thread/resume', thread], ['turn/start', thread]]);
   assert.match(peer.lastText(), /^ALP restarted your (Codex|Claude) process after it stopped in the middle of your turn\. Continue where you left off/);
+  await until(async () => (await runLog(directory, 'root')).some(entry => entry.event === 'session.revived'), 'the revive in the run log');
   const log = await runLog(directory, 'root');
   assert.deepEqual(log.filter(entry => entry.event.startsWith('session.')).map(entry => entry.event), ['session.restarted', 'session.revived']);
   // Progress keeps the breaker closed: an assignment that works between deaths keeps being restarted.

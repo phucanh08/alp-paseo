@@ -213,6 +213,8 @@ type Session = {
   restarts?: number[];
   /** The last completed native item: progress that keeps the restart breaker closed. */
   progressAt?: number;
+  /** A digest of the instructions the session runs with. */
+  instructionsSha?: string;
   /** Why the running turn is being stopped, so its end parks the assignment instead of ending it. */
   parkReason?: string;
   /** Mail arrived while its runtime was paused; it is delivered on resume. */
@@ -993,6 +995,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       ...(session.toolCallId ? { toolCallId: session.toolCallId } : {}),
       ...(session.active ? { activeTurnId: session.active } : {}),
       ...(session.parked ? { parked: session.parked.reason } : {}),
+      ...(session.instructionsSha ? { instructionsSha: session.instructionsSha } : {}),
       busy: !!(session.active || session.pending || session.children.size || session.assignments.size || hasActiveMail(session) || reviewing(session)),
     };
   }
@@ -3328,6 +3331,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       }
 
       const nativeConfig = await configOf(session);
+      noteInstructions(sessionId, session, nativeConfig.developerInstructions);
 
       const result = mapping.threadId
         ? await runtime.request(
@@ -3425,6 +3429,21 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     session.settle?.('failed', error);
     void closeSession(sessionId);
     emit(sessionId, { type: 'session.failed', error: errorData(error) });
+  }
+
+  /**
+   * Records which instructions a session runs with (ALPD §34): a short digest of the
+   * whole text, and of the project's ALP.md and the agent's AGENT.md that go into it,
+   * so a change in behaviour can be traced to the file that changed.
+   */
+  function noteInstructions(sessionId: string, session: Session, instructions: string) {
+    const digest = (text: string) => createHash('sha256').update(text).digest('hex').slice(0, 12);
+    const { project, agent } = session.mapping.agent.instructions;
+    session.instructionsSha = digest(instructions);
+    runLog(rootOf(sessionId), {
+      event: 'instructions', sessionId, agent: session.mapping.agent.name, sha: session.instructionsSha, chars: instructions.length,
+      parts: { project: digest(project), agent: digest(agent) },
+    });
   }
 
   /** The native thread configuration of a session: its instructions, tools and sandbox. */
