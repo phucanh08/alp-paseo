@@ -31,6 +31,8 @@ export type SessionSpec = {
   /** Keep the native thread so the session can be resumed. */
   persist?: boolean;
   restore?: { agent: string; threadId: string; runtime?: string; model?: string; workflow?: { mode: string; maxPeers: number } };
+  /** Where the native harness works, when not the project root: an assignment's git worktree. ALP files are still read from cwd. */
+  workdir?: string;
 };
 
 export type ResolvedSession = Awaited<ReturnType<typeof resolveSession>>;
@@ -60,6 +62,7 @@ export class InstructionsAdapter implements AlpRuntimeAdapter<{ instructions: st
 
 export async function resolveSession(spec: SessionSpec, options: { templates?: Record<string, string> } = {}) {
   if (!path.isAbsolute(spec.cwd) || !(await stat(spec.cwd)).isDirectory()) throw new Error('Session cwd must be an existing absolute directory');
+  if (spec.workdir !== undefined && (!path.isAbsolute(spec.workdir) || !(await stat(spec.workdir)).isDirectory())) throw new Error('Session workdir must be an existing absolute directory');
   const hasProjectFile = await exists(path.join(spec.cwd, 'ALP.md'));
   const hasMainAgent = await exists(path.join(spec.cwd, '.alp', 'agents', 'main', 'AGENT.md'));
   if (!hasProjectFile || !hasMainAgent) await initProject(spec.cwd, options.templates ? { templates: options.templates } : {});
@@ -99,6 +102,7 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
   }
   return {
     agent, workflow, runtimeKind: runtimeKind as RuntimeKind, model, mode, thinking, threadId: restored?.threadId,
+    workdir: spec.workdir ?? agent.projectRoot,
     instructions: [compiled.material.instructions, spec.systemPrompt].filter(Boolean).join('\n\n'),
     mcp, env: { ...spec.env }, persist: spec.persist ?? false,
   };

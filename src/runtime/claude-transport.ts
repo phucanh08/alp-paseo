@@ -29,7 +29,14 @@ const toolShapes: Record<string, Record<string, z.ZodType>> = {
     thinking: z.string().min(1).optional(),
     modelReason: z.string().min(1).optional(),
     mode: z.enum(['read-only', 'workspace-write']).optional(),
+    isolation: z.enum(['shared', 'worktree']).optional(),
     wait: z.boolean().optional(),
+  },
+  alp_merge: {
+    assignmentId: z.string().min(1),
+  },
+  alp_discard: {
+    assignmentId: z.string().min(1),
   },
   alp_wait: {
     assignments: z.array(z.string().min(1)).max(32).optional(),

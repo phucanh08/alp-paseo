@@ -139,3 +139,14 @@ test('interrupt closes the subtree and a failed prompt is reported once', async 
   assert.deepEqual(of('root', 'prompt.failed'), [{ type: 'prompt.failed', clientMessageId: 'image', error: { message: 'Only text prompts are supported' } }]);
   await assert.rejects(runtime.configure('missing', {}), /Session is not open/);
 });
+
+test('every ALP tool the runtime offers has a Claude tool schema', async () => {
+  const runtime = await readFile(new URL('../src/runtime/runtime.ts', import.meta.url), 'utf8');
+  const claude = await readFile(new URL('../src/runtime/claude-transport.ts', import.meta.url), 'utf8');
+  const offered = new Set([...runtime.matchAll(/name: '(alp_\w+)'/g)].map(match => match[1]));
+  assert.ok(offered.size >= 7, [...offered].join(', '));
+  for (const name of offered) assert.match(claude, new RegExp(`\\b${name}: \\{`), `${name} has no Claude schema`);
+  const delegate = runtime.slice(runtime.indexOf("name: 'alp_delegate'"), runtime.indexOf("required: ['agent', 'task']"));
+  const shape = claude.slice(claude.indexOf('alp_delegate: {'), claude.indexOf('alp_wait: {'));
+  for (const [, property] of delegate.matchAll(/^\s+(\w+): \{/gm)) if (property !== 'properties' && property !== 'inputSchema') assert.match(shape, new RegExp(`\\b${property}:`), `alp_delegate.${property} has no Claude schema`);
+});

@@ -46,6 +46,8 @@ export type AssignmentSnapshot = {
   mode: string;
   status: string;
   startedAt: string;
+  /** An isolated assignment's branch and working directory. */
+  worktree?: { branch: string; path: string };
 };
 
 export type TurnOrigin = 'user' | 'wake' | 'assignment';

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import templates from 'alp:templates';
 import { alpHome, daemonPaths, PROTOCOL_VERSION } from '../client/index.js';
-import { createAlpRuntime } from '../runtime/index.js';
+import { createAlpRuntime, reclaimWorktrees } from '../runtime/index.js';
 import { createDaemonServer } from './server.js';
 import { acquireLock, heartbeat, releaseLock, updateLock } from './lock.js';
 import { createStore } from './store.js';
@@ -43,7 +43,10 @@ async function run(home: string) {
   const { socket } = daemonPaths(home);
   const lock = await acquireLock(home, { version: VERSION, protocolVersion: PROTOCOL_VERSION, socket });
   const runLogDir = process.env.ALP_RUN_LOG_DIR || path.join(home, 'runs');
-  const runtime = createAlpRuntime({ templates, runLogDir });
+  const worktreeDir = path.join(home, 'worktrees');
+  // Worktrees of assignments a crash interrupted: their work goes to their branches.
+  for (const branch of await reclaimWorktrees(worktreeDir).catch(() => [] as string[])) console.log(`${new Date().toISOString()} kept interrupted work on branch ${branch}`);
+  const runtime = createAlpRuntime({ templates, runLogDir, worktreeDir });
   const store = createStore(path.join(home, 'state'));
   let stopping: Promise<void> | undefined;
   const shutdown = (code = 0) => {

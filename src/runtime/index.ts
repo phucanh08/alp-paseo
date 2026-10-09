@@ -9,3 +9,5 @@ export { CodexTransport } from './transport.js';
 export { ClaudeTransport, claudePermissions } from './claude-transport.js';
 export { MAIL_BATCH_CHARS, MAIL_BODY_CHARS, publicEvent, renderMail, takeBatch } from './mailbox.js';
 export type { MailEvent, MailKind } from './mailbox.js';
+export { reclaimWorktrees } from './workspace.js';
+export type { Worktree, WorktreeChange } from './workspace.js';

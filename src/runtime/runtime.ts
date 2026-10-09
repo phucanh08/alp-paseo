@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { appendFile, mkdir } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { workflowGraphs } from '../core/workflow.js';
 import { resolveDelegation } from '../core/delegation.js';
@@ -8,7 +9,8 @@ import { ClaudeTransport } from './claude-transport.js';
 import { modes } from './catalog.js';
 import { resolveSession, type ResolvedSession, type RuntimeKind, type SessionSpec } from './resolve.js';
 import { MAIL_BODY_CHARS, publicEvent, renderMail, takeBatch, type MailEvent } from './mailbox.js';
-import type { AlpEvent, Envelope, SessionSnapshot, TurnOrigin } from './events.js';
+import type { AlpEvent, AssignmentSnapshot, Envelope, SessionSnapshot, TurnOrigin } from './events.js';
+import { checkoutKey, commitWorktree, createWorktree, mergeWorktree, removeWorktree, type Worktree, type WorktreeChange } from './workspace.js';
 
 export type RuntimeTransport = {
   request(method: string, params: any): Promise<any>;
@@ -45,6 +47,9 @@ export type RuntimeOptions = {
 
   /** Starter files for projects without ALP; omitted reads the repository templates. */
   templates?: Record<string, string>;
+
+  /** Where isolated assignments get their git worktrees. Default: a directory in the temp directory. */
+  worktreeDir?: string;
 };
 
 export type OpenOptions = {
@@ -118,6 +123,9 @@ type Session = {
   toolCalls: Map<string, Promise<unknown>>;
   acknowledged: Promise<void>;
 
+  /** Finished isolated assignments whose change waits for alp_merge or alp_discard. */
+  worktrees: Map<string, { agent: string; worktree: Worktree; change: WorktreeChange }>;
+
   settle?: (state: string, error?: unknown) => void;
 
   /** Requesting agent for a child assignment; enables alp_handoff and alp_ask. */
@@ -129,6 +137,11 @@ type Assignment = {
   id: string;
   agent: string;
   mode: string;
+  /** shared: the requester's checkout; worktree: its own git worktree. */
+  isolation: 'shared' | 'worktree';
+  worktree?: Worktree;
+  /** The checkout this assignment holds the write lease of. */
+  lease?: string;
   startedAt: number;
   warned: boolean;
   finished: boolean;
@@ -205,6 +218,30 @@ const SEND_TOOL = {
       replyTo: { type: 'string', description: 'Question id, for example #4.' },
     },
     required: ['to', 'kind', 'body'],
+    additionalProperties: false,
+  },
+};
+
+const MERGE_TOOL = {
+  type: 'function',
+  name: 'alp_merge',
+  description: 'Apply the change of a finished worktree assignment to your checkout, uncommitted. Conflicts are left as conflict markers for you to resolve.',
+  inputSchema: {
+    type: 'object',
+    properties: { assignmentId: { type: 'string' } },
+    required: ['assignmentId'],
+    additionalProperties: false,
+  },
+};
+
+const DISCARD_TOOL = {
+  type: 'function',
+  name: 'alp_discard',
+  description: 'Drop the change of a finished worktree assignment, deleting its worktree and branch.',
+  inputSchema: {
+    type: 'object',
+    properties: { assignmentId: { type: 'string' } },
+    required: ['assignmentId'],
     additionalProperties: false,
   },
 };
@@ -292,7 +329,9 @@ function nativeSessionConfig(
       'Pass wait: false to start an assignment and keep working; collect results and questions with alp_wait. ' +
       'Answer questions with alp_send kind answer and replyTo; use kind steer to change an instruction, note for information. ' +
       'Before ending your turn, alp_wait for running assignments; if you end it anyway, ALP wakes you with their mail. ' +
-      `At most ${mapping.workflow.maxPeers} peers may run concurrently. Concurrent assignments must be read-only; serialize writers in this shared checkout. ` +
+      `At most ${mapping.workflow.maxPeers} peers may run concurrently. Concurrent peers must be read-only or isolated: pass isolation "worktree" to give a writing peer its own git worktree. ` +
+      'A worktree result lists its branch and changed files; apply it with alp_merge (uncommitted, conflicts left as markers) or drop it with alp_discard, then verify. ' +
+      'Writers in this shared checkout run one at a time. ' +
       'Do not run shell/file mutations in parallel with delegation. ' +
       'Include scope, constraints, verification, and required handoff in task. ' +
       'Child inherits your mode unless you request read-only. ' +
@@ -304,7 +343,7 @@ function nativeSessionConfig(
 
   return {
     runtime: runtimeKind,
-    cwd: mapping.agent.projectRoot,
+    cwd: mapping.workdir,
     model: mapping.model,
     sandbox: mapping.mode,
     approvalPolicy: 'never',
@@ -359,6 +398,7 @@ function nativeSessionConfig(
                   type: 'string',
                   enum: ['read-only', 'workspace-write'],
                 },
+                isolation: { type: 'string', enum: ['shared', 'worktree'], description: 'Default shared: your checkout. worktree: a writing peer works in its own git worktree, so it can run beside other peers; apply its change with alp_merge.' },
                 wait: { type: 'boolean', description: 'Default true: wait for the result or the first question. false: return the assignmentId immediately.' },
               },
               required: ['agent', 'task'],
@@ -367,7 +407,7 @@ function nativeSessionConfig(
           },
         ]
       : []),
-      ...(targets.length ? [WAIT_TOOL] : []),
+      ...(targets.length ? [WAIT_TOOL, MERGE_TOOL, DISCARD_TOOL] : []),
       ...(targets.length || parentAgent ? [SEND_TOOL] : []),
       ...(parentAgent ? [HANDOFF_TOOL, ASK_TOOL] : []),
     ],
@@ -390,6 +430,11 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
   const listeners = new Set<(envelope: Envelope) => void>();
   const epoch = randomUUID();
+  /** Write leases: one writing assignment per checkout across all trees, unless nested under the holder. */
+  const leases = new Map<string, { assignment: string; agent: string }>();
+  const worktreeRoot = options.worktreeDir ?? path.join(os.tmpdir(), 'alp-worktrees');
+  /** Merges into one checkout run one at a time, even when a model calls alp_merge in parallel. */
+  const merging = new Map<string, Promise<unknown>>();
   const sequences = new Map<string, number>();
 
   let closed = false;
@@ -615,6 +660,12 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
     await session.runtime.close();
 
+    for (const [assignmentId, { worktree }] of session.worktrees) {
+      await removeWorktree(worktree).catch(() => {});
+      runLog(rootOf(sessionId), { event: 'worktree.kept', assignmentId, branch: worktree.branch });
+    }
+    session.worktrees.clear();
+
     sessions.delete(sessionId);
 
     if (session.parent) {
@@ -830,13 +881,91 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     watchdog.unref?.();
   }
 
-  const assignmentSnapshot = (assignment: Assignment, status: string) => ({
+  const assignmentSnapshot = (assignment: Assignment, status: string): AssignmentSnapshot => ({
     id: assignment.id,
     agent: assignment.agent,
     mode: assignment.mode,
     status,
     startedAt: new Date(assignment.startedAt).toISOString(),
+    ...(assignment.worktree ? { worktree: { branch: assignment.worktree.branch, path: assignment.worktree.workdir } } : {}),
   });
+
+  /** The session and its requesters, nearest first. */
+  function lineage(sessionId: string) {
+    const ids: string[] = [];
+    for (let id: string | undefined = sessionId; id && sessions.has(id); id = sessions.get(id)?.parent) ids.push(id);
+    return ids;
+  }
+
+  /** Commits a finished isolated assignment's work and keeps it for the requester to merge. */
+  async function settleWorktree(parentId: string, parent: Session, assignment: Assignment) {
+    const worktree = assignment.worktree!;
+    try {
+      const change = await commitWorktree(worktree, `alp: ${assignment.agent} assignment ${assignment.id}`);
+      if (!change.files.length) {
+        await removeWorktree(worktree, { deleteBranch: true });
+        return { branch: worktree.branch, files: [], note: 'No changes; the worktree was removed' };
+      }
+      const described = { branch: worktree.branch, base: worktree.base, commit: change.commit, files: change.files, stat: change.stat };
+      if (parent.closed) {
+        await removeWorktree(worktree);
+        runLog(rootOf(parentId), { event: 'worktree.kept', assignmentId: assignment.id, branch: worktree.branch });
+        return { ...described, note: 'The requester closed; the change stays on the branch' };
+      }
+      parent.worktrees.set(assignment.id, { agent: assignment.agent, worktree, change });
+      return { ...described, next: 'Apply it with alp_merge, or drop it with alp_discard' };
+    } catch (error) {
+      await removeWorktree(worktree).catch(() => {});
+      return { branch: worktree.branch, error: errorData(error).message };
+    }
+  }
+
+  async function worktreeTool(sessionId: string, session: Session, args: unknown, action: 'merge' | 'discard') {
+    if (!plainObject(args, ['assignmentId']) || typeof args.assignmentId !== 'string') return toolResult(false, { error: 'assignmentId is required' });
+    const pending = session.worktrees.get(args.assignmentId);
+    if (!pending) {
+      return toolResult(false, { error: session.assignments.has(args.assignmentId) ? 'The assignment is still running; wait for its result' : 'No unmerged worktree change with that assignment id' });
+    }
+    const { worktree, change } = pending;
+    if (action === 'discard') {
+      session.worktrees.delete(args.assignmentId);
+      await removeWorktree(worktree, { deleteBranch: true });
+      runLog(rootOf(sessionId), { event: 'worktree.discarded', assignmentId: args.assignmentId, branch: worktree.branch });
+      return toolResult(true, { discarded: args.assignmentId, branch: worktree.branch });
+    }
+    if (session.mapping.mode !== 'workspace-write') return toolResult(false, { error: 'Merging needs workspace-write' });
+    if ([...session.assignments.values()].some(assignment => assignment.mode !== 'read-only' && assignment.isolation === 'shared')) {
+      return toolResult(false, { error: 'A writer assignment is working in this checkout; merge after its result' });
+    }
+    // Claimed before any await, so a repeated call cannot merge it twice.
+    session.worktrees.delete(args.assignmentId);
+    const checkout = await checkoutKey(session.mapping.workdir);
+    const holder = leases.get(checkout);
+    if (holder && !lineage(sessionId).includes(holder.assignment)) {
+      session.worktrees.set(args.assignmentId, pending);
+      return toolResult(false, { error: `${holder.agent} in another session is writing this checkout; merge after it finishes` });
+    }
+    const previous = merging.get(checkout) ?? Promise.resolve();
+    const attempt = previous.catch(() => {}).then(() => mergeWorktree(worktree, change));
+    merging.set(checkout, attempt);
+    void attempt.finally(() => { if (merging.get(checkout) === attempt) merging.delete(checkout); }).catch(() => {});
+    let merged;
+    try {
+      merged = await attempt;
+    } catch (error) {
+      session.worktrees.set(args.assignmentId, pending);
+      return toolResult(false, { error: errorData(error).message, branch: worktree.branch, next: 'Merge the branch yourself, or alp_discard it' });
+    }
+    // A conflicted change keeps its branch for reference.
+    await removeWorktree(worktree, { deleteBranch: merged.status !== 'conflicts' });
+    runLog(rootOf(sessionId), { event: 'worktree.merged', assignmentId: args.assignmentId, branch: worktree.branch, ...merged });
+    return toolResult(true, {
+      assignmentId: args.assignmentId,
+      ...merged,
+      ...(merged.status === 'conflicts' ? { branch: worktree.branch } : {}),
+      next: merged.status === 'conflicts' ? 'Resolve the conflict markers in the listed files, then verify' : 'Review and verify the applied change; it is not committed',
+    });
+  }
 
   async function finishAssignment(parentId: string, parent: Session, assignment: Assignment, state: string, error?: unknown, quiet = false) {
     if (assignment.finished) return;
@@ -846,7 +975,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     assignment.ask?.resolve(toolResult(false, { error: 'Assignment ended' }));
 
     // Interim commentary stays in the child timeline; the final message is the answer.
-    const result = {
+    const result: Record<string, unknown> = {
       agent: assignment.agent,
       ...(child ? { runtime: child.runtimeKind, threadId: child.threadId } : {}),
       sessionId: assignment.id,
@@ -857,6 +986,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     };
 
     await closeSession(assignment.id);
+    if (assignment.lease && leases.get(assignment.lease)?.assignment === assignment.id) leases.delete(assignment.lease);
+    if (assignment.worktree) result.worktree = await settleWorktree(parentId, parent, assignment);
 
     runLog(rootOf(parentId), {
       event: 'assignment.finished',
@@ -896,7 +1027,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
 
     if (
-      !['alp_delegate', 'alp_handoff', 'alp_wait', 'alp_send', 'alp_ask'].includes(params.tool) ||
+      !['alp_delegate', 'alp_handoff', 'alp_wait', 'alp_send', 'alp_ask', 'alp_merge', 'alp_discard'].includes(params.tool) ||
       params.namespace != null ||
       typeof params.callId !== 'string'
     ) {
@@ -913,6 +1044,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       params.tool === 'alp_delegate' ? runDelegation(sessionId, session, params)
       : params.tool === 'alp_wait' ? waitTool(session, args)
       : params.tool === 'alp_ask' ? askTool(sessionId, session, args)
+      : params.tool === 'alp_merge' || params.tool === 'alp_discard' ? worktreeTool(sessionId, session, args, params.tool === 'alp_merge' ? 'merge' : 'discard')
       : Promise.resolve(params.tool === 'alp_send' ? sendTool(sessionId, session, args) : recordHandoff(session, args));
 
     session.toolCalls.set(params.callId, work);
@@ -1016,6 +1148,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     params: any,
   ): Promise<unknown> {
     const args = params.arguments;
+    // Resolved first: every check below runs without yielding, so parallel calls cannot race.
+    const checkout = await checkoutKey(session.mapping.workdir);
 
     const targets = Object.hasOwn(
       session.graph,
@@ -1029,7 +1163,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       typeof args !== 'object' ||
       Array.isArray(args) ||
       Object.keys(args).some(
-        (key) => !['agent', 'task', 'mode', 'model', 'thinking', 'modelReason', 'wait'].includes(key),
+        (key) => !['agent', 'task', 'mode', 'model', 'thinking', 'modelReason', 'wait', 'isolation'].includes(key),
       ) ||
       !targets.includes(args.agent) ||
       typeof args.task !== 'string' ||
@@ -1039,7 +1173,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         args.mode !== undefined &&
         !['read-only', 'workspace-write'].includes(args.mode)
       ) ||
-      (args.wait !== undefined && typeof args.wait !== 'boolean')
+      (args.wait !== undefined && typeof args.wait !== 'boolean') ||
+      (args.isolation !== undefined && !['shared', 'worktree'].includes(args.isolation))
     ) {
       return toolResult(false, {
         error: 'Invalid assignment or unauthorized target',
@@ -1052,8 +1187,11 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     if (args.model !== undefined && !/^(codex|claude):[^\s]+$/.test(args.model)) return toolResult(false, { error: 'Use a runtime-prefixed model ID' });
     if (args.agent === 'oracle' && (!args.model || !args.thinking || !args.modelReason)) return toolResult(false, { error: 'Oracle requires an explicit premium model, effort, and selection rationale; no default fallback' });
     const childMode = ['oracle', 'reviewer'].includes(args.agent) ? 'read-only' : args.mode ?? session.mapping.mode;
-    if (session.assignments.size && (args.agent !== 'peer' || childMode !== 'read-only' || [...session.assignments.values()].some(assignment => assignment.mode !== 'read-only'))) {
-      return toolResult(false, { error: 'A child assignment is already running; wait for its handoff (parallel read-only peers only)' });
+    const isolation: Assignment['isolation'] = args.isolation ?? 'shared';
+    if (isolation === 'worktree' && childMode !== 'workspace-write') return toolResult(false, { error: 'Worktree isolation is for writing assignments (mode workspace-write)' });
+    const parallel = (mode: string, kind: Assignment['isolation']) => mode === 'read-only' || kind === 'worktree';
+    if (session.assignments.size && (args.agent !== 'peer' || !parallel(childMode, isolation) || [...session.assignments.values()].some(assignment => !parallel(assignment.mode, assignment.isolation)))) {
+      return toolResult(false, { error: 'A child assignment is already running; wait for its handoff. Only peers that are read-only or use isolation "worktree" run in parallel' });
     }
 
     if (
@@ -1084,11 +1222,20 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
 
     if (args.agent === 'peer' && root.peerCount >= session.mapping.workflow.maxPeers) return toolResult(false, { error: 'Concurrent peer limit reached; wait or ask the user to increase workflow.maxPeers for a new session' });
+    const sharedWriter = childMode === 'workspace-write' && isolation === 'shared';
+    const holder = sharedWriter ? leases.get(checkout) : undefined;
+    if (holder && !lineage(sessionId).includes(holder.assignment)) {
+      return toolResult(false, { error: `${holder.agent} in another session is writing ${checkout}; wait for it, or use isolation "worktree"` });
+    }
     root.calls++;
     if (args.agent === 'peer') root.peerCount++;
 
     const childId = `alp-child-${randomUUID()}`;
-    const assignment: Assignment = { id: childId, agent: args.agent, mode: childMode, rootId, startedAt: Date.now(), warned: false, finished: false };
+    const assignment: Assignment = { id: childId, agent: args.agent, mode: childMode, isolation, rootId, startedAt: Date.now(), warned: false, finished: false };
+    if (sharedWriter && !holder) {
+      assignment.lease = checkout;
+      leases.set(checkout, { assignment: childId, agent: args.agent });
+    }
 
     session.children.add(childId);
     session.assignments.set(childId, assignment);
@@ -1115,19 +1262,25 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       agent: args.agent,
       project: session.mapping.agent.projectRoot,
       mode: childMode,
+      isolation,
       model,
       thinking: thinking ?? null,
       ...(args.modelReason ? { modelReason: args.modelReason } : {}),
       wait: args.wait !== false,
       task: args.task,
     });
-    emit(sessionId, { type: 'assignment', assignment: assignmentSnapshot(assignment, 'running') });
-
     try {
+      if (isolation === 'worktree') {
+        assignment.worktree = await createWorktree(session.mapping.workdir, worktreeRoot, childId);
+        runLog(rootId, { event: 'worktree.created', assignmentId: childId, branch: assignment.worktree.branch, base: assignment.worktree.base });
+      }
+      emit(sessionId, { type: 'assignment', assignment: assignmentSnapshot(assignment, 'running') });
+
       // A child inherits the requester's client configuration, never its native thread.
       const { restore: _restore, ...inherited } = session.spec;
       await openSession(childId, {
         ...inherited,
+        ...(assignment.worktree ? { workdir: assignment.worktree.workdir } : {}),
         persist: false,
         workflow: session.mapping.workflow.mode === 'custom' ? undefined : session.mapping.workflow.mode,
         agent: args.agent,
@@ -1264,7 +1417,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     const runtime = createTransport(
       options,
       runtimeKind,
-      mapping.agent.projectRoot,
+      mapping.workdir,
       environment,
     );
 
@@ -1303,6 +1456,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
       toolCalls: new Map(),
       acknowledged: Promise.resolve(),
+      worktrees: new Map(),
     };
 
     runtime.onRequest?.(
@@ -1419,7 +1573,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       emit(sessionId, {
         type: 'session.opened',
         session: snapshot(sessionId, session),
-        cwd: result.cwd ?? mapping.agent.projectRoot,
+        cwd: result.cwd ?? mapping.workdir,
         effective: {
           model: result.model ?? mapping.model,
           thinking: result.reasoningEffort ?? mapping.thinking,
@@ -1640,7 +1794,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
                   session.mapping.thinking,
                 sandboxPolicy: session.mapping.mode === 'read-only'
                   ? { type: 'readOnly', networkAccess: false }
-                  : { type: 'workspaceWrite', writableRoots: [session.mapping.agent.projectRoot], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+                  : { type: 'workspaceWrite', writableRoots: [session.mapping.workdir], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
               },
             );
 
