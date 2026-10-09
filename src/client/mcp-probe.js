@@ -29,7 +29,8 @@ export async function probeMcp(server, { cwd, timeoutMs = 15_000 } = {}) {
   }
 }
 
-function stdioSession(server, cwd, timeoutMs) {
+/** A JSON-RPC session with a process over stdio; ACP providers are probed with it too. */
+export function stdioSession(server, cwd, timeoutMs) {
   // Its own process group, so a launcher such as npx is stopped with what it started.
   const child = spawn(server.command, server.args ?? [], { cwd: server.cwd ?? cwd, env: { ...process.env, ...(server.env ?? {}) }, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
   const signal = name => { try { process.kill(-child.pid, name); } catch { child.kill(name); } };

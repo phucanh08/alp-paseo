@@ -74,7 +74,7 @@ Example `.alp/settings.json`:
 }
 ```
 
-`workflow.mode` names a team: `pho`, `cafe` or your own (`smart` and `supervised`, Phở and Cafe's names before 0.4, are still accepted); `workflow.supervisor: false` turns the supervisor off. `runtime.provider` selects `codex` or `claude` behind the ALP Paseo plugin; the Paseo provider ID itself is `alp`. Without `runtime.provider` and `runtime.model`, main runs on `claude:claude-opus-5-5` with `high` effort; setting either replaces that default. `runtime.model` is passed through to the selected native harness, so it accepts any model name supported by that installed Codex or Claude Code version. Core treats these strings as provider-neutral data. An agent's `agent.json` can pick its own provider, model, thinking and mode, and name the skills, MCP servers and hooks it uses ([agent library](docs/alp/agent-library.md)). ALP runs hooks itself at its own events, the same for Codex and Claude; a project's hooks run after you trust the workspace once ([hooks](docs/alp/agent-library.md#hooks)).
+`workflow.mode` names a team: `pho`, `cafe` or your own (`smart` and `supervised`, Phở and Cafe's names before 0.4, are still accepted); `workflow.supervisor: false` turns the supervisor off. `runtime.provider` selects `codex` or `claude` behind the ALP Paseo plugin; the Paseo provider ID itself is `alp`. Without `runtime.provider` and `runtime.model`, main runs on `claude:claude-opus-5-5` with `high` effort; setting either replaces that default. `runtime.model` is passed through to the selected native harness, so it accepts any model name supported by that installed Codex or Claude Code version. Core treats these strings as provider-neutral data. An agent's `agent.json` can pick its own provider, model, thinking and mode, and name the skills, MCP servers and hooks it uses ([agent library](docs/alp/agent-library.md)). ALP runs hooks itself at its own events, the same for Codex and Claude; a project's hooks run after you trust the workspace once ([hooks](docs/alp/agent-library.md#hooks)). Besides Codex and Claude, an agent can run on any agent that speaks the Agent Client Protocol, such as Gemini CLI or opencode, added to your library with `alp provider add` ([ACP providers](docs/alp/agent-library.md#acp-providers)).
 
 For example, select Claude Code and one of its model aliases in `.alp/settings.json`:
 
@@ -164,7 +164,7 @@ Finished assignments stay recallable for 14 days: main, or the agent that assign
 
 See [installation and runtime behavior](docs/alp/paseo-plugin.md) and [phase acceptance evidence](docs/alp/phase-2-5-results.md). The plugin is verified with Paseo 0.11.1 and live Codex and Claude Code permission changes.
 
-**Settings → ALP** manages your library of teams, agents, skills, MCP servers and hooks, and the **ALP project** workspace panel manages a project's overrides ([settings screen](docs/alp/paseo-plugin.md#alp-settings-and-the-project-panel)).
+**Settings → ALP** manages your library of teams, agents, skills, MCP servers, hooks and ACP providers, and the **ALP project** workspace panel manages a project's overrides ([settings screen](docs/alp/paseo-plugin.md#alp-settings-and-the-project-panel)).
 
 ### Build and add the plugin to Paseo
 

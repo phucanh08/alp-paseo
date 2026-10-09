@@ -1544,3 +1544,58 @@ Goal (D23, phase 13, step 5): alpd runs agents' hooks at its own events, for eve
 - that "Not now" skips the hook and a blocking `task.close` hook then does not block, with no second question in that tree;
 - that trusted blocking hooks refuse a peer's handoff, main's `alp_merge` (nothing applied) and `alp_task close` (task stays in review) until their condition holds;
 - that a `match.label` hook applies only to tasks with that label.
+
+## 46. ACP providers as built (2026-10-09)
+
+Goal (D23, phase 13, step 6): agents run on any agent that speaks the Agent Client Protocol (v1, stdio), not only Codex and Claude. This is a generic framework, tested with a scripted fake agent; no real ACP agent is wired.
+
+- **Providers:**
+  - `src/core/providers.js`: `validateProvider`, `loadProvider(library, id)`, `listProviders`, `acpModel`.
+  - `providers/<id>.json` is `{ kind: "acp", label?, description?, command, args?, env?, models? }`. Unknown keys get a suggestion. `codex`, `claude` and `acp` are refused as ids.
+  - Providers live in the library only. `libraryEntries('providers')` skips the project layer, and `library-edit` refuses the project scope (`INVALID_SCOPE`). A project's provider would run a command from its repository.
+  - `providers` is an edit kind (`{ provider }`). `usedBy` lists agents whose `agent.json` names it, and project settings whose `runtime.provider` does. An agent naming a provider that is neither built in nor in the library is refused when saved.
+- **Resolving:**
+  - `RuntimeKind` gains `acp`. `resolveSession` takes the model `acp:<id>[/<model>]`, or an `agent.json` / settings `provider` that is not codex or claude.
+  - The mapping keeps `model` as `<id>[/<model>]` and carries the provider as `mapping.acp`.
+  - A model outside the provider's `models` is refused. `thinking` is always `none`. A review copy is refused: ALP cannot keep an ACP agent's commands inside it.
+- **`AcpTransport`** (`src/runtime/acp-transport.ts`), behind the runtime's normalized protocol:
+  - It spawns the command and sends `initialize` (protocol 1, no fs or terminal client capabilities: the agent uses its own tools).
+  - `thread/start` maps to `session/new { cwd, mcpServers }`, then `session/set_model` when a model was chosen and the agent offers `models`.
+  - `thread/resume` maps to `session/load` when `agentCapabilities.loadSession`; the history the agent replays is dropped. It fails otherwise.
+  - `turn/start` maps to `session/prompt`. The first prompt of a new session carries the developer instructions. A turn after a cancel waits up to 10 s for the cancelled prompt's answer.
+  - `turn/interrupt` maps to `session/cancel`, and answers open permission requests `cancelled`. `turn/steer` is refused, so `steerMail` delivers mail after the turn.
+  - `thread/fork` is unsupported, and recall entries are not recorded for ACP assignments.
+  - Session updates are mapped as follows:
+    - `agent_message_chunk` becomes `item/agentMessage/delta`, then `item/completed` when the message ends.
+    - `tool_call` and `tool_call_update` become `commandExecution` items.
+    - `usage_update` becomes `thread/tokenUsage/updated`.
+  - The stop reason `end_turn` completes the turn and `cancelled` interrupts it. Others fail it, as does a prompt error. An auth error says to sign in.
+- **ALP tools:** the plan named a CLI bridge (`alp mcp-bridge --session`) through alpd's socket. As built, the bridge is self-contained:
+  - When a session has ALP tools, the transport listens on a local socket (`$TMPDIR/alp-acp-*.sock`, or a named pipe on Windows).
+  - It adds the stdio MCP server `alp` to `session/new`: `process.execPath -e <bridge>`, with `ALP_BRIDGE_SOCKET` and a random `ALP_BRIDGE_TOKEN`.
+  - The bridge speaks MCP (`initialize`, `tools/list`, `tools/call`) and forwards to the socket. The first line must carry the token.
+  - Calls run through the runtime's `item/tool/call`, shown as `dynamicToolCall` items. The agent's own tool call for them is not shown twice.
+  - This works under the CLI's alpd and the plugin's copy of alpd alike, with no path to the package.
+- **Permissions:**
+  - `session/request_permission` goes to the runtime as `item/acp/permission`. `acpPermission(toolCall, tools)` reads its kind, its command (`rawInput.command`) and its locations.
+  - `acpDecision`:
+    - ALP's tools are allowed;
+    - then the profile's Bash rules hold for the command (deny, allow, ask);
+    - then the mode: read-only allows read, search, think and fetch; workspace-write allows all but paths outside the workdir and temp; full access allows all.
+  - Beyond the mode, a profile with `beyondMode: "ask"` asks the user through `askPermission`, with "Always allow" adding `Bash(<command>)`. Otherwise it is refused.
+  - Refusals and questions are logged as `permission`. The answer picks the agent's `allow_once`/`allow_always` or `reject_once`/`reject_always` option, else `cancelled`.
+  - The session's instructions state the mode and that ALP's tools come from the `alp` server.
+- **CLI and screen:**
+  - `alp provider add|edit|show|cp|mv|rm|test` and `alp providers`. `alp provider test` runs `initialize` (`src/client/acp-probe.js`, on `mcp-probe`'s exported `stdioSession`) and reports the agent, `loadSession`, HTTP MCP and auth methods.
+  - The settings screen has a Providers section (library only, hidden in the project panel), a provider form, a Test result, and ACP providers in the agent form's Provider select.
+  - `alp.library.*` accepts `providers`.
+- **Doctor:** the `providers` check lists them, warns when a command is not found, and always states the limits: no sandbox, no steer, resume only with `session/load`, no recall or review copies.
+
+**Evidence.** `test/acp.test.js`, with `test/support/fake-acp.js`, checks:
+- provider validation, the library-only scope, `usedBy`, `alp provider test`, and the doctor warning;
+- a session on `acp:fake`: initialize capabilities, `session/new` with the `alp` server, instructions only in the first prompt, a streamed answer, tools listed and `alp_pin` called through the bridge (one tool item, no shell twin), and a command's output;
+- permissions under a profile in read-only: a read allowed, an allow rule allowed, a deny rule refused, an edit beyond the mode asked and allowed, an ask rule asked and denied, with the run log; and `acpDecision` for workspace-write and full access;
+- a cancelled turn (and a refused steer), a failed prompt, and an agent that exits;
+- model choice through `session/set_model`, a model outside `models` refused, a missing provider, resuming through `session/load` without replayed history or repeated instructions, and the refused review copy.
+
+`test/settings-screen.test.js` checks the Providers section, the provider form and the agent form's ACP options.

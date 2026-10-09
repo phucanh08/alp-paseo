@@ -5,6 +5,7 @@ import { AlpError } from './errors.js';
 import { agentSources, builtinText, jsonObject, libraryEntries, optionalText } from './resolver.js';
 import { teamSources, validateTeam } from './teams.js';
 import { normalizeMcp, validateAgentConfig, validateHook } from './validation.js';
+import { validateProvider } from './providers.js';
 
 /**
  * Editing the library (ALPD §43): agents, skills, MCP servers, hooks and teams, in the
@@ -19,9 +20,10 @@ import { normalizeMcp, validateAgentConfig, validateHook } from './validation.js
  *   mcp     { server }                  mcp/<name>.json
  *   hooks   { hook }                    hooks/<name>.json
  *   teams   { team, houseRules? }       team.json and HOUSE_RULES.md
+ *   providers { provider }              providers/<name>.json, in the library only (ALPD §46)
  */
 
-export const EDIT_KINDS = ['agents', 'skills', 'mcp', 'hooks', 'teams'];
+export const EDIT_KINDS = ['agents', 'skills', 'mcp', 'hooks', 'teams', 'providers'];
 const validName = name => typeof name === 'string' && /^[\w.-]+$/.test(name) && name !== '.' && name !== '..';
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const fail = (code, message) => { throw new AlpError(code, message); };
@@ -33,6 +35,7 @@ const FILES = {
   mcp: name => [[`${name}.json`, 'server', 'json']],
   hooks: name => [[`${name}.json`, 'hook', 'json']],
   teams: name => [[`${name}/team.json`, 'team', 'json'], [`${name}/HOUSE_RULES.md`, 'houseRules', 'text']],
+  providers: name => [[`${name}.json`, 'provider', 'json']],
 };
 /** The directory an entry owns, if any: removed whole on delete and moved whole on rename. */
 const ownDirectory = kind => ['agents', 'skills', 'teams'].includes(kind);
@@ -46,7 +49,9 @@ function nameOf(name) {
   return name;
 }
 /** The directory a scope writes to. */
-function base(scope, { root, library }) {
+function base(scope, { root, library }, kind) {
+  // A project's provider would run a command from its repository on the user's machine.
+  if (kind === 'providers' && scope !== 'library') fail('INVALID_SCOPE', 'Providers live only in your library');
   if (scope === 'library') return library ?? fail('INVALID_SCOPE', 'No library: ALP_HOME is not set');
   if (scope === 'project') return root ? path.join(path.resolve(root), '.alp') : fail('INVALID_SCOPE', 'No project directory');
   return fail('INVALID_SCOPE', `Scope must be library or project, not '${scope}'`);
@@ -92,17 +97,17 @@ async function layers(kind, name, { root, library, templates }) {
   return {
     builtin: await readBuiltin(kind, name, templates),
     library: library ? await readLayer(kind, name, library) : undefined,
-    project: root ? await readLayer(kind, name, path.join(path.resolve(root), '.alp')) : undefined,
+    project: root && kind !== 'providers' ? await readLayer(kind, name, path.join(path.resolve(root), '.alp')) : undefined,
   };
 }
 
 /**
  * One entry: the version that applies (the project's, else the library's, else the
  * built-in), or one scope's version with `scope`. `revision` goes back with a save.
- * @param {'agents' | 'skills' | 'mcp' | 'hooks' | 'teams'} kind
+ * @param {'agents' | 'skills' | 'mcp' | 'hooks' | 'teams' | 'providers'} kind
  * @param {string} name
  * @param {{ root?: string, library?: string, templates?: Record<string, string>, scope?: 'library' | 'project' }} [options]
- * @returns {Promise<{ kind: 'agents' | 'skills' | 'mcp' | 'hooks' | 'teams', name: string, source: 'builtin' | 'library' | 'project', overrides?: 'builtin' | 'library' | 'project', content: Record<string, unknown>, revision: string | null, usedBy: string[] }>}
+ * @returns {Promise<{ kind: 'agents' | 'skills' | 'mcp' | 'hooks' | 'teams' | 'providers', name: string, source: 'builtin' | 'library' | 'project', overrides?: 'builtin' | 'library' | 'project', content: Record<string, unknown>, revision: string | null, usedBy: string[] }>}
  */
 export async function getEntry(kind, name, { root, library, templates, scope } = {}) {
   kindOf(kind); nameOf(name);
@@ -126,6 +131,10 @@ export async function listEntries(kind, { root, library, templates } = {}) {
 /** Who refers to an entry: agents naming it, teams with it as a member, settings and role-skills.json. */
 export async function usersOf(kind, name, { root, library, templates } = {}) {
   const users = new Set();
+  if (kind === 'providers' && root) {
+    const settings = await jsonObject(path.join(path.resolve(root), '.alp', 'settings.json'), 'INVALID_SETTINGS').catch(() => ({}));
+    if (settings.runtime?.provider === name) users.add('project settings');
+  }
   if (kind === 'teams') {
     if (root) {
       const settings = await jsonObject(path.join(path.resolve(root), '.alp', 'settings.json'), 'INVALID_SETTINGS').catch(() => ({}));
@@ -174,16 +183,23 @@ async function check(kind, name, content, { scope, root, library, templates }) {
         const known = new Set((await libraryEntries(entries, visible.root, visible)).map(row => row.name));
         for (const entry of content.config[list]) if (!known.has(entry)) fail('NOT_FOUND', `${where}: ${list} names '${entry}', which is not in the ${scope === 'project' ? 'project or the library' : 'library'}`);
       }
+      const provider = content.config.provider;
+      if (provider !== undefined && !['codex', 'claude'].includes(provider) && !(await libraryEntries('providers', undefined, { library })).some(row => row.name === provider)) {
+        fail('NOT_FOUND', `${where}: provider '${provider}' is neither codex, claude nor an ACP provider in your library`);
+      }
     }
   } else if (kind === 'skills') {
     only(['body']);
     text('body', true);
   } else if (kind === 'mcp') {
     only(['server']);
-    normalizeMcp({ mcpServers: { [name]: content.server } }, base(scope, { root, library }), where);
+    normalizeMcp({ mcpServers: { [name]: content.server } }, base(scope, { root, library }, kind), where);
   } else if (kind === 'hooks') {
     only(['hook']);
     validateHook(content.hook, where);
+  } else if (kind === 'providers') {
+    only(['provider']);
+    validateProvider(content.provider, where, name);
   } else {
     only(['team', 'houseRules']);
     text('houseRules', false);
@@ -210,7 +226,7 @@ const exists = target => stat(target).then(() => true, () => false);
  */
 export async function saveEntry(kind, name, content, { scope, root, library, templates, revision } = {}) {
   kindOf(kind); nameOf(name);
-  const directory = base(scope, { root, library });
+  const directory = base(scope, { root, library }, kind);
   await check(kind, name, content, { scope, root, library, templates });
   const current = await readLayer(kind, name, directory);
   if (revision !== undefined && revision !== revisionOf(current)) {
@@ -234,7 +250,7 @@ export async function saveEntry(kind, name, content, { scope, root, library, tem
  */
 export async function deleteEntry(kind, name, { scope, root, library, templates, revision } = {}) {
   kindOf(kind); nameOf(name);
-  const directory = base(scope, { root, library });
+  const directory = base(scope, { root, library }, kind);
   const current = await readLayer(kind, name, directory);
   if (current === undefined) fail('NOT_FOUND', `No ${kind} entry '${name}' in the ${scope}`);
   if (revision !== undefined && revision !== revisionOf(current)) fail('REVISION_CONFLICT', `${kind} '${name}' changed in the ${scope} since you opened it`);
@@ -260,7 +276,7 @@ export async function duplicateEntry(kind, from, to, { scope, root, library, tem
 /** Renames an entry within a scope; refused while others refer to it by its old name. */
 export async function renameEntry(kind, from, to, { scope, root, library, templates } = {}) {
   kindOf(kind); nameOf(from); nameOf(to);
-  const directory = base(scope, { root, library });
+  const directory = base(scope, { root, library }, kind);
   const content = await readLayer(kind, from, directory);
   if (content === undefined) fail('NOT_FOUND', `No ${kind} entry '${from}' in the ${scope}`);
   if (await readLayer(kind, to, directory) !== undefined) fail('REVISION_CONFLICT', `${kind} '${to}' already exists in the ${scope}`);

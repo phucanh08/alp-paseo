@@ -70,6 +70,8 @@ const KINDS = {
   skills: name => path.join(name, 'SKILL.md'),
   mcp: name => `${name}.json`,
   hooks: name => `${name}.json`,
+  // ACP providers (ALPD §46) live only in the library.
+  providers: name => `${name}.json`,
 };
 export const LIBRARY_KINDS = ['agents', ...Object.keys(KINDS)];
 
@@ -106,13 +108,17 @@ export async function libraryEntries(kind, projectRoot, { library, templates } =
     }
   };
   if (library) await layer(path.join(library, kind), 'library');
-  if (root !== undefined) await layer(path.join(root, '.alp', kind), 'project');
+  if (root !== undefined && kind !== 'providers') await layer(path.join(root, '.alp', kind), 'project');
   // Who uses each entry: the agents naming it in agent.json, and for skills the roles given it.
   const users = new Map();
   const use = (name, agent) => users.set(name, [...new Set([...(users.get(name) ?? []), agent])]);
   for (const [agent, source] of await agentSources(root, { library, templates })) {
     const text = source.directory ? await optionalText(path.join(source.directory, 'agent.json')) : await builtinText(`agents/${agent}/agent.json`, templates);
-    try { for (const name of (text === undefined ? {} : JSON.parse(text))[kind] ?? []) use(name, agent); } catch {}
+    try {
+      const config = text === undefined ? {} : JSON.parse(text);
+      // An agent names its provider, or the list of each other kind.
+      for (const name of kind === 'providers' ? [config.provider].filter(Boolean) : config[kind] ?? []) use(name, agent);
+    } catch {}
   }
   if (kind === 'skills' && library) {
     try { for (const [role, names] of Object.entries(JSON.parse((await optionalText(path.join(library, 'role-skills.json'))) ?? '{}'))) for (const name of Array.isArray(names) ? names : []) use(name, role); } catch {}
