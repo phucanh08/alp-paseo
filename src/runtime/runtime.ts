@@ -60,6 +60,8 @@ export type RuntimeOptions = {
   silentForMs?: number;
   /** How often main gets a check-in on its running assignments. Default 10 minutes; 0 turns it off. */
   checkInMs?: number;
+  /** How often the watchdog looks at running assignments; derived from silentForMs and checkInMs when omitted. */
+  watchMs?: number;
   /** How long alp_ask waits for the requester before returning unanswered. */
   askTimeoutMs?: number;
   /** How long alp_ask waits for the user before returning unanswered. Default 30 minutes. */
@@ -2529,7 +2531,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         clearInterval(watchdog);
         watchdog = undefined;
       }
-    }, Math.max(5, Math.min(silentForMs / 4, checkInMs ? checkInMs / 4 : 30_000, 30_000)));
+    }, options.watchMs ?? Math.max(5, Math.min(silentForMs / 4, checkInMs ? checkInMs / 4 : 30_000, 30_000)));
     watchdog.unref?.();
   }
 

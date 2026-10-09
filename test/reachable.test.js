@@ -58,7 +58,10 @@ test('main gets a check-in while assignments run, and check-ins do not use up it
 });
 
 test('an assignment past the ETA its requester gave ends the requester\'s wait with a check-in, once', async t => {
-  const { agents, main } = await tree(t, { options: () => ({ checkInMs: 0, silentForMs: 3_600_000 }) });
+  const { agents, main } = await tree(t, { options: () => ({ checkInMs: 0, silentForMs: 3_600_000, watchMs: 10 }) });
+  // ALP's timers do not hold the process open; this does while the test awaits them.
+  const alive = setInterval(() => {}, 1000);
+  t.after(() => clearInterval(alive));
   for (const etaMinutes of [0, 1441, 1.5, '5']) {
     assert.match((await main.call('alp_delegate', { agent: 'peer', task: 'x', mode: 'read-only', etaMinutes })).error, /Invalid assignment/);
   }

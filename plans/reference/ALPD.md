@@ -1645,6 +1645,7 @@ Goal (D24): the user reaches main while its assignments run, hears how the work 
   - `waitFor` accepts check-ins in every wait. A waiting `alp_delegate` that gets only a check-in returns `status: 'running'` with the events and `next`. A result in the same batch wins.
   - Check-ins are not passive, so they steer a running turn or wake an idle one. A wake whose mail is only check-ins does not count toward `MAX_WAKES`.
   - A held (parked or paused) requester gets none. ETAs are not kept across an alpd restart.
+  - The watchdog looks every 30 s at most (`watchMs` overrides it, for tests).
 - **ETA.** `alp_delegate` takes `etaMinutes`, an integer from 1 to 1440, in the Codex and Claude schemas. It sets `Assignment.eta`.
 - **Instructions.** The user-facing main gets two paragraphs, in the runtime and in `templates/agents/main/AGENT.md`:
   - Unclear requests: ask once, two to four questions with options and a recommended default, and the offer to decide with them. Use `alp_ask` with options while work runs.
