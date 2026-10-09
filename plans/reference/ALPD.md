@@ -1262,3 +1262,28 @@ Goal (D21, C7): every review answers in the same shape, so a requester acts on i
 - a partial handoff passes without a verdict;
 - a valid `fail` verdict reaches main through `alp_wait` and the run log;
 - a task keeps the verdict, and the task digest shows it.
+
+## 39. Scripted agents and golden output as built (2026-10-09)
+
+Goal (D21, C6): test what users read, and the failures that matter, without Codex or Claude. Gas City drives its integration tests with scripted fake agents and checks CLI output against golden files.
+
+- `test/support/fake-agent.js`:
+  - `fakeTransport(agents)` builds scripted native agents. Each one can:
+    - `call` an ALP tool;
+    - `finish` a turn, or `slowHandoff(ms, handoff)`;
+    - report `usage` for context fill;
+    - `limit()`, a Codex usage limit;
+    - `crash()`, the process dies mid-turn;
+    - stay stuck by doing nothing.
+  - A resumed thread keeps its id, as with the real transports.
+  - `tree(t)` gives a project with a root that has started a turn, the runtime, its agents, and a run-log reader. `until` waits for a condition.
+  - `context.test.js` and `verdict.test.js` use it; older tests keep their own fakes until they change.
+  - `node --test` also loads this file as a test file. It defines no tests, so it passes.
+- `src/client/render.js`:
+  - holds `renderLog` and `renderPs`, the text `alp log` and `alp ps` print, and the `ago` and `duration` formats;
+  - the CLI prints what they return, so tests render fixtures without an alpd.
+- `test/golden.test.js` compares against `test/golden/*.txt`:
+  - `log`: a real runtime run with scripted agents. One writer pins a decision, fills its context and hands off slowly. A reviewer files a failing verdict. A fixer crashes mid-turn, is restarted and finishes. A writer hits the Codex usage limit and is parked. Times, ids, paths, digests and durations are normalized before rendering. Five repeated runs gave the same output.
+  - `ps`: running, waiting, parked, failed and idle sessions in two trees.
+  - `task-report`: a landed epic with a nested epic, rework, a handback, mixed verification, and a task closed unverified.
+- `ALP_UPDATE_GOLDEN=1` rewrites the files. A missing file fails the test and tells how to create it.

@@ -14,6 +14,7 @@ import { findFormula, formulaDirs, listFormulas, pourFormula } from './core/form
 import { commandDecision, profileFor } from './core/permissions.js';
 import { describeVerification, runVerify, verifyConfig } from './core/verify.js';
 import { diagnose, repair } from './client/doctor.js';
+import { ago, duration, renderLog, renderPs } from './client/render.js';
 import { installedProgram, installService, serviceFor, startService, uninstallService } from './client/service.js';
 import { discoverAgents } from './core/resolver.js';
 import { parse as toml } from 'smol-toml';
@@ -344,17 +345,7 @@ async function ps(args) {
   const [{ sessions }, pauses] = await Promise.all([client.request('session.list', { includeClosed: values.all }), client.request('daemon.pauses')]).finally(() => client.close());
   printPauses(pauses, false);
   if (!sessions.length) { console.log(values.all ? 'No sessions' : 'No live sessions'); return; }
-  const children = new Map();
-  for (const session of sessions) {
-    const key = session.parentId ?? '';
-    children.set(key, [...(children.get(key) ?? []), session]);
-  }
-  const print = (session, depth) => {
-    const status = session.parked ? `parked (${session.parked})` : session.status === 'running' || session.status === 'idle' ? (session.activeTurnId ? 'running' : session.busy ? 'waiting' : 'idle') : session.lastError?.code ?? session.status;
-    console.log(`${'  '.repeat(depth)}${session.id}  ${session.agent}  ${session.runtime}:${session.model}  ${session.mode}  ${status}${depth ? '' : `  ${session.projectRoot}${session.title ? `  "${session.title}"` : ''}`}`);
-    for (const child of children.get(session.id) ?? []) print(child, depth + 1);
-  };
-  for (const root of children.get('') ?? []) print(root, 0);
+  for (const line of renderPs(sessions)) console.log(line);
 }
 
 async function attach(args) {
@@ -424,11 +415,6 @@ async function answer(args) {
   console.log(`${values.dismiss ? 'Dismissed' : 'Answered'} ${result.questionId}`);
 }
 
-const ago = (since) => {
-  const seconds = Math.max(0, Math.round((Date.now() - Date.parse(since)) / 1000));
-  return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s` : `${Math.floor(seconds / 3600)}h${String(Math.floor(seconds % 3600 / 60)).padStart(2, '0')}m`;
-};
-const duration = ms => ago(new Date(Date.now() - ms).toISOString());
 
 /** One tree as text: sessions by depth, then questions, unmerged worktrees and leases. */
 function renderStatus(status, root) {
@@ -487,79 +473,7 @@ async function log(args) {
   const { rootId, entries } = await client.request('session.log', { sessionId: positionals[0] }).finally(() => client.close());
   if (values.json) { for (const entry of entries) console.log(JSON.stringify(entry)); return; }
   if (!entries.length) { console.log(`No assignment log for ${rootId}`); return; }
-  const agents = new Map();
-  for (const entry of entries) {
-    const time = entry.ts.slice(11, 19);
-    let text;
-    switch (entry.event) {
-      case 'assignment.started':
-        agents.set(entry.assignmentId, entry.agent);
-        text = `${entry.parentAgent} → ${entry.agent} (${entry.mode}${entry.isolation === 'worktree' ? ', worktree' : ''}, ${entry.model}${entry.wait === false ? ', async' : ''}): ${entry.task.split('\n')[0].slice(0, 120)}`;
-        break;
-      case 'assignment.finished':
-        text = `${entry.agent} ${entry.status} after ${duration(entry.durationMs ?? 0)}${entry.handoff ? `, handoff ${entry.handoff.outcome}${entry.handoff.verdict ? `, verdict ${entry.handoff.verdict.result.toUpperCase()}` : ''}: ${entry.handoff.summary.split('\n')[0].slice(0, 120)}` : ''}${entry.error ? `: ${entry.error}` : ''}${entry.reconciled ? ' (after a restart)' : ''}`;
-        break;
-      case 'mail':
-        // Board pins are logged once, as board.pin, not per reader.
-        if (entry.kind === 'board') continue;
-        text = `✉ ${entry.kind} ${entry.from} → ${entry.to === rootId ? 'main' : agents.get(entry.to) ?? entry.to}${entry.body ? `: ${entry.body.split('\n')[0].slice(0, 120)}` : ''}`;
-        break;
-      case 'board.pin':
-        text = `${entry.kind === 'claim' ? '⚑' : entry.kind === 'decision' ? '◆' : '•'} ${entry.agent} pins ${entry.kind} ${entry.pinId}${entry.task ? ` for ${entry.task}` : ''}${entry.paths ? ` [${entry.paths.join(', ')}]` : ''}: ${entry.body.split('\n')[0].slice(0, 120)}`;
-        break;
-      case 'task':
-        text = `☐ ${entry.agent} ${TASK_PAST[entry.action] ?? entry.action} ${entry.id} "${entry.title}" → ${entry.status}${entry.detail ? `: ${entry.detail.split('\n')[0].slice(0, 120)}` : ''}`;
-        break;
-      case 'board.unpin':
-        text = `⚐ ${entry.pinId} by ${entry.agent} ${entry.reason === 'session_ended' ? 'released when its session ended' : 'taken down'}`;
-        break;
-      case 'human.question':
-        text = `? ${entry.agent} asks the user [${entry.questionId}]: ${entry.body.split('\n')[0].slice(0, 120)}`;
-        break;
-      case 'verify':
-        text = `${entry.skipped ? '–' : entry.passed ? '✓' : '✗'} verify in the ${entry.where}${entry.taskId ? ` for ${entry.taskId}` : ''}${entry.assignmentId ? ` (${entry.assignmentId})` : ''}: ${entry.skipped ? `skipped: ${entry.skipped}` : entry.detail}`;
-        break;
-      case 'epic.landed':
-        text = `◆ ${entry.agent} closed ${entry.id} "${entry.title}": ${entry.tasks} tasks, ${entry.reworked} reworked`;
-        break;
-      case 'notice':
-        text = `${entry.level === 'error' ? '‼' : entry.level === 'warning' ? '!' : 'ℹ'} ${entry.text}`;
-        break;
-      case 'assignment.parked':
-        text = `⏸ ${entry.agent} ${entry.assignmentId} parked: ${entry.reason}`;
-        break;
-      case 'assignment.resumed':
-        text = `▶ ${entry.agent} ${entry.assignmentId} resumed`;
-        break;
-      case 'instructions':
-        text = `# ${entry.agent} instructions ${entry.sha} (ALP.md ${entry.parts?.project}, AGENT.md ${entry.parts?.agent}, ${entry.chars} chars)`;
-        break;
-      case 'context':
-        text = `◔ ${entry.agent} context ${entry.percent}% full: ${entry.level === 'now' ? 'told to hand off now' : 'told to plan a handoff'}`;
-        break;
-      case 'assignment.interrupted':
-        text = `⏹ ${entry.agent} ${entry.assignmentId} interrupted: ${entry.reason}; the next alpd continues it`;
-        break;
-      case 'assignment.recovered':
-        text = `↻ ${entry.agent} ${entry.assignmentId} reopened after alpd restarted`;
-        break;
-      case 'session.restarted':
-        text = `↻ ${entry.agent}'s native process stopped (${entry.error}); restart ${entry.restarts}`;
-        break;
-      case 'session.revived':
-        text = `▶ ${entry.agent} running again`;
-        break;
-      case 'session.revive_failed':
-        text = `✗ ${entry.agent} could not be restarted: ${entry.error}`;
-        break;
-      case 'human.answer':
-        text = `↳ ${entry.questionId} ${entry.outcome}${entry.answer !== undefined ? `: ${entry.answer.split('\n')[0].slice(0, 120)}` : ''}`;
-        break;
-      default:
-        text = `${entry.event}${entry.branch ? ` ${entry.branch}` : ''}${entry.status ? ` ${entry.status}` : ''}`;
-    }
-    console.log(`${time}  ${text}`);
-  }
+  for (const line of renderLog(rootId, entries)) console.log(line);
 }
 
 /** The project board every agent on the project shares: live claims, then decisions and findings. */
@@ -579,7 +493,6 @@ async function board(args) {
   }
 }
 
-const TASK_PAST = { create: 'created', update: 'updated', link: 'linked', start: 'started', close: 'closed', reopen: 'reopened', delegate: 'delegated', submit: 'submitted', release: 'released', gate: 'gated', clear: 'cleared a gate of', orphaned: 'reopened (its assignment ended with alpd)' };
 const STATUS_MARK = { open: '○', in_progress: '◐', review: '◑', closed: '●' };
 
 /** The ALP project a task command works on: --project, or the current directory. */

@@ -6,42 +6,7 @@ import path from 'node:path';
 import { initProject } from '../src/core/init.js';
 import { createTask, getTask, loadTasks, startTask, submitTask, taskDigest } from '../src/core/tasks.js';
 import { createAlpRuntime } from '../dist/runtime/index.js';
-
-let calls = 0;
-function fakeTransport(runtimes) {
-  return () => {
-    const index = runtimes.length;
-    let turns = 0;
-    const runtime = {
-      calls: [], threadId: `thread-${index}`, turnId: undefined,
-      async initialize() {},
-      onNotification(fn) { this.notification = fn; }, onFailure(fn) { this.failure = fn; }, onRequest(fn) { this.serverRequest = fn; },
-      async close() {},
-      async request(method, params) {
-        this.calls.push({ method, params });
-        if (method.startsWith('thread/')) return { thread: { id: this.threadId } };
-        if (method === 'turn/start') { this.turnId = `turn-${index}-${++turns}`; return { turn: { id: this.turnId } }; }
-        return {};
-      },
-      get started() { return this.calls.filter(call => call.method === 'turn/start'); },
-      get steered() { return this.calls.filter(call => call.method === 'turn/steer').map(call => call.params.input[0].text); },
-      async call(tool, args) {
-        return JSON.parse((await this.serverRequest('item/tool/call', { threadId: this.threadId, turnId: this.turnId, callId: `${tool}-${index}-${++calls}`, namespace: null, tool, arguments: args })).contentItems[0].text);
-      },
-      finish(text = 'done') {
-        this.notification('item/completed', { threadId: this.threadId, item: { type: 'agentMessage', id: `out-${index}-${++calls}`, text } });
-        this.notification('turn/completed', { threadId: this.threadId, turn: { id: this.turnId, status: 'completed' } });
-      },
-    };
-    runtimes.push(runtime);
-    return runtime;
-  };
-}
-
-async function until(check, what = 'condition') {
-  for (let i = 0; i < 600; i++) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 5)); }
-  assert.fail(`Expected ${what} did not arrive`);
-}
+import { fakeTransport, until } from './support/fake-agent.js';
 
 const criterion = (result, text = 'Retries stop after three attempts') => ({ criterion: text, result, evidence: `src/retry.ts:40 ${result}` });
 

@@ -46,6 +46,8 @@ npm test
 node --test test/init.test.js test/upgrade.test.js test/delegation.test.js test/resolver.test.js test/ir.test.js test/adapter.test.js
 ```
 
+Runtime tests drive scripted agents from `test/support/fake-agent.js` instead of Codex or Claude: they call ALP tools, report context fill, hand off slowly, crash mid-turn or hit a usage limit on cue. `test/golden.test.js` compares what `alp log`, `alp ps` and `alp task report` print with `test/golden/*.txt`; after checking an intended change, accept it with `ALP_UPDATE_GOLDEN=1 node --test test/golden.test.js`.
+
 ## Project files
 
 ```text
