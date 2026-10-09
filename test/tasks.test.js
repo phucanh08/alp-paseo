@@ -253,12 +253,12 @@ const tool = (harness, name) => harness.config.dynamicTools.find(candidate => ca
 
 test('main changes tasks with alp_task; assignments and the supervisor only read them', async t => {
   const directory = await mkdtemp(path.join(tmpdir(), 'alp-task-tool-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
   const root = path.join(directory, 'project');
   await initProject(root);
   const runtimes = [];
   const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: path.join(directory, 'home'), runLogDir: path.join(directory, 'runs') });
-  t.after(() => runtime.shutdown());
+  // Shut down before removing the directory: the runtime may still be writing logs into it.
+  t.after(async () => { await runtime.shutdown(); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
   await runtime.open('root', { cwd: root });
   await until(() => runtimes.length === 2 && runtimes[1].calls.some(call => call.method === 'thread/start'));
   const [main, supervisor] = runtimes;
@@ -361,13 +361,13 @@ test('main sees tasks in review, in progress and ready at the start of a turn', 
 
 async function runtimeSetup(t, settings) {
   const directory = await mkdtemp(path.join(tmpdir(), 'alp-task-flow-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
   const root = path.join(directory, 'project');
   await initProject(root);
   if (settings) await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify(settings));
   const runtimes = [];
   const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: path.join(directory, 'home'), runLogDir: path.join(directory, 'runs'), boardDir: path.join(directory, 'boards') });
-  t.after(() => runtime.shutdown());
+  // Shut down before removing the directory: the runtime may still be writing logs and boards into it.
+  t.after(async () => { await runtime.shutdown(); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
   const events = [];
   runtime.onEvent(envelope => events.push(envelope));
   const prompt = (session, id, text) => runtime.prompt(session, { clientMessageId: id, delivery: 'auto', content: [{ type: 'text', text }] });
