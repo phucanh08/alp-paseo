@@ -302,3 +302,15 @@ test('tasks main worked on appear in Paseo as a todo list when its turn ends', a
   const todo = events.find(e => e.type === 'timeline.item' && e.item.type === 'todo');
   assert.deepEqual(todo.item.items, [{ id: task.id, text: `${task.id} · Add --json`, status: 'in_progress', completed: false }]);
 });
+
+test('the plugin loads where import.meta.url is no URL, as when Paseo bundles it', async t => {
+  const { build } = await import('esbuild');
+  const directory = await mkdtemp(path.join(tmpdir(), 'alp-paseo-bundle-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const outfile = path.join(directory, 'index.mjs');
+  // Paseo re-bundles plugin code; there import.meta.url does not resolve. Nothing may need it while loading.
+  await build({ entryPoints: ['plugins/paseo/server/dist/index.js'], outfile, bundle: true, format: 'esm', platform: 'node', target: 'node20', external: ['@anthropic-ai/claude-agent-sdk'], define: { 'import.meta.url': 'undefined' }, logLevel: 'silent' });
+  const plugin = await import(outfile);
+  assert.equal(typeof plugin.default, 'function');
+  assert.equal(typeof plugin.createProvider, 'function');
+});
