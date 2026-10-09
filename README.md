@@ -8,6 +8,7 @@ Requires Node.js 20+ and an authenticated Codex or Claude Code executable on PAT
 
 ```sh
 npm install -g @anhlp/alp
+alp doctor          # checks Codex and Claude, settings, and leftovers; --fix repairs the safe ones
 alp daemon start
 ```
 
@@ -103,6 +104,7 @@ Use `resolveAgent(projectRoot, { agent: 'your-agent' })` from `src/core/resolver
 
 ```sh
 node src/cli.js daemon start          # or: status | stop | restart
+node src/cli.js doctor [--fix]        # what ALP needs here, and what earlier runs left behind
 node src/cli.js run --profile cafe "Your task"   # streams the agent tree; Ctrl-C interrupts
 node src/cli.js ps [--all]            # live sessions as a tree; --all adds closed ones
 node src/cli.js top [session]         # live dashboard: who runs, who waits, questions, worktrees, leases

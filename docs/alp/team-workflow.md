@@ -311,6 +311,27 @@ Codex reports its fill itself; for Claude, ALP counts the tokens of each reply
 against the model's window (200k, or 1M for `[1m]` models, until a result reports
 the actual window).
 
+## Doctor
+
+`alp doctor` checks what ALP needs on this machine and, inside an ALP project
+or with `--project DIR`, in that project:
+- Codex and Claude: found, `--version` works, logged in. One is enough.
+- alpd: built, and whether it runs; a lock or socket left by a dead alpd.
+- The Bash sandbox for Claude sessions.
+- `$ALP_HOME`: entries others can read, `settings.json`, skills that
+  `role-skills.json` lists but the library lacks, and interrupted work in
+  projects that no longer exist.
+- The project: `.alp/settings.json` and every agent's resolution, worktrees git
+  lists but that are gone, and `alp/*` branches.
+
+`alp doctor --fix` repairs only what nothing uses: it removes a dead alpd's lock
+and socket, takes group and other access away under `$ALP_HOME`, drops live
+entries of vanished projects (with alpd stopped), runs `git worktree prune`, and
+deletes `alp/*` branches already merged into HEAD with `git branch -d`. It leaves
+alone a branch checked out in a worktree or held by work alpd will continue.
+Unmerged `alp/*` branches hold kept work and are listed for you to merge or
+delete. `--json` prints the checks; the exit code is 1 when any check failed.
+
 ## Pause and usage limits
 
 The user can hold ALP's work without losing it:

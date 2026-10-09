@@ -13,6 +13,7 @@ import { exportBeads, importBeads, parseJsonl } from './core/beads.js';
 import { findFormula, formulaDirs, listFormulas, pourFormula } from './core/formulas.js';
 import { commandDecision, profileFor } from './core/permissions.js';
 import { describeVerification, runVerify, verifyConfig } from './core/verify.js';
+import { diagnose, repair } from './client/doctor.js';
 import { discoverAgents } from './core/resolver.js';
 import { parse as toml } from 'smol-toml';
 import { addGate, blockersOf, checkGates, childrenOf, closeTask, compactTasks, createTask, describeGate, gateOpen, epicReport, gatesOf, getTask, isTaskId, linkTask, recordVerification, listTasks, loadTasks, readyTasks, reopenTask, resolveGate, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
@@ -21,6 +22,7 @@ import { alpHome, connect, ensureDaemon, lockAlive, readLock } from './client/in
 const USAGE = `Usage:
   alp <init|upgrade> [directory]
   alp daemon <start|stop|status|restart>
+  alp doctor [--project DIR] [--fix] [--json]   check this machine and project; --fix repairs what is safe to
   alp run [--agent A] [--profile pho|cafe] [--model M] [--mode read-only|workspace-write|full-access] [--thinking T] [--project DIR] [--json] <prompt>
   alp ps [--all]
   alp top [session] [--once]
@@ -864,6 +866,37 @@ async function verify(args) {
   if (!verification.passed) process.exitCode = 1;
 }
 
+const DOCTOR_MARK = { ok: '✓', info: '·', warn: '!', fail: '✗' };
+
+/** alp doctor: what ALP needs here and what earlier runs left behind (ALPD §36). */
+async function doctor(args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { project: { type: 'string' }, fix: { type: 'boolean' }, json: { type: 'boolean' } } });
+  if (positionals.length) throw new UsageError();
+  const project = values.project ? await taskProject(values.project) : await taskProject(undefined).catch(() => undefined);
+  const sandbox = await import('../dist/runtime/index.js').then(runtime => runtime.claudeSandboxAvailable(), () => undefined);
+  const options = { home: alpHome(), project, sandbox, daemonEntry: DAEMON_ENTRY };
+  let checks = await diagnose(options);
+  const fixed = values.fix ? await repair(checks) : [];
+  if (fixed.length) checks = await diagnose(options);
+  if (values.json) {
+    console.log(JSON.stringify({ project: project ?? null, checks: checks.map(({ fix, ...check }) => ({ ...check, ...(fix ? { fix: fix.describe } : {}) })), fixed }));
+  } else {
+    for (const { id, result } of fixed) console.log(`fixed ${id}: ${result}`);
+    if (fixed.length) console.log('');
+    for (const check of checks) {
+      console.log(`${DOCTOR_MARK[check.status]} ${check.id.padEnd(13)} ${check.summary}`);
+      for (const detail of check.details ?? []) console.log(`    ${detail}`);
+      if (check.fix) console.log(`    --fix: ${check.fix.describe}`);
+      if (check.hint) console.log(`    ${check.hint}`);
+    }
+    const failed = checks.filter(check => check.status === 'fail').length;
+    const warned = checks.filter(check => check.status === 'warn').length;
+    const fixable = checks.filter(check => check.fix).length;
+    console.log(`\n${failed || warned ? `${failed} failed, ${warned} to look at` : 'All good'}${project ? '' : ' (no ALP project here; pass --project to check one)'}${fixable ? `; alp doctor --fix repairs ${fixable}` : ''}`);
+  }
+  if (checks.some(check => check.status === 'fail')) process.exitCode = 1;
+}
+
 /** alp recall: ask a finished assignment, or the last one on a task, what it did and why. */
 async function recall(args) {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { project: { type: 'string' }, json: { type: 'boolean' } } });
@@ -888,7 +921,7 @@ async function interrupt(args) {
   console.log('Interrupted');
 }
 
-const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, verify, recall, pause, resume, interrupt };
+const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, doctor, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, verify, recall, pause, resume, interrupt };
 const [command, ...args] = process.argv.slice(2);
 try {
   if (!Object.hasOwn(commands, command)) throw new UsageError();
