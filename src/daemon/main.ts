@@ -46,7 +46,7 @@ async function run(home: string) {
   const worktreeDir = path.join(home, 'worktrees');
   // Worktrees of assignments a crash interrupted: their work goes to their branches.
   for (const branch of await reclaimWorktrees(worktreeDir).catch(() => [] as string[])) console.log(`${new Date().toISOString()} kept interrupted work on branch ${branch}`);
-  const runtime = createAlpRuntime({ templates, runLogDir, worktreeDir, boardDir: path.join(home, 'boards') });
+  const runtime = createAlpRuntime({ templates, runLogDir, worktreeDir, boardDir: path.join(home, 'boards'), libraryDir: home });
   const store = createStore(path.join(home, 'state'));
   let stopping: Promise<void> | undefined;
   const shutdown = (code = 0) => {

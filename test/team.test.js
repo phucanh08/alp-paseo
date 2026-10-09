@@ -19,7 +19,7 @@ async function setup(t, options = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'alp-team-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await initProject(root);
-  await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify(options.workflow ? { workflow: { mode: options.workflow, maxPeers: options.maxPeers ?? 2 } } : { delegation: { main: ['lead'], lead: ['peer'] } }));
+  await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify(options.workflow ? { workflow: { mode: options.workflow, maxPeers: options.maxPeers ?? 2, supervisor: options.supervisor ?? false } } : { delegation: { main: ['lead'], lead: ['peer'] } }));
   const runtimes = [];
   const provider = createProvider({ silentForMs: options.timeout ?? 2000, askTimeoutMs: options.askTimeout, runLogDir: options.runLogDir, transport: () => {
     const index = runtimes.length;
@@ -216,8 +216,8 @@ test('a root turn has a bounded total number of child assignments', async t => {
   assert.equal(runtimes.length, 17);
 });
 
-test('Smart delegates directly, caps concurrent peers at two, releases slots, and forwards selected model/effort', async t => {
-  const { runtimes } = await setup(t, { workflow: 'smart' });
+test('Phở delegates directly, caps concurrent peers at two, releases slots, and forwards selected model/effort', async t => {
+  const { runtimes } = await setup(t, { workflow: 'pho' });
   assert.equal((await runtimes[0].tool('lead')).success, false);
   const first = runtimes[0].tool('peer', 'Inspect A', { model: 'claude:claude-sonnet-5-5', thinking: 'high' }, 'p1');
   const second = runtimes[0].tool('peer', 'Inspect B', {}, 'p2');
@@ -238,7 +238,7 @@ test('Smart delegates directly, caps concurrent peers at two, releases slots, an
 });
 
 test('configured peer increase and single writer constraint are enforced', async t => {
-  const { runtimes } = await setup(t, { workflow: 'smart', maxPeers: 3, mode: 'workspace-write' });
+  const { runtimes } = await setup(t, { workflow: 'pho', maxPeers: 3, mode: 'workspace-write' });
   const jobs = [0, 1, 2].map(i => runtimes[0].tool('peer', 'Inspect', { mode: 'read-only' }, `read-${i}`));
   await until(() => runtimes[3]?.calls.some(c => c.method === 'turn/start'));
   assert.equal((await runtimes[0].tool('peer', 'Write', {}, 'write')).success, false);
@@ -249,36 +249,44 @@ test('configured peer increase and single writer constraint are enforced', async
   runtimes[4].finish(); await writer;
 });
 
-test('oracle requires explicit premium selection and advisors are forced read-only', async t => {
-  const { runtimes } = await setup(t, { workflow: 'smart', mode: 'workspace-write' });
-  assert.equal((await runtimes[0].tool('oracle')).success, false);
-  assert.equal((await runtimes[0].tool('oracle', 'Advice', { model: 'codex:premium-test', thinking: 'high' }, 'missing-reason')).success, false);
-  const advice = runtimes[0].tool('oracle', 'Advice', { model: 'codex:premium-test', thinking: 'high', modelReason: 'Runtime catalog describes highest capability', mode: 'workspace-write' }, 'oracle');
-  await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
-  const cfg = runtimes[1].calls.find(c => c.method === 'thread/start').params;
-  assert.equal(cfg.model, 'premium-test'); assert.equal(cfg.sandbox, 'read-only'); assert.deepEqual(cfg.dynamicTools.map(tool => tool.name), ['alp_send', 'alp_handoff', 'alp_ask', 'alp_pin', 'alp_board', 'alp_unpin']);
-  runtimes[1].finish(); await advice;
-  const review = runtimes[0].tool('reviewer', 'Review diff', {}, 'review');
+test('oracle runs on Fable or Astra, two run in parallel, and advisors are forced read-only', async t => {
+  const { runtimes } = await setup(t, { workflow: 'pho', mode: 'workspace-write' });
+  assert.match(decode(await runtimes[0].tool('oracle')).error, /claude:claude-fable-5-1 or codex:gpt-6-astra/);
+  assert.equal((await runtimes[0].tool('oracle', 'Advice', { model: 'codex:premium-test', thinking: 'high' }, 'other-model')).success, false);
+  const fable = runtimes[0].tool('oracle', 'Advice', { model: 'claude:claude-fable-5-1', mode: 'workspace-write', wait: false }, 'fable');
+  const astra = runtimes[0].tool('oracle', 'Advice', { model: 'codex:gpt-6-astra', wait: false }, 'astra');
+  assert.equal((await fable).success, true); assert.equal((await astra).success, true);
   await until(() => runtimes[2]?.calls.some(c => c.method === 'turn/start'));
-  assert.equal(runtimes[2].calls.find(c => c.method === 'thread/start').params.sandbox, 'read-only');
-  runtimes[2].finish(); await review;
+  const configs = runtimes.slice(1, 3).map(r => r.calls.find(c => c.method === 'thread/start').params).sort((a, b) => a.runtime.localeCompare(b.runtime));
+  assert.deepEqual(configs.map(cfg => [cfg.runtime, cfg.model, cfg.thinking, cfg.sandbox]), [['claude', 'claude-fable-5-1', 'high', 'read-only'], ['codex', 'gpt-6-astra', 'high', 'read-only']]);
+  assert.deepEqual(configs[0].dynamicTools.map(tool => tool.name), ['alp_send', 'alp_handoff', 'alp_ask', 'alp_pin', 'alp_board', 'alp_unpin']);
+  runtimes[1].finish(); runtimes[2].finish();
+  // Results reach main by alp_wait or by steering its running turn.
+  const first = decode(await runtimes[0].call('alp_wait', {}, 'wait-1')).events;
+  await until(() => runtimes[1].closed && runtimes[2].closed);
+  const steered = runtimes[0].calls.filter(c => c.method === 'turn/steer').map(c => c.params.input[0].text).join('\n');
+  assert.equal(first.filter(event => event.kind === 'result').length + (steered.match(/result from oracle/g) ?? []).length, 2);
+  const review = runtimes[0].tool('reviewer', 'Review diff', {}, 'review');
+  await until(() => runtimes[3]?.calls.some(c => c.method === 'turn/start'));
+  assert.equal(runtimes[3].calls.find(c => c.method === 'thread/start').params.sandbox, 'read-only');
+  runtimes[3].finish(); await review;
 });
 
-test('Supervised keeps peer ownership with lead and snapshots limits for descendants', async t => {
-  const { runtimes, root } = await setup(t, { workflow: 'supervised' });
+test('Cafe keeps peer ownership with lead and snapshots limits for descendants', async t => {
+  const { runtimes, root } = await setup(t, { workflow: 'cafe' });
   assert.equal((await runtimes[0].tool('peer')).success, false);
-  await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify({ workflow: { mode: 'smart', maxPeers: 8 } }));
+  await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify({ workflow: { mode: 'pho', maxPeers: 8 } }));
   const lead = runtimes[0].tool('lead', 'Execute', {}, 'lead-after-peer-denied');
   await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
   const cfg = runtimes[1].calls.find(c => c.method === 'thread/start').params;
-  assert.match(cfg.developerInstructions, /Workflow: supervised/);
+  assert.match(cfg.developerInstructions, /Profile: cafe/);
   assert.match(cfg.developerInstructions, /At most 2 peers/);
   assert.deepEqual(cfg.dynamicTools[0].inputSchema.properties.agent.enum, ['peer', 'oracle', 'reviewer']);
   runtimes[1].finish(); await lead;
 });
 
 test('usage and catalog evidence reaches orchestration prompt without substituting for the brief', async t => {
-  const { runtimes } = await setup(t, { workflow: 'smart' });
+  const { runtimes } = await setup(t, { workflow: 'pho' });
   const input = runtimes[0].calls.find(c => c.method === 'turn/start').params.input;
   assert.match(input[0].text, /"available":false/);
   assert.match(input[0].text, /premium-test/);
@@ -286,7 +294,7 @@ test('usage and catalog evidence reaches orchestration prompt without substituti
 });
 
 test('interrupt closes both concurrent peers and releases their handoffs', async t => {
-  const { runtimes, connection } = await setup(t, { workflow: 'smart' });
+  const { runtimes, connection } = await setup(t, { workflow: 'pho' });
   const first = runtimes[0].tool('peer', 'A', {}, 'a');
   const second = runtimes[0].tool('peer', 'B', {}, 'b');
   await until(() => runtimes[2]?.calls.some(c => c.method === 'turn/start'));
@@ -300,7 +308,7 @@ test('interrupt closes both concurrent peers and releases their handoffs', async
 test('child files a structured handoff; parent gets it with only the final message', async t => {
   const runLogDir = await mkdtemp(path.join(tmpdir(), 'alp-runs-'));
   t.after(() => rm(runLogDir, { recursive: true, force: true }));
-  const { runtimes, root } = await setup(t, { workflow: 'smart', runLogDir });
+  const { runtimes, root } = await setup(t, { workflow: 'pho', runLogDir });
   const result = runtimes[0].tool('peer', 'Read proof.txt', {}, 'peer-call');
   await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
   const assignment = runtimes[1].calls.find(c => c.method === 'turn/start').params.input[1].text;
@@ -339,7 +347,7 @@ test('child files a structured handoff; parent gets it with only the final messa
 });
 
 test('missing handoff is null and root sessions cannot file one', async t => {
-  const { runtimes } = await setup(t, { workflow: 'smart' });
+  const { runtimes } = await setup(t, { workflow: 'pho' });
   const root = await runtimes[0].handoff({ outcome: 'complete', summary: 'Not an assignment' }, 'root-handoff');
   assert.equal(root.success, false);
   assert.match(decode(root).error, /Only assignment sessions/);
@@ -355,7 +363,7 @@ const turns = runtime => runtime.calls.filter(c => c.method === 'turn/start');
 const started = (runtimes, index) => until(() => runtimes[index]?.calls.some(c => c.method === 'turn/start'));
 
 test('async assignment: alp_wait returns the result and the snapshot of running work', async t => {
-  const { runtimes } = await setup(t, { workflow: 'smart' });
+  const { runtimes } = await setup(t, { workflow: 'pho' });
   const start = decode(await runtimes[0].tool('peer', 'Read proof', { wait: false }, 'async'));
   assert.equal(start.status, 'running');
   await started(runtimes, 1);
@@ -375,7 +383,7 @@ test('async assignment: alp_wait returns the result and the snapshot of running 
 });
 
 test('a question returns a waiting delegate early; the answer resumes the child', async t => {
-  const { runtimes } = await setup(t, { workflow: 'smart' });
+  const { runtimes } = await setup(t, { workflow: 'pho' });
   const delegated = runtimes[0].tool('peer', 'Pick an API', {}, 'sync');
   await started(runtimes, 1);
   const asked = runtimes[1].call('alp_ask', { question: 'v1 or v2?' }, 'ask');
@@ -397,7 +405,7 @@ test('a question returns a waiting delegate early; the answer resumes the child'
 });
 
 test('unanswered questions time out and children only mail notes to their requester', async t => {
-  const { runtimes } = await setup(t, { workflow: 'smart', askTimeout: 20 });
+  const { runtimes } = await setup(t, { workflow: 'pho', askTimeout: 20 });
   const start = decode(await runtimes[0].tool('peer', 'Work', { wait: false }, 'async'));
   await started(runtimes, 1);
   assert.equal((await runtimes[1].call('alp_send', { to: 'parent', kind: 'steer', body: 'do it' }, 'child-steer')).success, false);
@@ -411,7 +419,7 @@ test('unanswered questions time out and children only mail notes to their reques
 });
 
 test('mail reaches a busy parent by steering its running turn', async t => {
-  const { runtimes } = await setup(t, { workflow: 'smart' });
+  const { runtimes } = await setup(t, { workflow: 'pho' });
   const start = decode(await runtimes[0].tool('peer', 'Work', { wait: false }, 'async'));
   await started(runtimes, 1);
   assert.equal((await runtimes[1].call('alp_send', { to: 'parent', kind: 'note', body: 'found the config in src/x' }, 'note')).success, true);
@@ -429,7 +437,7 @@ test('mail reaches a busy parent by steering its running turn', async t => {
 test('an idle parent is woken by mail, without resetting its per-turn limits', async t => {
   const runLogDir = await mkdtemp(path.join(tmpdir(), 'alp-runs-'));
   t.after(() => rm(runLogDir, { recursive: true, force: true }));
-  const { runtimes, events } = await setup(t, { workflow: 'smart', runLogDir });
+  const { runtimes, events } = await setup(t, { workflow: 'pho', runLogDir });
   decode(await runtimes[0].tool('peer', 'Work', { wait: false }, 'async'));
   await started(runtimes, 1);
   runtimes[0].finish('main idle');
@@ -452,7 +460,7 @@ test('an idle parent is woken by mail, without resetting its per-turn limits', a
 });
 
 test('interrupt blocks wakes; held mail rides on the next user prompt', async t => {
-  const { runtimes, connection } = await setup(t, { workflow: 'smart' });
+  const { runtimes, connection } = await setup(t, { workflow: 'pho' });
   decode(await runtimes[0].tool('peer', 'Work', { wait: false }, 'async'));
   await started(runtimes, 1);
   await connection.send({ type: 'session.interrupt', sessionId: 'root', requestId: 'stop' });
@@ -467,7 +475,7 @@ test('interrupt blocks wakes; held mail rides on the next user prompt', async t 
 });
 
 test('mail received by a failed turn is redelivered', async t => {
-  const { runtimes, connection } = await setup(t, { workflow: 'smart' });
+  const { runtimes, connection } = await setup(t, { workflow: 'pho' });
   const start = decode(await runtimes[0].tool('peer', 'Work', { wait: false }, 'async'));
   await started(runtimes, 1);
   const waiting = runtimes[0].call('alp_wait', {}, 'wait');
@@ -497,7 +505,7 @@ test('a requester whose turn ends with live assignments finishes only after hand
 });
 
 test('silent assignments are reported once, then fail at twice the limit', async t => {
-  const { runtimes } = await setup(t, { workflow: 'smart', timeout: 40 });
+  const { runtimes } = await setup(t, { workflow: 'pho', timeout: 40 });
   const start = decode(await runtimes[0].tool('peer', 'Work', { wait: false }, 'async'));
   await started(runtimes, 1);
   const first = decode(await runtimes[0].call('alp_wait', { timeoutMs: 1000 }, 'stall'));
@@ -511,7 +519,7 @@ test('silent assignments are reported once, then fail at twice the limit', async
 });
 
 test('a concurrent catch-all alp_wait does not take a waiting delegate\'s result', async t => {
-  const { runtimes } = await setup(t, { workflow: 'smart' });
+  const { runtimes } = await setup(t, { workflow: 'pho' });
   const delegated = runtimes[0].tool('peer', 'A', {}, 'sync');
   await started(runtimes, 1);
   const waiting = runtimes[0].call('alp_wait', { timeoutMs: 50 }, 'all');
@@ -530,7 +538,7 @@ function gateWake(runtime) {
 const userPrompt = (id, text = 'Next') => ({ type: 'session.prompt', sessionId: 'root', prompt: { clientMessageId: id, delivery: 'auto', input: { type: 'message', content: [{ type: 'text', text }] } } });
 
 test('a user prompt arriving while a wake starts does not start a second turn', async t => {
-  const { runtimes, connection, events } = await setup(t, { workflow: 'smart' });
+  const { runtimes, connection, events } = await setup(t, { workflow: 'pho' });
   decode(await runtimes[0].tool('peer', 'Work', { wait: false }, 'async'));
   await started(runtimes, 1);
   runtimes[0].finish('main idle');
@@ -545,7 +553,7 @@ test('a user prompt arriving while a wake starts does not start a second turn', 
 });
 
 test('an interrupt during wake startup cancels the woken turn', async t => {
-  const { runtimes, connection, events } = await setup(t, { workflow: 'smart' });
+  const { runtimes, connection, events } = await setup(t, { workflow: 'pho' });
   decode(await runtimes[0].tool('peer', 'Work', { wait: false }, 'async'));
   await started(runtimes, 1);
   runtimes[0].finish('main idle');
@@ -593,7 +601,7 @@ test('a child requester that exhausts its wakes fails instead of hanging', async
 });
 
 test('alp_send accepts an agent name only when it names one live assignment', async t => {
-  const { runtimes } = await setup(t, { workflow: 'smart' });
+  const { runtimes } = await setup(t, { workflow: 'pho' });
   const first = decode(await runtimes[0].tool('peer', 'A', { wait: false }, 'a'));
   await started(runtimes, 1);
   const waiting = runtimes[0].call('alp_wait', {}, 'wait');
