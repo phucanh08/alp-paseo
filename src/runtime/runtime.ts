@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { workflowGraphs } from '../core/workflow.js';
@@ -13,13 +13,14 @@ import { LESSONS_FILE, READ_ONLY_AGENTS, resolveSession, type ResolvedSession, t
 import { MAIL_BODY_CHARS, publicEvent, renderMail, takeBatch, USER, type MailEvent } from './mailbox.js';
 import type { AlpEvent, AssignmentSnapshot, Envelope, SessionSnapshot, TreeStatus, TurnOrigin, UserQuestion } from './events.js';
 import { BOARD_KEEP, live, normalizePaths, overlapping, PIN_BODY_CHARS, PIN_KINDS, renderBoard, renderPin, type Pin, type PinKind } from './board.js';
-import { checkoutKey, commitWorktree, createCopy, createWorktree, mergeWorktree, removeCopy, removeWorktree, type Copy, type Worktree, type WorktreeChange } from './workspace.js';
+import { createRecallBook, recallPrompt, RECALL_KEEP_MS, RECALL_QUESTION_CHARS, RECALL_TIMEOUT_MS, type RecallEntry } from './recall.js';
+import { branchExists, checkoutKey, commitWorktree, createCopy, createWorktree, mergeWorktree, removeCopy, removeWorktree, type Copy, type Worktree, type WorktreeChange } from './workspace.js';
 import { claudeSandboxAvailable } from './claude-transport.js';
 import { ALP_REPO, gh, projectRepo, type GitHubRunner } from './github.js';
 import { parse as toml } from 'smol-toml';
 import { findFormula, formulaDirs, listFormulas, pourFormula } from '../core/formulas.js';
 import { ADVISORS, addAllowRule, capMode, commandDecision, profileFor, unwrapShell, type PermissionProfile } from '../core/permissions.js';
-import { CLOSE_REASONS, GATE_KINDS, addGate, checkGates, resolveGate, TASK_STATUSES, TASK_TYPES, TASKS_DIR, blockersOf, childrenOf, closeTask, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, releaseTask, reopenTask, startRefusal, startTask, submitTask, summarize, taskDigest, updateTask, type Task } from '../core/tasks.js';
+import { CLOSE_REASONS, GATE_KINDS, addGate, checkGates, resolveGate, TASK_STATUSES, TASK_TYPES, TASKS_DIR, blockersOf, childrenOf, closeTask, releaseOrphans, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, releaseTask, reopenTask, startRefusal, startTask, submitTask, summarize, taskDigest, updateTask, type Task } from '../core/tasks.js';
 
 export type RuntimeTransport = {
   request(method: string, params: any): Promise<any>;
@@ -71,6 +72,9 @@ export type RuntimeOptions = {
   /** The user's skill library and lessons (ALP_HOME). Omitted: only skills inside the project, and project lessons. */
   libraryDir?: string;
 
+  /** Where finished assignments' native threads are recorded for alp_recall. Omitted keeps the record in memory. */
+  recallFile?: string;
+
   /** False starts no supervisors, for hosts and tests that do not want them. Default true. */
   supervisor?: boolean;
 
@@ -117,8 +121,12 @@ export type AlpRuntime = {
   message(sessionId: string, text: string): void;
   /** The project board: live claims, then decisions and findings, oldest first. */
   board(projectRoot: string): Promise<Pin[]>;
+  /** The user asks a finished assignment, or the last one on a task of the project, about its work. */
+  recall(target: { assignmentId?: string; taskId?: string; projectRoot?: string }, question: string): Promise<RecallAnswer>;
   shutdown(): Promise<void>;
 };
+
+export type RecallAnswer = { assignmentId: string; agent: string; taskId?: string; finishedAt: string; answer: string };
 
 type Session = {
   runtimeKind: RuntimeKind;
@@ -310,6 +318,22 @@ const DISCARD_TOOL = {
   },
 };
 
+const RECALL_TOOL = {
+  type: 'function',
+  name: 'alp_recall',
+  description: `Ask a finished assignment about its work: why it chose an approach, what it tried, where it got stuck. ALP forks its session read-only, asks your question, and returns the answer. Assignments stay recallable for ${RECALL_KEEP_MS / 86_400_000} days.`,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      assignmentId: { type: 'string', description: 'The finished assignment to ask, from its result.' },
+      taskId: { type: 'string', description: 'Instead of assignmentId: the last assignment that worked on this task.' },
+      question: { type: 'string', description: 'What you want to know.' },
+    },
+    required: ['question'],
+    additionalProperties: false,
+  },
+};
+
 const PIN_TOOL = {
   type: 'function',
   name: 'alp_pin',
@@ -424,7 +448,7 @@ const ISSUE_TOOL = {
 
 const TASK_ACTIONS = ['create', 'update', 'link', 'start', 'close', 'reopen', 'gate', 'clear', 'pour', 'formulas', 'show', 'list', 'ready'] as const;
 type TaskAction = typeof TASK_ACTIONS[number];
-const TASK_PAST: Record<string, string> = { create: 'created', update: 'updated', link: 'linked', start: 'started', close: 'closed', reopen: 'reopened', gate: 'gated', clear: 'cleared a gate of', delegate: 'delegated', submit: 'submitted', release: 'released', pour: 'poured' };
+const TASK_PAST: Record<string, string> = { create: 'created', update: 'updated', link: 'linked', start: 'started', close: 'closed', reopen: 'reopened', gate: 'gated', clear: 'cleared a gate of', delegate: 'delegated', submit: 'submitted', release: 'released', pour: 'poured', orphaned: 'reopened (its assignment ended with alpd)' };
 const TASK_FIELDS: Record<TaskAction, string[]> = {
   create: ['title', 'description', 'type', 'priority', 'labels', 'paths', 'parent', 'blockedBy', 'discoveredFrom'],
   update: ['id', 'title', 'description', 'type', 'priority', 'labels', 'paths', 'note'],
@@ -555,6 +579,15 @@ function parseHandoff(args: any): Handoff | string {
 const errorData = (error: unknown) => ({
   message: error instanceof Error ? error.message : String(error),
 });
+
+/** The environment a native harness starts with: the host's, without variables that would tie it to the host's own agent session. */
+function nativeEnvironment(options: RuntimeOptions, extra: Record<string, string> = {}) {
+  const environment: NodeJS.ProcessEnv = { ...(options.environment ?? process.env), ...extra };
+  for (const key of Object.keys(environment)) {
+    if (/^(PASEO_|CODEX_THREAD_ID$|CODEX_INTERNAL_|CODEX_PARENT_|CLAUDE_CODE_|ANTHROPIC_AGENT_)/.test(key)) delete environment[key];
+  }
+  return environment;
+}
 
 function createTransport(
   options: RuntimeOptions,
@@ -687,6 +720,7 @@ function nativeSessionConfig(
       `At most ${mapping.workflow.maxPeers} peers may run concurrently. Concurrent peers must be read-only or isolated: pass isolation "worktree" to give a writing peer its own git worktree. ` +
       'A worktree result lists its branch and changed files; apply it with alp_merge (uncommitted, conflicts left as markers) or drop it with alp_discard, then verify. ' +
       'Writers in this shared checkout run one at a time. ' +
+      'To learn why a finished assignment did something, ask it with alp_recall rather than guessing from its handoff. ' +
       'Do not run shell/file mutations in parallel with delegation. ' +
       'Include scope, constraints, verification, and required handoff in task. ' +
       'Child inherits your mode unless you request read-only. ' +
@@ -787,7 +821,7 @@ function nativeSessionConfig(
           },
         ]
       : []),
-      ...(targets.length ? [WAIT_TOOL, MERGE_TOOL, DISCARD_TOOL] : []),
+      ...(targets.length ? [WAIT_TOOL, MERGE_TOOL, DISCARD_TOOL, RECALL_TOOL] : []),
       ...(targets.length || parentAgent ? [SEND_TOOL] : []),
       ...(parentAgent ? [HANDOFF_TOOL] : []),
       ...(supervised ? [LESSON_TOOL, SKILL_TOOL] : []),
@@ -818,6 +852,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
   const listeners = new Set<(envelope: Envelope) => void>();
   const epoch = randomUUID();
+  /** Finished assignments whose native threads alp_recall can question. */
+  const recalls = createRecallBook(options.recallFile);
   /** Write leases: one writing assignment per checkout across all trees, unless nested under the holder. */
   const leases = new Map<string, { assignment: string; agent: string }>();
   const worktreeRoot = options.worktreeDir ?? path.join(os.tmpdir(), 'alp-worktrees');
@@ -1267,6 +1303,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       : entry.event === 'lesson' ? `${entry.agent} recorded a ${entry.scope} lesson: ${clip(entry.lesson)}`
       : entry.event === 'skill' ? `${entry.agent} saved skill ${entry.name} for ${entry.roles.join(', ')} with the user's approval`
       : entry.event === 'task' ? `${entry.agent} ${TASK_PAST[entry.action] ?? entry.action} task ${entry.id} "${clip(entry.title, 120)}"${entry.status ? ` (now ${entry.status})` : ''}${entry.detail ? `: ${clip(entry.detail)}` : ''}`
+      : entry.event === 'recall' ? `${entry.agent} recalled ${entry.recalled} assignment ${entry.assignmentId}: ${clip(entry.question)}`
       : entry.event === 'issue' ? `${entry.action === 'create' ? `opened issue "${clip(entry.title, 200)}"` : `commented on issue #${entry.issue}`} in ${entry.repo} with the user's approval: ${entry.url}`
       : entry.event?.startsWith('worktree.') ? `${entry.event.slice('worktree.'.length)} worktree of ${entry.assignmentId} (${entry.branch})${entry.status ? `: ${entry.status}` : ''}`
       : undefined;
@@ -1433,6 +1470,134 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     } catch (error) {
       return toolResult(false, { error: errorData(error).message });
     }
+  }
+
+  const sameDirectory = async (a: string, b: string) => a === b || (await realpath(a).catch(() => a)) === (await realpath(b).catch(() => b));
+
+  /** The recallable assignment named, or the last one that worked on a task of the project. */
+  async function findRecall(target: { assignmentId?: string; taskId?: string; projectRoot?: string }) {
+    const entries = await recalls.all();
+    if (target.assignmentId) return entries.find(entry => entry.assignmentId === target.assignmentId);
+    for (const entry of entries.reverse()) {
+      if (entry.taskId === target.taskId && (!target.projectRoot || await sameDirectory(entry.project, target.projectRoot))) return entry;
+    }
+    return undefined;
+  }
+
+  /** Forks a finished assignment's native thread read-only, asks it one question, and drops the fork. */
+  async function askRecalled(entry: RecallEntry, asker: string, question: string) {
+    let cwd = entry.cwd;
+    let made = false;
+    if (!(await stat(cwd).then(info => info.isDirectory(), () => false))) {
+      // Claude finds a session by the directory it ran in; a removed worktree is recreated empty for the fork.
+      if (entry.runtime === 'claude') { await mkdir(cwd, { recursive: true }); made = true; } else cwd = entry.project;
+    }
+    const transport = createTransport(options, entry.runtime, cwd, nativeEnvironment(options));
+    let answer = '';
+    let timer: NodeJS.Timeout | undefined;
+    const done = new Promise<void>((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`No answer within ${RECALL_TIMEOUT_MS / 1000} s`)), RECALL_TIMEOUT_MS);
+      transport.onNotification((method, params) => {
+        if (method === 'item/completed' && params?.item?.type === 'agentMessage' && typeof params.item.text === 'string') answer = params.item.text;
+        if (method === 'turn/completed') {
+          if (params?.turn?.status === 'failed') reject(new Error(params.turn.error?.message ?? 'The recalled session failed to answer'));
+          else resolve();
+        }
+      });
+      transport.onFailure(error => reject(error instanceof Error ? error : new Error(String(error))));
+    });
+    done.catch(() => {});
+    transport.onRequest?.(async method =>
+      method === 'item/tool/call' ? toolResult(false, { error: 'ALP tools are unavailable in a recall; answer the question' })
+      : method === 'item/permission/request' ? { allow: false, message: 'A recall only reads' }
+      : { decision: 'decline' });
+    try {
+      await transport.initialize();
+      const forked = await transport.request('thread/fork', {
+        threadId: entry.threadId, cwd, model: entry.model, sandbox: 'read-only', approvalPolicy: 'never', ephemeral: true,
+        // Codex forks an ephemeral thread only without returning its history, which ALP does not need.
+        excludeTurns: true,
+        // Claude starts the fork as a new query; Codex keeps the thread's own instructions and tools.
+        ...(entry.runtime === 'claude' ? { thinking: entry.thinking ?? 'medium', developerInstructions: `You are the ${entry.agent} agent of ALP, answering questions about an assignment you finished.`, mcpServers: {}, dynamicTools: [] } : {}),
+      });
+      await transport.request('turn/start', {
+        threadId: forked.thread.id,
+        input: [{ type: 'text', text: recallPrompt(asker, question), text_elements: [] }],
+        ...(entry.thinking ? { effort: entry.thinking } : {}),
+        approvalPolicy: 'never',
+        sandboxPolicy: { type: 'readOnly', networkAccess: false },
+      });
+      await done;
+      return answer.trim();
+    } finally {
+      clearTimeout(timer);
+      await transport.close().catch(() => {});
+      if (made) await rm(cwd, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  async function recallTool(sessionId: string, session: Session, args: unknown) {
+    if (!plainObject(args, ['assignmentId', 'taskId', 'question']) || typeof args.question !== 'string' || !args.question.trim() || args.question.length > RECALL_QUESTION_CHARS ||
+      (typeof args.assignmentId === 'string') === (typeof args.taskId === 'string')) {
+      return toolResult(false, { error: `Pass a question of at most ${RECALL_QUESTION_CHARS} characters, and either assignmentId or taskId` });
+    }
+    if (args.taskId !== undefined && (session.parent || session.mapping.agent.name !== 'main')) return toolResult(false, { error: 'Only main recalls by task; pass the assignmentId from the result' });
+    if (args.assignmentId !== undefined && sessions.has(args.assignmentId)) return toolResult(false, { error: 'That assignment is still running; ask it with alp_send' });
+    const project = session.mapping.agent.projectRoot;
+    const entry = await findRecall({ assignmentId: args.assignmentId, taskId: args.taskId, projectRoot: project });
+    // A root of the project may ask any assignment made there; any other requester only those it or its assignments started.
+    if (!entry || !(await sameDirectory(entry.project, project)) || (session.parent && !entry.requesters.includes(sessionId))) {
+      return toolResult(false, { error: `${args.taskId ? `No recallable assignment worked on ${args.taskId}` : `No recallable assignment ${args.assignmentId} of yours`}; assignments stay recallable for ${RECALL_KEEP_MS / 86_400_000} days` });
+    }
+    try {
+      const answer = await askRecalled(entry, session.mapping.agent.name, args.question);
+      runLog(rootOf(sessionId), { event: 'recall', agent: session.mapping.agent.name, assignmentId: entry.assignmentId, recalled: entry.agent, question: clip(args.question, 500), answer: clip(answer, 500) });
+      return toolResult(true, { assignmentId: entry.assignmentId, agent: entry.agent, ...(entry.taskId ? { taskId: entry.taskId } : {}), finishedAt: entry.finishedAt, answer });
+    } catch (error) {
+      return toolResult(false, { assignmentId: entry.assignmentId, error: errorData(error).message });
+    }
+  }
+
+  let forgetting = Promise.resolve();
+
+  /** Deletes the native threads of assignments past their recall time, one transport per runtime. */
+  function forgetExpired() {
+    forgetting = forgetting.then(async () => {
+      const gone = await recalls.expire();
+      for (const kind of new Set(gone.map(entry => entry.runtime))) {
+        const transport = createTransport(options, kind, os.tmpdir(), nativeEnvironment(options));
+        transport.onFailure(() => {});
+        try {
+          await transport.initialize();
+          for (const entry of gone.filter(candidate => candidate.runtime === kind)) await transport.request('thread/delete', { threadId: entry.threadId }).catch(() => {});
+        } catch {}
+        finally { await transport.close().catch(() => {}); }
+      }
+    }).catch(() => {});
+    return forgetting;
+  }
+
+  /** Projects whose tasks this runtime checked for assignments an earlier alpd left behind. */
+  const orphanChecks = new Map<string, Promise<void>>();
+
+  /**
+   * Once per project: tasks an assignment of an earlier alpd held go back to open,
+   * since that assignment ended with it. Another live alpd's assignments are left alone.
+   */
+  function releaseOrphansOnce(project: string, rootId: string) {
+    const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (error: any) { return error?.code === 'EPERM'; } };
+    const check = orphanChecks.get(project) ?? releaseOrphans(project,
+      assignee => assignee.epoch !== epoch && !(assignee.pid && assignee.pid !== process.pid && alive(assignee.pid)),
+      async assignee => await branchExists(project, `alp/${assignee.assignment}`) ? `work kept on branch alp/${assignee.assignment}` : undefined,
+      'alpd',
+    ).then(released => {
+      for (const task of released) {
+        touchTask(rootId, task.id);
+        runLog(rootId, { event: 'task', action: 'orphaned', agent: 'alpd', id: task.id, title: task.title, status: task.status, detail: task.log.at(-1)?.note ?? 'its assignment ended with an earlier alpd' });
+      }
+    }, () => {});
+    orphanChecks.set(project, check);
+    return check;
   }
 
   const gateChecks = new Map<string, number>();
@@ -1904,6 +2069,15 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     };
 
     await closeSession(assignment.id);
+    // Its native thread stays on disk, so its requesters can ask it about its work later.
+    if (child?.threadId && child.mapping.keepThread) {
+      void recalls.add({
+        assignmentId: assignment.id, rootId: assignment.rootId, requesters: lineage(parentId), agent: assignment.agent,
+        project: child.mapping.agent.projectRoot, runtime: child.runtimeKind, threadId: child.threadId, cwd: child.mapping.workdir,
+        model: child.mapping.model, ...(child.mapping.thinking ? { thinking: child.mapping.thinking } : {}),
+        ...(assignment.taskId ? { taskId: assignment.taskId } : {}), status: state, finishedAt: new Date().toISOString(),
+      }).then(forgetExpired);
+    }
     if (assignment.copy) {
       if (assignment.escapes?.length) result.copyWarning = `${assignment.agent} ran commands in your tree, not its copy; they may have changed files there: ${assignment.escapes.join('; ')}`;
       await removeCopy(assignment.copy).catch(() => {});
@@ -1951,7 +2125,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
 
     if (
-      !['alp_delegate', 'alp_handoff', 'alp_wait', 'alp_send', 'alp_ask', 'alp_merge', 'alp_discard', 'alp_pin', 'alp_board', 'alp_unpin', 'alp_lesson', 'alp_skill', 'alp_issue', 'alp_task'].includes(params.tool) ||
+      !['alp_delegate', 'alp_handoff', 'alp_wait', 'alp_send', 'alp_ask', 'alp_merge', 'alp_discard', 'alp_recall', 'alp_pin', 'alp_board', 'alp_unpin', 'alp_lesson', 'alp_skill', 'alp_issue', 'alp_task'].includes(params.tool) ||
       params.namespace != null ||
       typeof params.callId !== 'string'
     ) {
@@ -1979,6 +2153,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       : params.tool === 'alp_pin' ? pinTool(sessionId, session, args)
       : params.tool === 'alp_board' ? boardTool(session, args)
       : params.tool === 'alp_unpin' ? unpinTool(sessionId, session, args)
+      : params.tool === 'alp_recall' ? recallTool(sessionId, session, args)
       : params.tool === 'alp_merge' || params.tool === 'alp_discard' ? worktreeTool(sessionId, session, args, params.tool === 'alp_merge' ? 'merge' : 'discard')
       : Promise.resolve(params.tool === 'alp_send' ? sendTool(sessionId, session, args) : recordHandoff(session, args));
 
@@ -2459,7 +2634,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     });
     try {
       if (task) {
-        const started = await startTask(project, task.id, { agent: args.agent, assignment: childId }, session.mapping.agent.name);
+        const started = await startTask(project, task.id, { agent: args.agent, assignment: childId, pid: process.pid, epoch }, session.mapping.agent.name);
         assignment.taskId = started.id;
         task = started;
         touchTask(rootId, started.id);
@@ -2481,6 +2656,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         ...inherited,
         ...(assignment.worktree ? { workdir: assignment.worktree.workdir } : assignment.copy ? { workdir: assignment.copy.workdir, copy: true, copyOf: session.mapping.workdir } : {}),
         persist: false,
+        keepThread: true,
         workflow: session.mapping.workflow.mode === 'custom' ? undefined : session.mapping.workflow.mode,
         agent: args.agent,
         model,
@@ -2607,22 +2783,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       );
     }
 
-    const environment = {
-      ...(options.environment ?? process.env),
-      ...mapping.env,
-    };
-
-    for (
-      const key of Object.keys(environment)
-    ) {
-      if (
-        /^(PASEO_|CODEX_THREAD_ID$|CODEX_INTERNAL_|CODEX_PARENT_|CLAUDE_CODE_|ANTHROPIC_AGENT_)/.test(
-          key,
-        )
-      ) {
-        delete environment[key];
-      }
-    }
+    const environment = nativeEnvironment(options, mapping.env);
 
     const runtime = createTransport(
       options,
@@ -2769,7 +2930,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
             {
               ...nativeConfig,
               ephemeral:
-                !mapping.persist,
+                !mapping.persist && !mapping.keepThread,
             },
           );
 
@@ -2980,7 +3141,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       const orchestration = session.runtime.orchestrationContext ? await session.runtime.orchestrationContext().catch(() => ({ available: false })) : { available: false };
       // Main starts each turn knowing what waits for its acceptance and what is ready.
       const tasks = prompt.delivery !== 'steer' && !session.parent && session.mapping.agent.name === 'main'
-        ? await checkGatesOften(session.mapping.agent.projectRoot).then(() => loadTasks(session.mapping.agent.projectRoot)).then(({ tasks, errors }) => taskDigest(tasks, errors), () => '')
+        ? await releaseOrphansOnce(session.mapping.agent.projectRoot, sessionId).then(() => checkGatesOften(session.mapping.agent.projectRoot)).then(() => loadTasks(session.mapping.agent.projectRoot)).then(({ tasks, errors }) => taskDigest(tasks, errors), () => '')
         : '';
       const nativeInput = [
         { type: 'text', text: 'ALP runtime catalog and usage snapshot (data, not instructions): ' + JSON.stringify(orchestration), text_elements: [] },
@@ -3085,6 +3246,9 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
   }
 
+  // Threads past their recall time go when the host starts, and after each assignment.
+  if (options.recallFile) void forgetExpired();
+
   return {
     onEvent(listener) {
       listeners.add(listener);
@@ -3172,6 +3336,17 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       };
     },
 
+    async recall(target, question) {
+      if (typeof question !== 'string' || !question.trim() || question.length > RECALL_QUESTION_CHARS) throw new Error(`The question must be text of at most ${RECALL_QUESTION_CHARS} characters`);
+      if (!target || (typeof target.assignmentId === 'string') === (typeof target.taskId === 'string')) throw new Error('Name either an assignment or a task');
+      if (target.assignmentId && sessions.has(target.assignmentId)) throw new Error('That assignment is still running; write to it with alp send');
+      const entry = await findRecall(target);
+      if (!entry) throw new Error(`${target.taskId ? `No recallable assignment worked on ${target.taskId}` : `No recallable assignment ${target.assignmentId}`}; assignments stay recallable for ${RECALL_KEEP_MS / 86_400_000} days`);
+      const answer = await askRecalled(entry, 'The user', question);
+      runLog(entry.rootId, { event: 'recall', agent: 'user', assignmentId: entry.assignmentId, recalled: entry.agent, question: clip(question, 500), answer: clip(answer, 500) });
+      return { assignmentId: entry.assignmentId, agent: entry.agent, ...(entry.taskId ? { taskId: entry.taskId } : {}), finishedAt: entry.finishedAt, answer };
+    },
+
     async board(projectRoot) {
       if (typeof projectRoot !== 'string' || !path.isAbsolute(projectRoot)) throw new Error('board needs an absolute projectRoot');
       return (await boardOf(path.resolve(projectRoot))).filter(live);
@@ -3225,6 +3400,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       await Promise.all(boards.values());
       await boardWrites;
       await runLogWrites;
+      await forgetting;
+      await recalls.flush();
 
       listeners.clear();
     },

@@ -33,6 +33,8 @@ export type SessionSpec = {
   mcpServers?: Record<string, HostMcpServer>;
   /** Keep the native thread so the session can be resumed. */
   persist?: boolean;
+  /** Keep the native thread on disk though the session cannot be resumed: an assignment, which alp_recall may question later. */
+  keepThread?: boolean;
   restore?: { agent: string; threadId: string; runtime?: string; model?: string; workflow?: { mode: string; maxPeers: number; supervisor?: boolean } };
   /** Where the native harness works, when not the project root: an assignment's git worktree. ALP files are still read from cwd. */
   workdir?: string;
@@ -150,6 +152,6 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
     copy: Boolean(spec.copy && spec.workdir),
     ...(spec.copy && spec.copyOf ? { copyOf: spec.copyOf } : {}),
     instructions: [compiled.material.instructions, learned, spec.systemPrompt].filter(Boolean).join('\n\n'),
-    mcp, env: { ...spec.env }, persist: spec.persist ?? false,
+    mcp, env: { ...spec.env }, persist: spec.persist ?? false, keepThread: spec.keepThread ?? false,
   };
 }

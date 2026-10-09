@@ -360,6 +360,16 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
       return { pins: await runtime.board(projectRoot) };
     },
 
+    /** Asks a finished assignment, or the last one on a task, about its work (ALPD §27). */
+    async 'assignment.recall'(_connection, { assignmentId, taskId, projectRoot, question } = {}) {
+      if (projectRoot !== undefined && (typeof projectRoot !== 'string' || !path.isAbsolute(projectRoot))) throw new RpcError(-32602, 'projectRoot must be absolute');
+      try {
+        return await runtime.recall({ assignmentId, taskId, projectRoot }, question);
+      } catch (error: any) {
+        throw new RpcError(ERROR.failed, error?.message ?? String(error));
+      }
+    },
+
     'question.answer'(_connection, { questionId, text, dismiss = false, reason }) {
       if (typeof questionId !== 'string') throw new RpcError(-32602, 'questionId is required');
       if (dismiss !== true && typeof text !== 'string') throw new RpcError(-32602, 'text or dismiss is required');

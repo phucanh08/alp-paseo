@@ -14,7 +14,7 @@ import { findFormula, formulaDirs, listFormulas, pourFormula } from './core/form
 import { commandDecision, profileFor } from './core/permissions.js';
 import { discoverAgents } from './core/resolver.js';
 import { parse as toml } from 'smol-toml';
-import { addGate, blockersOf, checkGates, childrenOf, closeTask, compactTasks, createTask, describeGate, gateOpen, gatesOf, linkTask, listTasks, loadTasks, readyTasks, reopenTask, resolveGate, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
+import { addGate, blockersOf, checkGates, childrenOf, closeTask, compactTasks, createTask, describeGate, gateOpen, gatesOf, isTaskId, linkTask, listTasks, loadTasks, readyTasks, reopenTask, resolveGate, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
 import { alpHome, connect, ensureDaemon, lockAlive, readLock } from './client/index.js';
 
 const USAGE = `Usage:
@@ -45,6 +45,7 @@ const USAGE = `Usage:
   alp task dep <add|rm> <id> [--after ID]... [--parent ID] [--related ID]...
   alp task gate add <id> --human "question" | --timer +2h|ISO | --pr N|owner/repo#N | --run N|owner/repo#N
   alp task gate <clear|rm> <id> <gate> [-m note]
+  alp recall <assignment|task> [--project DIR] [--json] <question>   ask a finished assignment about its work
   alp interrupt <session>`;
 
 const DAEMON_ENTRY = fileURLToPath(new URL('../dist/alpd.js', import.meta.url));
@@ -481,7 +482,7 @@ async function board(args) {
   }
 }
 
-const TASK_PAST = { create: 'created', update: 'updated', link: 'linked', start: 'started', close: 'closed', reopen: 'reopened', delegate: 'delegated', submit: 'submitted', release: 'released', gate: 'gated', clear: 'cleared a gate of' };
+const TASK_PAST = { create: 'created', update: 'updated', link: 'linked', start: 'started', close: 'closed', reopen: 'reopened', delegate: 'delegated', submit: 'submitted', release: 'released', gate: 'gated', clear: 'cleared a gate of', orphaned: 'reopened (its assignment ended with alpd)' };
 const STATUS_MARK = { open: '○', in_progress: '◐', review: '◑', closed: '●' };
 
 /** The ALP project a task command works on: --project, or the current directory. */
@@ -757,6 +758,23 @@ function printTask(task, tasks) {
   }
 }
 
+/** alp recall: ask a finished assignment, or the last one on a task, what it did and why. */
+async function recall(args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { project: { type: 'string' }, json: { type: 'boolean' } } });
+  const [target, ...words] = positionals;
+  const question = words.join(' ').trim();
+  if (!target || !question) throw new UsageError();
+  const byTask = isTaskId(target);
+  const client = await running();
+  const answer = await client.request('assignment.recall', {
+    ...(byTask ? { taskId: target, projectRoot: await taskProject(values.project) } : { assignmentId: target }),
+    question,
+  }).finally(() => client.close());
+  if (values.json) { console.log(JSON.stringify(answer)); return; }
+  console.log(`${answer.agent} (assignment ${answer.assignmentId}${answer.taskId ? `, task ${answer.taskId}` : ''}, finished ${ago(answer.finishedAt)} ago):`);
+  console.log(answer.answer);
+}
+
 async function interrupt(args) {
   if (args.length !== 1) throw new UsageError();
   const client = await running();
@@ -764,7 +782,7 @@ async function interrupt(args) {
   console.log('Interrupted');
 }
 
-const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, interrupt };
+const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, recall, interrupt };
 const [command, ...args] = process.argv.slice(2);
 try {
   if (!Object.hasOwn(commands, command)) throw new UsageError();

@@ -90,6 +90,12 @@ export async function checkoutKey(directory: string) {
   return (await checkoutOf(directory)) ?? realpath(directory).catch(() => path.resolve(directory));
 }
 
+/** Whether the checkout containing `directory` has a local branch of that name. */
+export async function branchExists(directory: string, branch: string) {
+  const result = await git(directory, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).catch(() => undefined);
+  return result?.code === 0;
+}
+
 /** Creates a worktree for `id` from the current state of the checkout containing `workdir`. */
 export async function createWorktree(workdir: string, root: string, id: string): Promise<Worktree> {
   const checkout = await checkoutOf(workdir);

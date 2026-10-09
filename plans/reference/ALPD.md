@@ -819,3 +819,53 @@ Goal: what a profile's base promises holds at the OS level, and a reviewer can b
   - That run found the first copy built on `stash create`, so `git diff` there was empty. The copy now applies the changes on HEAD, and the next reviewer saw the diff.
   - A Codex reviewer whose brief named the real root ran `npm test` there and wrote into the tree. The probe confirmed Codex's sandbox behavior. After the notes and the escape warning, the same prompt kept the reviewer in its copy, with no escape.
   - With no permission settings, a Claude reviewer ran `node --test` in its read-only floor. Before step 3, Bash was refused. Its `npm test` failed with EPERM writing `.last-test`, as the floor should.
+
+## 27. Recovery after a crash, and recall, as built (2026-10-09)
+
+Goal (D20, step 1): work an assignment held is not stuck when alpd stops under it, and a requester can ask a finished assignment why it did something instead of guessing from its handoff. Both ideas come from Gas Town: its hooks keep work through crashes, and `gt seance` talks to a predecessor session.
+
+**Orphaned tasks.**
+- `startTask` records the assignment's `pid` (alpd's process) and `epoch` (the runtime instance) on the assignee, and its log entry names the assignment.
+- `releaseOrphans(projectRoot, isOrphan, describe, by)` (core) puts back to `open` every `in_progress` task held by an assignment that `isOrphan` says is gone.
+  - It logs `orphaned` with the agent, the assignment and a note, and keeps the last handoff.
+  - It checks without the lock first, so a project without tasks gets no tasks directory.
+- The runtime runs it once per project, before main's first task digest after it starts (`releaseOrphansOnce`).
+  - An assignee is orphaned when its epoch is not this runtime's, unless its pid is another live process (another alpd).
+  - Tasks main took for itself have no assignment and are left alone.
+  - The note names `alp/<assignment>` when that branch exists, since `reclaimWorktrees` committed the work there at start.
+  - Each release goes to the run log as task action `orphaned`, and to the supervisor's digest.
+- `taskDigest` lists an open task whose last log entry is `orphaned` as `- interrupted: …; delegate it again` instead of under ready, until the task is touched again.
+
+**Recall.**
+- Assignments open with `keepThread`, so their native thread is not ephemeral (Codex `ephemeral: false`, Claude `persistSession`), though they still cannot be resumed as roots.
+- `finishAssignment` records each in the recall book (`recall.ts`, `RuntimeOptions.recallFile`, alpd: `$ALP_HOME/state/recall.json`). An entry holds:
+  - the assignment, its root, and its requesters (the parent's lineage);
+  - the agent, project, runtime, thread, cwd, model and thinking;
+  - its task, its status, and when it finished.
+- `alp_recall { assignmentId | taskId, question }` is offered to every agent that delegates.
+  - A root may recall any assignment of its project. Another requester may recall only entries whose requesters include it. Only main recalls by task.
+  - Running assignments are refused.
+- `askRecalled` opens a separate transport and sends `thread/fork` with these settings:
+  - read-only, approval `never`, ephemeral;
+  - Codex needs `excludeTurns: true` for an ephemeral fork;
+  - Claude gets an empty tool set and a short system prompt.
+- It then sends one `turn/start` with `recallPrompt` in a read-only sandbox, and returns the last agent message.
+  - Tool calls and approvals from the fork are refused.
+  - The transport closes after the turn, a failure, or 300 s.
+  - A cwd that is gone falls back to the project on Codex. On Claude it is recreated empty for the fork and removed after, because Claude locates a session by the directory it ran in.
+- `ClaudeTransport` gained `thread/fork` (resume with `forkSession` and a new `sessionId`) and `thread/delete` (`deleteSession`). Codex speaks both natively.
+- `forgetExpired` deletes the threads of entries older than 14 days, or beyond the newest 1000, with one transport per runtime. It runs when the runtime starts with a recall file, and after each recorded assignment.
+- The CLI `alp recall <assignment|task> question` calls the RPC `assignment.recall`, which calls `AlpRuntime.recall`. The user may recall any entry.
+
+**Evidence.**
+- `test/recall.test.js` covers:
+  - `releaseOrphans` and the interrupted digest line;
+  - main's first turn releasing an earlier alpd's task (with its branch) and a legacy task without a pid, but not a live alpd's;
+  - new assignees carrying pid and epoch;
+  - `alp_recall` by task and by assignment: fork parameters, read-only turn, refused tools and approvals, the answer;
+  - refusals for missing, running and out-of-line assignments, and by task for lead;
+  - the user's `recall`, a failed fork, and expiry deleting Codex and Claude threads at start.
+- Live on 2026-10-09 against Codex 0.160.1 and Claude Code:
+  - A probe forked a non-ephemeral thread on each runtime, and the fork recalled a code word and its reason. `thread/delete` then removed the original, and a second fork found nothing. The probe also found Codex's `excludeTurns` requirement.
+  - Through alpd, with an isolated `ALP_HOME`: main delegated a task to a Codex peer. `alp recall <task>` returned the peer's actual rule for its number.
+  - A second delegation in a worktree was killed with `kill -9` on alpd mid-assignment. The next `alp run` reclaimed the worktree onto `alp/<assignment>`, put the task back to open, and main's turn showed the interrupted line with that branch. The branch held the peer's partial file.

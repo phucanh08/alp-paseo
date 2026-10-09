@@ -49,7 +49,7 @@ async function run(home: string) {
   // Review copies of interrupted assignments hold nothing to keep.
   const copyDir = path.join(home, 'copies');
   await reclaimCopies(copyDir).catch(() => 0);
-  const runtime = createAlpRuntime({ templates, runLogDir, worktreeDir, copyDir, boardDir: path.join(home, 'boards'), libraryDir: home });
+  const runtime = createAlpRuntime({ templates, runLogDir, worktreeDir, copyDir, boardDir: path.join(home, 'boards'), libraryDir: home, recallFile: path.join(home, 'state', 'recall.json') });
   const store = createStore(path.join(home, 'state'));
   let stopping: Promise<void> | undefined;
   const shutdown = (code = 0) => {

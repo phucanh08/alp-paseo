@@ -417,7 +417,7 @@ export function startTask(projectRoot, id, assignee, by, options) {
     const rework = task.status === 'review';
     task.status = 'in_progress';
     task.assignee = { ...assignee, since: now() };
-    addLog(task, by, rework ? 'reworked' : 'started', { to: assignee.agent });
+    addLog(task, by, rework ? 'reworked' : 'started', { to: assignee.agent, ...(assignee.assignment ? { assignment: assignee.assignment } : {}) });
   }, options);
 }
 
@@ -486,6 +486,36 @@ export function releaseTask(projectRoot, id, { assignment, handoff, agent, reaso
   });
 }
 
+/**
+ * After alpd stopped while assignments worked: puts back to open the tasks whose
+ * assignment `isOrphan` says is gone, noting what `describe` says became of its
+ * work. Their last handoff stays. Touches nothing when no task is in progress.
+ * @param {(assignee: { agent: string, assignment: string, pid?: number, epoch?: string }) => boolean} isOrphan
+ * @param {(assignee: { agent: string, assignment: string }) => Promise<string | undefined>} describe
+ */
+export async function releaseOrphans(projectRoot, isOrphan, describe, by) {
+  const orphaned = task => task.status === 'in_progress' && !!task.assignee?.assignment && isOrphan(task.assignee);
+  // Checked first without the lock, so a project without tasks gets no tasks directory.
+  if (!(await loadTasks(projectRoot)).tasks.some(orphaned)) return [];
+  return locked(projectRoot, async () => {
+    const released = [];
+    for (const task of (await loadTasks(projectRoot)).tasks.filter(orphaned)) {
+      const { agent, assignment } = task.assignee;
+      const note = await describe(task.assignee);
+      task.status = 'open';
+      task.assignee = null;
+      addLog(task, by, 'orphaned', { agent, assignment, ...(note ? { note } : {}) });
+      task.rev += 1;
+      task.updatedAt = now();
+      released.push(await save(projectRoot, task));
+    }
+    return released;
+  });
+}
+
+/** The orphaned entry of a task alpd put back to open and nobody has touched since. */
+export const orphanedEntry = task => task.status === 'open' && task.log.at(-1)?.event === 'orphaned' ? task.log.at(-1) : undefined;
+
 const DIGEST_CHARS = 2000;
 const DIGEST_READY = 8;
 
@@ -499,13 +529,15 @@ export function taskDigest(tasks, errors = []) {
   const line = task => `${task.id} P${task.priority} ${task.title}`;
   const review = tasks.filter(task => task.status === 'review').sort(rank);
   const working = tasks.filter(task => task.status === 'in_progress').sort(rank);
-  const ready = readyTasks(tasks);
+  const interrupted = tasks.filter(task => orphanedEntry(task)).sort(rank);
+  const ready = readyTasks(tasks).filter(task => !orphanedEntry(task));
   const blocked = tasks.filter(task => task.status === 'open' && task.type !== 'epic' && blockersOf(task, tasks, index).length).length;
   // Tasks only a gate holds back; a human gate waits for the user, the others clear by themselves.
   const gated = tasks.filter(task => task.status === 'open' && task.type !== 'epic' && !blockersOf(task, tasks, index).length && gatesOf(task, tasks, index).length).sort(rank);
   const lines = [
     ...review.map(task => `- review: ${line(task)} ← ${task.handoff?.agent ?? task.assignee?.agent ?? 'unknown'}, handoff ${task.handoff?.outcome ?? 'none'}; accept with close, or send it back`),
     ...working.map(task => `- in progress: ${line(task)} ← ${task.assignee?.agent ?? 'unknown'}`),
+    ...interrupted.map(task => { const entry = orphanedEntry(task); return `- interrupted: ${line(task)} ← ${entry.agent}; alpd stopped while it worked${entry.note ? `, ${entry.note}` : ''}; delegate it again`; }),
     ...gated.map(task => `- waiting on ${gatesOf(task, tasks, index).join('; ')}: ${line(task)}`),
     ...ready.slice(0, DIGEST_READY).map(task => `- ready: ${line(task)}`),
   ];
