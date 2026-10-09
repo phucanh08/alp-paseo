@@ -268,7 +268,7 @@ test('alpd reopens a tree by itself after a restart and its assignment continues
   assert.match(mainAgain.started[0].params.input.at(-1).text, /Worked/);
   mainAgain.finish('Reported');
   await until(() => !second.runtime.snapshot(session.id), 'the unwatched root to close');
-  const records = await second.store.list();
-  assert.equal(records.find(record => record.id === delegated.assignmentId).status, 'closed');
+  // The store records the close after the root goes.
+  await until(async () => (await second.store.list()).find(record => record.id === delegated.assignmentId)?.status === 'closed', 'the assignment record to close');
   assert.ok((await stat(options.liveFile)).isFile());
 });
