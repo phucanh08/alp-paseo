@@ -27,6 +27,8 @@ const BLOCKING_EVENTS = ['handoff', 'task.close', 'merge'];
 const ROLES = ['lead', 'peer', 'advisor', 'reviewer'];
 const MODES = ['', 'read-only', 'workspace-write', 'full-access'];
 const NAME = /^[\w.-]+$/;
+/** Entries are JSON data; React Native's engine may lack structuredClone. */
+const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 const message = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
 const sourceLabel = (source: string) => source === 'builtin' ? 'built-in' : source;
 
@@ -195,10 +197,10 @@ export function EntryEditor({ theme, compact, scope, kind, entry, lists, actions
   const styles = useMemo(() => makeStyles(theme, compact), [theme, compact]);
   const one = KINDS.find(item => item.kind === kind)!.one;
   const [name, setName] = useState(entry?.name ?? '');
-  const [content, setContent] = useState<Content>(() => structuredClone(entry?.content ?? blank(kind)));
+  const [content, setContent] = useState<Content>(() => clone(entry?.content ?? blank(kind)));
   const [result, setResult] = useState<Record<string, any> | null>(null);
   const own = entry?.source === scope;
-  const update = (change: (draft: Content) => void) => setContent(current => { const draft = structuredClone(current); change(draft); return draft; });
+  const update = (change: (draft: Content) => void) => setContent(current => { const draft = clone(current); change(draft); return draft; });
   const valid = NAME.test(name);
   const onSave = async () => { if (valid && await actions.save(kind, name, content, own ? entry!.revision : null) && !entry) actions.close(); };
   return (
@@ -269,7 +271,7 @@ export function AgentForm({ content, update, lists, styles, theme }: FormProps) 
 
 /** A team with another main: the old main leaves, and the new one takes over its place in the graph. */
 export function withMain(team: Content, main: string): Content {
-  const next = structuredClone(team);
+  const next = clone(team);
   const previous = next.main;
   const graph: Record<string, string[]> = next.delegation ?? {};
   const inherited = previous && previous !== main ? graph[previous] ?? [] : [];
@@ -287,7 +289,7 @@ export function withMain(team: Content, main: string): Content {
 
 /** A team with an agent added as a peer, or removed with its place in the graph. */
 export function withMember(team: Content, agent: string, on: boolean): Content {
-  const next = structuredClone(team);
+  const next = clone(team);
   next.members ??= {};
   next.delegation ??= {};
   if (on) { next.members[agent] = { role: 'peer' }; return next; }
@@ -302,7 +304,7 @@ export function withMember(team: Content, agent: string, on: boolean): Content {
 
 /** A team where `owner` may, or may no longer, delegate to `target`. */
 export function withDelegation(team: Content, owner: string, target: string, on: boolean): Content {
-  const next = structuredClone(team);
+  const next = clone(team);
   next.delegation ??= {};
   const targets = toggle(next.delegation[owner], target, on);
   if (targets.length) next.delegation[owner] = targets; else delete next.delegation[owner];
