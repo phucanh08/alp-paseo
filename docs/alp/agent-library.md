@@ -75,8 +75,36 @@ relative `cwd` is relative to the file's directory.
 - `timeoutSec` is from 1 to 3600.
 - `match` can limit a hook to an `agent` or a task `label`.
 
-ALP checks hook files when an agent names them. It does not run hooks yet (phase 13,
-step 5), so an agent with hooks is refused when a session starts.
+ALP runs an agent's hooks itself, whatever runtime the agent is on (ALPD §45):
+- **When:**
+  - `session.start` when a session of the agent opens;
+  - `turn.end` after each of its turns;
+  - `assignment.start` and `assignment.end` around an assignment it does;
+  - `handoff` when it calls `alp_handoff`;
+  - `task.close` when it closes a task;
+  - `merge` before `alp_merge` applies a worktree change.
+- **How:**
+  - The command runs with `/bin/sh` in the session's directory. The event comes as
+    JSON on stdin, and `ALP_EVENT`, `ALP_SESSION`, `ALP_AGENT`, `ALP_TASK` and
+    `ALP_PROJECT` are set.
+  - It runs in its own process group, which is stopped whole at the timeout (default
+    60 s).
+- **Blocking:** a blocking hook that fails refuses the handoff, the close or the merge.
+  The end of its output (stderr, else stdout) is the reason the agent reads, so it can
+  fix the problem and try again. Other hooks run in the background and only record.
+- **Logging:** each run is in the run log, and `alp log` shows it.
+- **Trust:**
+  - A hook from the project's `.alp/` comes with the repository, so ALP asks you once
+    per workspace before running it ("Trust this workspace" or "Not now").
+  - Once you agree, that project's hooks run from then on without asking, including
+    hooks added or changed later. ALP keeps this in `$ALP_HOME/state/trust.json`.
+  - "Not now" skips the project's hooks for that session's tree, and a blocking one
+    does not block.
+  - `alp trust [--project DIR]` trusts a workspace ahead of time, `alp trust --revoke`
+    forgets it, and `alp trust --list` shows them.
+  - Hooks in your library are always trusted.
+- `alp doctor` lists the hooks agents use, whether the project's are trusted, and
+  hooks whose program is not found.
 
 ## Teams
 

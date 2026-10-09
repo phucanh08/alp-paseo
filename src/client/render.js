@@ -101,6 +101,13 @@ export function renderLog(rootId, entries) {
       case 'human.answer':
         text = `↳ ${entry.questionId} ${entry.outcome}${entry.answer !== undefined ? `: ${entry.answer.split('\n')[0].slice(0, 120)}` : ''}`;
         break;
+      case 'hook':
+        text = entry.skipped ? `↪ ${entry.agent}'s ${entry.on} hook ${entry.hook} skipped: the workspace's hooks are not trusted`
+          : `${entry.blocked ? '⛔' : entry.error || entry.exitCode !== 0 || entry.timedOut ? '✗' : '↪'} ${entry.agent}'s ${entry.on} hook ${entry.hook} ${entry.error ? `could not run: ${entry.error}` : entry.timedOut ? 'timed out' : `exit ${entry.exitCode}`}${entry.durationMs !== undefined ? ` in ${duration(entry.durationMs)}` : ''}${entry.blocked ? ', refused it' : ''}${entry.output ? `: ${entry.output.split('\n')[0].slice(0, 120)}` : ''}`;
+        break;
+      case 'hook.trust':
+        text = `${entry.trusted ? '✓ the user trusts' : '✗ the user did not trust'} the hooks of ${entry.project}${entry.outcome ? ` (${entry.outcome})` : ''}`;
+        break;
       default:
         text = `${entry.event}${entry.branch ? ` ${entry.branch}` : ''}${entry.status ? ` ${entry.status}` : ''}`;
     }

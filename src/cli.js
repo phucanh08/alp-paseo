@@ -21,6 +21,7 @@ import { discoverAgents, libraryEntries } from './core/resolver.js';
 import { listTeams, resolveTeam } from './core/teams.js';
 import { deleteEntry, duplicateEntry, getEntry, renameEntry, saveEntry } from './core/library-edit.js';
 import { testEntry } from './client/library-test.js';
+import { isTrusted, revokeProject, trustProject, trustedProjects } from './core/trust.js';
 import { parse as toml } from 'smol-toml';
 import { addGate, blockersOf, checkGates, childrenOf, closeTask, compactTasks, createTask, describeGate, gateOpen, epicReport, gatesOf, getTask, isTaskId, linkTask, recordVerification, listTasks, loadTasks, readyTasks, reopenTask, resolveGate, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
 import { alpHome, connect, lockAlive, readLock } from './client/index.js';
@@ -52,6 +53,7 @@ const USAGE = `Usage:
   alp <agent|team|skill|mcp|hook> <rm|show> <name> [--project [DIR]] | <cp|mv> <from> <to> [--project [DIR]]
   alp <mcp|hook> test <name> [--project [DIR]]     start the server and list its tools; run the hook with a sample event
             without --project, changes go to your library in ~/.alp; built-in agents and teams are never changed
+  alp trust [--project DIR] | --revoke [--project DIR] | --list [--json]   whether the project's hooks may run
   alp permissions [--project DIR] [--json]   each agent's permission profile
   alp permissions check <agent> "<command>"  what that agent's profile says about a command
   alp tasks [ready] [--all] [--status S] [--label L] [--project DIR] [--json]
@@ -720,6 +722,27 @@ async function editCommand(kind, args) {
   done(result, `${action === 'edit' ? 'Saved' : 'Created'} ${name} in ${where}.`);
 }
 
+/** alp trust: the workspaces whose hooks run without asking (ALPD §45). */
+async function trustCommand(args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { project: { type: 'string' }, revoke: { type: 'boolean' }, list: { type: 'boolean' }, json: { type: 'boolean' } } });
+  if (positionals.length || (values.revoke && values.list)) throw new UsageError();
+  if (values.list) {
+    const rows = await trustedProjects(alpHome());
+    if (values.json) console.log(JSON.stringify(rows));
+    else console.log(rows.length ? rows.map(row => `${row.root}  since ${row.trustedAt.slice(0, 10)} (${row.by})`).join('\n') : 'No workspace is trusted yet; ALP asks before a project\'s hooks first run.');
+    return;
+  }
+  const root = await taskProject(values.project);
+  if (values.revoke) {
+    const was = await revokeProject(alpHome(), root);
+    console.log(was ? `ALP asks again before the hooks of ${root} run.` : `${root} was not trusted.`);
+    return;
+  }
+  if (await isTrusted(alpHome(), root)) { console.log(`${root} is already trusted.`); return; }
+  await trustProject(alpHome(), root, 'alp trust');
+  console.log(`The hooks of ${root} now run without asking, including hooks added or changed later.`);
+}
+
 /** alp teams: each team with where it comes from, its main, members and delegation. */
 async function teamsCommand(args) {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { project: { type: 'string' }, json: { type: 'boolean' } } });
@@ -1100,7 +1123,7 @@ async function interrupt(args) {
   console.log('Interrupted');
 }
 
-const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, doctor, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, agents: args => libraryCommand('agents', args), skills: args => libraryCommand('skills', args), mcp: args => ['add', 'rm', 'mv', 'cp', 'test', 'show', 'edit'].includes(args[0]) ? editCommand('mcp', args) : libraryCommand('mcp', args), hooks: args => libraryCommand('hooks', args), teams: teamsCommand, agent: args => editCommand('agents', args), team: args => editCommand('teams', args), skill: args => editCommand('skills', args), hook: args => editCommand('hooks', args), verify, recall, pause, resume, interrupt };
+const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, doctor, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, agents: args => libraryCommand('agents', args), skills: args => libraryCommand('skills', args), mcp: args => ['add', 'rm', 'mv', 'cp', 'test', 'show', 'edit'].includes(args[0]) ? editCommand('mcp', args) : libraryCommand('mcp', args), hooks: args => libraryCommand('hooks', args), teams: teamsCommand, trust: trustCommand, agent: args => editCommand('agents', args), team: args => editCommand('teams', args), skill: args => editCommand('skills', args), hook: args => editCommand('hooks', args), verify, recall, pause, resume, interrupt };
 const [command, ...args] = process.argv.slice(2);
 try {
   if (!Object.hasOwn(commands, command)) throw new UsageError();

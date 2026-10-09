@@ -8,6 +8,9 @@ import { discoverAgents } from '../core/resolver.js';
 import { CodexTransport } from './transport.js';
 import { ClaudeTransport } from './claude-transport.js';
 import { modes, ORACLE_MODELS, withinMode, writes } from './catalog.js';
+import { runHook } from '../core/hook-run.js';
+import { hookMatches } from '../core/hooks.js';
+import { isTrusted, trustProject } from '../core/trust.js';
 import { LESSONS_FILE, READ_ONLY_AGENTS, resolveSession, type ResolvedSession, type RuntimeKind, type SessionSpec } from './resolve.js';
 import { MAIL_BODY_CHARS, publicEvent, renderMail, takeBatch, USER, type MailEvent } from './mailbox.js';
 import type { AlpEvent, AssignmentSnapshot, Envelope, SessionSnapshot, TreeStatus, TurnOrigin, UserQuestion } from './events.js';
@@ -1127,6 +1130,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
     const turnId = session.active;
     session.active = undefined;
+    void runHooks(sessionId, session, 'turn.end', { turn: { id: turnId, state } });
 
     // Tool calls of the ended turn stop waiting.
     for (const waiter of session.waiters.splice(0)) {
@@ -1375,6 +1379,85 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   });
 
   let runLogWrites = Promise.resolve();
+
+  /** A session's root, also for an assignment already closed. */
+  const rootFor = (sessionId: string, session: Session) => sessions.has(sessionId) ? rootOf(sessionId) : session.parent ? rootOf(session.parent) : sessionId;
+
+  /** Answers about a project's hooks, one question per root tree and project (ALPD §45). */
+  const trustAsks = new Map<string, Promise<boolean>>();
+
+  /**
+   * Whether a project's hooks may run: the user trusts the workspace once, and ALP
+   * records it in $ALP_HOME/state/trust.json; library hooks never ask.
+   */
+  async function hooksTrusted(sessionId: string, session: Session) {
+    const project = session.mapping.agent.projectRoot;
+    if (options.libraryDir && await isTrusted(options.libraryDir, project)) return true;
+    const key = `${rootFor(sessionId, session)}\0${project}`;
+    const pending = trustAsks.get(key);
+    if (pending) return pending;
+    const asked = (async () => {
+      const names = session.mapping.hooks.filter(hook => hook.project).map(hook => `${hook.name} (${hook.event}: ${clip(hook.command, 120)})`);
+      const body = `This project's hooks run shell commands from ${project} on your machine: ${names.join('; ')}. ` +
+        'Trust this workspace\'s hooks? ALP asks once: after you agree, its hooks run without asking, including hooks added or changed later.';
+      const assignment = session.parent ? sessions.get(session.parent)?.assignments.get(sessionId) : undefined;
+      const result = await askUser(sessionId, session, assignment, body, ['Trust this workspace', 'Not now']) as { contentItems: Array<{ text: string }> };
+      let value: any;
+      try { value = JSON.parse(result.contentItems[0].text); } catch { value = {}; }
+      const answer = String(value.answer ?? '').trim().toLowerCase();
+      const trusted = value.status === 'answered' && (answer === 'trust this workspace' || APPROVALS.includes(answer));
+      if (trusted && options.libraryDir) await trustProject(options.libraryDir, project).catch(() => {});
+      runLog(rootFor(sessionId, session), { event: 'hook.trust', project, trusted, ...(value.status !== 'answered' ? { outcome: value.status ?? 'canceled' } : {}) });
+      // A question its turn's end cancelled is asked again at the next hook.
+      if (value.status !== 'answered' && value.status !== 'dismissed') trustAsks.delete(key);
+      return trusted;
+    })();
+    trustAsks.set(key, asked);
+    return asked;
+  }
+
+  /**
+   * Runs a session's hooks for an event (ALPD §45). Hooks that cannot block run in the
+   * background; blocking ones run in turn, and the first lines of a failed one's output
+   * come back as the reason the action is refused.
+   */
+  async function runHooks(sessionId: string, session: Session, event: string, details: Record<string, unknown> = {}, taskId?: string): Promise<string | undefined> {
+    const candidates = session.mapping.hooks.filter(hook => hook.event === event);
+    if (!candidates.length) return undefined;
+    const project = session.mapping.agent.projectRoot;
+    const agent = session.mapping.agent.name;
+    const labels: string[] = taskId && candidates.some(hook => hook.match?.label) ? (await getTask(project, taskId).catch(() => undefined))?.labels ?? [] : [];
+    const hooks = candidates.filter(hook => hookMatches(hook, { agent, labels }));
+    if (!hooks.length) return undefined;
+    const rootId = rootFor(sessionId, session);
+    const payload = { event, project, session: sessionId, agent, ...(session.parentAgent ? { parentAgent: session.parentAgent } : {}), team: session.mapping.workflow.mode, ...(taskId ? { task: taskId } : {}), ...details };
+    const env = { ALP_EVENT: event, ALP_SESSION: sessionId, ALP_AGENT: agent, ALP_TASK: taskId ?? '', ALP_PROJECT: project };
+    const one = async (hook: typeof hooks[number]) => {
+      if (hook.project && !(await hooksTrusted(sessionId, session))) {
+        runLog(rootId, { event: 'hook', on: event, hook: hook.name, agent, sessionId, skipped: 'untrusted' });
+        return undefined;
+      }
+      try {
+        const result = await runHook(hook, payload, { cwd: session.mapping.workdir, env });
+        const failed = result.exitCode !== 0 || result.timedOut;
+        const blocked = !!hook.blocking && failed;
+        const output = (result.stderr.trim() || result.stdout.trim()).split('\n').slice(-20).join('\n');
+        runLog(rootId, { event: 'hook', on: event, hook: hook.name, agent, sessionId, exitCode: result.exitCode, durationMs: result.durationMs, ...(result.timedOut ? { timedOut: true } : {}), ...(blocked ? { blocked: true } : {}), ...(failed && output ? { output: clip(output, 400) } : {}) });
+        if (!blocked) return undefined;
+        return `${hook.name} ${result.timedOut ? `timed out after ${hook.timeoutSec ?? 60} s` : `exited ${result.exitCode ?? result.signal}`}${output ? `:\n${output.slice(0, 4000)}` : ''}`;
+      } catch (error) {
+        runLog(rootId, { event: 'hook', on: event, hook: hook.name, agent, sessionId, error: errorData(error).message, ...(hook.blocking ? { blocked: true } : {}) });
+        return hook.blocking ? `${hook.name} could not run: ${errorData(error).message}` : undefined;
+      }
+    };
+    for (const hook of hooks.filter(hook => !hook.blocking)) void one(hook);
+    const reasons: string[] = [];
+    for (const hook of hooks.filter(hook => hook.blocking)) {
+      const reason = await one(hook);
+      if (reason) reasons.push(reason);
+    }
+    return reasons.length ? reasons.join('\n\n') : undefined;
+  }
 
   /** Best effort: an unwritable log never blocks or fails delegation. */
   function runLog(rootId: string, entry: Record<string, unknown>) {
@@ -1691,6 +1774,12 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         if (current?.gates.find(entry => entry.id === gate)?.kind === 'human') return toolResult(false, { error: 'Only the user clears a human gate; ask them, and they approve it with alp task gate clear or in Paseo' });
       }
       let poured: Awaited<ReturnType<typeof pourFormula>> | undefined;
+      // A blocking task.close hook can refuse the close; its output is the reason.
+      const hookedClose = async (id: string) => {
+        const refused = await runHooks(sessionId, session, 'task.close', { reason, ...(summary ? { summary } : {}) }, id);
+        if (refused) throw new Error(`A task.close hook refused to close ${id}: ${refused}`);
+        return closeTask(project, id, { reason, summary, unverified }, by);
+      };
       const task =
         action === 'create' ? await createTask(project, fields as any, by)
         : action === 'update' ? await updateTask(project, id, { ...fields, note }, by)
@@ -1699,7 +1788,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         : action === 'clear' ? await resolveGate(project, id, gate, { by, note })
         : action === 'link' ? await linkTask(project, id, { add, remove }, by)
         : action === 'start' ? await startTask(project, id, { agent: by, session: sessionId }, by)
-        : action === 'close' ? await closeTask(project, id, { reason, summary, unverified }, by)
+        : action === 'close' ? await hookedClose(id)
         : await reopenTask(project, id, { note }, by);
       touchTask(rootOf(sessionId), task.id);
       runLog(rootOf(sessionId), { event: 'task', action, agent: by, id: task.id, title: task.title, status: task.status, ...(summary ?? note ? { detail: summary ?? note } : {}) });
@@ -2472,6 +2561,12 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       await recordVerification(project, pending.taskId, { passed: false, skipped: args.skipVerify }, session.mapping.agent.name).catch(() => {});
       runLog(rootId, { event: 'verify', assignmentId: args.assignmentId, where: 'worktree', skipped: args.skipVerify });
     }
+    // A blocking merge hook can refuse the change before anything is applied.
+    const refused = await runHooks(sessionId, session, 'merge', { assignment: args.assignmentId, branch: worktree.branch }, pending.taskId);
+    if (refused) {
+      session.worktrees.set(args.assignmentId, pending);
+      return toolResult(false, { assignmentId: args.assignmentId, error: `A merge hook refused it; nothing was applied:\n${refused}`, branch: worktree.branch, next: `Fix what it reports in a new assignment with continueFrom "${args.assignmentId}", or alp_discard it` });
+    }
     let merged: Awaited<ReturnType<typeof mergeWorktree>>;
     let moved = false;
     try {
@@ -2659,6 +2754,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     if (assignment.worktree) result.worktree = await settleWorktree(parentId, parent, assignment);
     if (assignment.taskId) result.task = await settleTask(parent, assignment, state, child?.handoff);
 
+    if (child) void runHooks(assignment.id, child, 'assignment.end', { assignment: assignment.id, status: state, handoff: child.handoff ?? null }, assignment.taskId);
     runLog(rootOf(parentId), {
       event: 'assignment.finished',
       assignmentId: assignment.id,
@@ -2728,10 +2824,21 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       : params.tool === 'alp_recall' ? recallTool(sessionId, session, args)
       : params.tool === 'alp_verify' ? verifyTool(sessionId, session, args)
       : params.tool === 'alp_merge' || params.tool === 'alp_discard' ? worktreeTool(sessionId, session, args, params.tool === 'alp_merge' ? 'merge' : 'discard')
-      : Promise.resolve(params.tool === 'alp_send' ? sendTool(sessionId, session, args) : recordHandoff(session, args));
+      : params.tool === 'alp_send' ? Promise.resolve(sendTool(sessionId, session, args))
+      : hookedHandoff(sessionId, session, args);
 
     session.toolCalls.set(params.callId, work);
     return work;
+  }
+
+  /** A blocking handoff hook can refuse the handoff, for example until the tests pass. */
+  async function hookedHandoff(sessionId: string, session: Session, args: unknown) {
+    const checked = session.parentAgent ? parseHandoff(args) : undefined;
+    if (!session.mapping.hooks.some(hook => hook.event === 'handoff') || !checked || typeof checked === 'string') return recordHandoff(session, args);
+    const taskId = session.parent ? sessions.get(session.parent)?.assignments.get(sessionId)?.taskId : undefined;
+    const refused = await runHooks(sessionId, session, 'handoff', { assignment: sessionId, handoff: checked }, taskId);
+    if (refused) return toolResult(false, { error: `A handoff hook refused it:\n${refused}`, next: 'Fix what it reports, then call alp_handoff again.' });
+    return recordHandoff(session, args);
   }
 
   function recordHandoff(session: Session, args: unknown) {
@@ -3268,6 +3375,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       await openSession(childId, childSpec, 'skip', session.delegation);
 
       const child = sessions.get(childId);
+      if (child) void runHooks(childId, child, 'assignment.start', { assignment: childId, brief: clip(args.task, 2000) }, args.taskId);
 
       if (
         !child ||
@@ -3543,6 +3651,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       }
 
       emit(sessionId, { type: 'session.ready' });
+      void runHooks(sessionId, session, 'session.start', { resumed: !!spec.restore });
       return snapshot(sessionId, session);
     } catch (error) {
       session.closed = true;

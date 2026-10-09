@@ -1504,3 +1504,43 @@ Goal (D23, phase 13, step 4): manage the library and a project's overrides in Pa
   - `delegationCycle` and `blank`.
 - `test/panel.test.js` gets a stub of the kit.
 - Not tried in a running Paseo: installing the plugin there means changing the user's Paseo, which this work does not do.
+
+## 45. Hooks run by ALP as built (2026-10-09)
+
+Goal (D23, phase 13, step 5): alpd runs agents' hooks at its own events, for every runtime. The user trusts each workspace's hooks once.
+
+- **Loading:**
+  - `src/core/hooks.js` `loadHooks(agent)` reads the agent's hooks: named in `agent.json`, plus the JSON files of its own `hooks/`.
+    - A file that is not JSON is an error.
+    - `validateHook` checks each one.
+    - A hook is marked `project` when its file is under the project's `.alp/`.
+  - `resolveSession` puts them in `mapping.hooks`. The instructions adapter reports hooks as `emulated`, so an agent with hooks is no longer refused.
+- **Running:**
+  - `runHooks(sessionId, session, event, details, taskId)` in `runtime.ts` filters hooks by event and `hookMatches` (agent, and task label through the task file).
+  - It builds the payload: event, project, session, agent, parent agent, team, task, and the event's details.
+  - Non-blocking hooks start in the background. Blocking ones run in turn with `runHook` (§43, process group). The last 20 lines of a failed one's stderr (or stdout) become the refusal.
+  - Each run is logged as `hook`, with `on`, `hook`, `exitCode`, `durationMs`, and `blocked` or `skipped`. `renderLog` shows ↪, ✗ and ⛔ lines.
+- **Events:**
+  - `session.start`: when `session.ready` is emitted (`resumed` tells a reopened session).
+  - `turn.end`: in `terminal()`.
+  - `assignment.start`: after the child opens.
+  - `assignment.end`: with the status and the handoff, before `assignment.finished`.
+  - `handoff`: `hookedHandoff` validates the handoff first, then runs the hooks. A refusal returns `A handoff hook refused it` with a `next` hint.
+  - `task.close`: before `closeTask` in `alp_task close`. A refusal is an error and leaves the task open.
+  - `merge`: in `alp_merge`, after verification and before anything is applied. A refusal keeps the worktree pending.
+- **Trust:**
+  - `src/core/trust.js` keeps `$ALP_HOME/state/trust.json` `{ projects: { <realpath>: { trustedAt, by } } }`, written atomically.
+  - `hooksTrusted` asks the user with `askUser`, offering "Trust this workspace" or "Not now". It asks once per root tree and project, and concurrent hooks share the question.
+    - An agreement is recorded, and from then on every hook of that project runs, including later ones.
+    - A dismissal or "Not now" holds for the tree.
+    - A question cancelled by its turn's end is asked again at the next hook.
+  - Library hooks never ask.
+  - `alp trust [--project] | --revoke | --list [--json]`.
+- **Doctor:** the `hooks` check lists the agents' hooks and whether the project's are trusted. It warns when a hook's first word is not a shell word and is not found on `PATH` or relative to the project.
+
+**Evidence.** `test/hooks.test.js` checks:
+- library hooks at `session.start` and `turn.end`, with the payload on stdin, the `ALP_*` variables, the run log and `alp log`, and no trust question;
+- that a project hook asks once; after "Trust this workspace" it runs, `trust.json` is written, and a later session with a newly added hook does not ask;
+- that "Not now" skips the hook and a blocking `task.close` hook then does not block, with no second question in that tree;
+- that trusted blocking hooks refuse a peer's handoff, main's `alp_merge` (nothing applied) and `alp_task close` (task stays in review) until their condition holds;
+- that a `match.label` hook applies only to tasks with that label.

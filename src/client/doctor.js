@@ -4,6 +4,8 @@ import { runCommand } from './command.js';
 import { daemonPaths, lockAlive, readLock } from './index.js';
 import { installedProgram, serviceFor } from './service.js';
 import { jsonObject, agentSources, resolveAgent } from '../core/resolver.js';
+import { loadHooks } from '../core/hooks.js';
+import { isTrusted } from '../core/trust.js';
 import { settingsWarnings, validateSettings, validateUserSettings } from '../core/validation.js';
 
 /**
@@ -169,11 +171,13 @@ async function projectChecks(project, home) {
   const agents = [...sources.keys()].sort((a, b) => a.localeCompare(b));
   const broken = [];
   const shadows = [];
+  const hooks = new Map();
   // An override replaces the whole agent, so it misses later updates to the one it replaces.
   for (const [agent, { source, overrides }] of sources) if (overrides) shadows.push(`${agent}: the ${source}'s copy replaces the ${overrides === 'builtin' ? 'built-in' : 'library'} agent`);
   for (const agent of agents) {
     try {
       const resolved = await resolveAgent(project, { agent, library: home });
+      for (const hook of await loadHooks(resolved)) hooks.set(hook.path, { ...hook, agents: [...(hooks.get(hook.path)?.agents ?? []), agent] });
       for (const skill of resolved.skills) if (!skill.path.startsWith(home + path.sep)) {
         const library = path.join(home, 'skills', skill.name, 'SKILL.md');
         if (await lstat(library).then(() => true, () => false)) shadows.push(`${agent}: ${skill.name} from the project replaces the library's`);
@@ -183,8 +187,34 @@ async function projectChecks(project, home) {
   if (!agents.length) checks.push({ id: 'agents', status: 'fail', summary: 'no agents: neither ALP\'s built-ins nor the library nor the project define one' });
   else if (broken.length) checks.push({ id: 'agents', status: 'fail', summary: `${broken.length} of ${agents.length} agents cannot start`, details: broken });
   else checks.push({ id: 'agents', status: shadows.length ? 'info' : 'ok', summary: `${agents.length} agents resolve: ${agents.join(', ')}`, ...(shadows.length ? { details: shadows } : {}) });
+  if (hooks.size) checks.push(await hooksCheck(project, home, [...hooks.values()]));
   if (settings.defaultAgent && !agents.includes(settings.defaultAgent)) checks.push({ id: 'agents', status: 'fail', summary: `defaultAgent ${settings.defaultAgent} is not an agent of this project` });
   return checks;
+}
+
+/** The command a hook starts, when it is a plain program name or path: the first word of its shell command. */
+const program = command => /^\s*([\w./-]+)/.exec(command)?.[1];
+const SHELL_WORDS = new Set(['cd', 'test', '[', 'echo', 'exit', 'true', 'false', 'set', 'export', 'if', 'for', 'while', 'exec', 'env', 'command', 'printf', 'read', 'source', '.']);
+
+/** Hooks the agents use: whether the project's may run, and whether their programs exist (ALPD §45). */
+async function hooksCheck(project, home, hooks) {
+  const missing = [];
+  for (const hook of hooks) {
+    const name = program(hook.command);
+    if (!name || SHELL_WORDS.has(name)) continue;
+    const candidates = name.includes('/') ? [path.resolve(project, name)] : (process.env.PATH ?? '').split(path.delimiter).filter(Boolean).map(directory => path.join(directory, name));
+    let found = false;
+    for (const candidate of candidates) if (await access(candidate, constants.X_OK).then(() => true, () => false)) { found = true; break; }
+    if (!found) missing.push(`${hook.name} (${hook.event}, used by ${hook.agents.join(', ')}): ${name} is not found`);
+  }
+  const fromProject = hooks.filter(hook => hook.project);
+  const trusted = fromProject.length ? await isTrusted(home, project) : true;
+  const details = [...missing, ...(!trusted ? [`not trusted yet: ${fromProject.map(hook => hook.name).join(', ')}; alpd asks the first time one runs, or run alp trust`] : [])];
+  return {
+    id: 'hooks', status: missing.length ? 'warn' : trusted ? 'ok' : 'info',
+    summary: `${hooks.length} hook${hooks.length > 1 ? 's' : ''}${fromProject.length ? `, ${fromProject.length} from the project${trusted ? ', which the user trusts' : ', not trusted yet'}` : ''}${missing.length ? `; ${missing.length} cannot start` : ''}`,
+    ...(details.length ? { details } : {}),
+  };
 }
 
 async function librarySkillsCheck(home) {
