@@ -145,7 +145,9 @@ With `"verify": { "test": "npm test" }` (also `setup`, `typecheck`) in `.alp/set
 - in the checkout after a shared writer finishes;
 - on demand with `alp_verify` or `alp verify`.
 
-The result is recorded on the task, and an agent cannot close a task as done after a failed check without saying why. Details: [Verification gates](docs/alp/team-workflow.md#verification-gates).
+The result is recorded on the task, and an agent cannot close a task as done after a failed check without saying why. A timed-out command gets SIGTERM before SIGKILL, `idleSec` stops a silent one, and a step exiting 75 counts as could-not-run (skipped), not failed. Details: [Verification gates](docs/alp/team-workflow.md#verification-gates).
+
+Text one agent wrote reaches another without `<system-reminder>` tags, so a peer cannot pose as the harness.
 
 Work survives alpd: after a crash, `alp daemon stop` or `alp daemon restart`, the next alpd reopens trees that were working, by itself, and their assignments continue with their thread, worktree and task. When a Codex or Claude process dies under a session, ALP restarts it and the session continues; three restarts in a row with no progress end it. Details: [Crashes and restarts](docs/alp/team-workflow.md#crashes-and-restarts).
 

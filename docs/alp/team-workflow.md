@@ -218,7 +218,7 @@ A project can name the commands that prove a change works, in
 `.alp/settings.json`:
 
 ```json
-{ "verify": { "setup": "npm ci", "typecheck": "npx tsc --noEmit", "test": "npm test", "timeoutSec": 600 } }
+{ "verify": { "setup": "npm ci", "typecheck": "npx tsc --noEmit", "test": "npm test", "timeoutSec": 600, "idleSec": 300 } }
 ```
 
 Any of `setup`, `typecheck` and `test` may be set. They run in that order through
@@ -261,6 +261,36 @@ after a failed check. `skipVerify` and other close reasons need no passing run.
 Live, a Codex main merged a peer's change that the project's check rejected. It
 fixed the change twice with `continueFrom`, the third merge passed, and only
 then did it close the task.
+
+**Stopping a command.** When a command runs past `timeoutSec`, ALP sends
+SIGTERM to its process group, so its own cleanup runs, and SIGKILL five seconds
+later. With `"idleSec": 120`, a command that prints nothing for that long is
+stopped the same way. The result says it `printed nothing for too long`.
+
+**A step that could not run.** A command can exit 75 (`EX_TEMPFAIL`) to say it
+could not run, for example because a database or the network is down, rather
+than that the change is wrong. ALP stops there and records the check as
+skipped (`infra: test could not run (exit 75)`), not failed. The same happens
+when the shell itself cannot start. `alp_merge` still applies nothing, and
+suggests running it again. Agents may close the task, since the failure says
+nothing about the change.
+
+## What reaches an agent's prompt
+
+Agents read text that other agents wrote: mail, handoffs, the board, recall
+answers, task titles and results, and the output of commands. Before any of it
+enters a prompt or a tool result, ALP strips `<system-reminder>` tags from it,
+repeating until none is left, so a peer cannot pose as the harness to main. The
+user's own prompts are passed as written.
+
+Native sessions run without `CLAUDECODE` and the other markers of an enclosing
+Claude Code, Codex or Paseo session. ALP's own git commands run without the
+`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and similar variables a git hook
+sets, so they always act on the repository they name.
+
+A task an earlier alpd held goes back to open only when that alpd is gone.
+ALP checks the pid and the time that process started, since a pid can be
+reused by another process.
 
 ## Pause and usage limits
 

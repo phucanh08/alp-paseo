@@ -1078,3 +1078,35 @@ When the revive fails, the session fails as before. Run log events: `session.res
   - `kill -9` of that alpd also ended its `codex app-server` processes;
   - `alp daemon start` logged the crash, reopened the root and the peer (`recovered …: peer resumed`) and showed the notice;
   - the peer reran its commands and filed its handoff; main `alp_wait`ed for it and reported both files; `live.json` was empty at the end.
+
+## 32. Hardening as built (2026-10-09)
+
+Goal (D21, step B): small guards taken from Gas City, each against a failure alpd had.
+
+**B1. Prompt text.** `promptSafe` (`src/core/promptsafe.js`) removes `<system-reminder>` open and close tags. It is case-insensitive, allows spaces and attributes, and repeats until nothing changes. It is applied:
+- to every tool result (`toolResult`);
+- to the turn inputs of `startPrompt`: the catalog snapshot, the task digest, rendered mail, and the prompt text unless its origin is `user`;
+- to steered mail;
+- to the recall prompt.
+
+So briefs, handoffs, mail, board pins, recall answers, task text and command output reach agents without those tags, while the user's own prompt is untouched.
+
+**B2. Verify.** `runCommand` stops a command with SIGTERM to its process group, then SIGKILL after `VERIFY_GRACE_MS` (5 s), on `timeoutSec` or, with the new `verify.idleSec`, after that long without output (`idle: true`). A step that exits `VERIFY_INFRA_EXIT` (75), or whose shell does not start:
+- ends the run with `skipped: 'infra: <step> could not run (…)'`;
+- is recorded as skipped, so `closeTask` does not count it as failed;
+- makes `alp_merge` refuse to apply, with a `next` that says to run it again.
+
+**B3. Orphans and reused pids.** Tasks record `pidStartedAt` beside `pid` (`OWN_START`, from `process.uptime()`). `startTask` and `retakeTask` write it. `releaseOrphans` keeps a task of another alpd only if `sameProcessAlive(pid, pidStartedAt)` holds: the pid is alive and `ps -o lstart=` matches the start time within 2 s. Where ps cannot tell, a live pid still counts.
+
+**B4. Environment.**
+- `nativeEnvironment` also drops `CLAUDECODE`.
+- `gitEnvironment` removes git's context variables before every git command of `workspace.ts` and the GitHub helper: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, the object directories, `GIT_CONFIG*` and `GIT_CONFIG_KEY_n`/`VALUE_n`, and others. It keeps the rest, such as author identity.
+
+**Evidence.** `test/hardening.test.js` covers:
+- tag stripping, nested and with attributes;
+- a brief, a handoff and a final message with injected tags reaching the requester clean, while the user's prompt keeps its tags, and `CLAUDECODE` dropped;
+- SIGTERM cleanup running, the idle stop, and exit 75 recorded as skipped so an agent may close the task;
+- start-time matching with a real child process;
+- the git environment.
+
+No live run was needed: each guard acts on local processes and text, which the tests exercise for real.
