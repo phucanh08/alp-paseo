@@ -226,3 +226,12 @@ lead worked and did not ask about a vague request.
 - A message from the user ends main's wait in `alp_delegate` or `alp_wait` at once. Main answers, then waits again; assignments keep running.
 - While main's assignments run, ALP sends main a check-in about every ten minutes, and when an assignment passes the ETA main gave. Main tells the user how the work is going. Check-ins do not use up wakes.
 - Main asks once about a request that is open in ways that change the work: two to four questions with options and a recommended default, and the offer to decide with those defaults. Clear requests are not questioned.
+
+## D25 — Background first
+
+Decided by the user on 2026-10-10: every agent delegates work and runs long tools in the background whenever it can, and waits only when its next step needs the result. Working with ALP should feel like a chat with Claude Code.
+
+- `alp_delegate` starts assignments in the background by default; `wait: true` waits.
+- Main ends its turn while work runs; ALP wakes it with results, questions and check-ins. Notes from assignments ride along and never wake an idle requester.
+- Every agent runs long shell commands in the background when its tools allow it.
+

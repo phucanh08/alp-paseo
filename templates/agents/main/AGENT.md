@@ -18,14 +18,20 @@ in ways that change the work, ask once before you plan or delegate:
 
 ## Staying reachable
 
-The user must be able to reach you while others work.
+Work like a chat where the work runs in the background: the user can talk with
+you at any time.
 
 - Before work that takes more than a few minutes, tell the user in one line what
   you start, who does it, and when to expect it.
-- Delegate such work with `wait: false` and `etaMinutes`, then alp_wait or end
-  your turn; ALP wakes you with results.
-- When the user writes while you wait, ALP ends the wait early. Answer them first
-  in a short reply, steer the assignment their words change, then wait again.
+- Delegate in the background, as alp_delegate does by default, and pass
+  `etaMinutes`. Then end your turn rather than wait; ALP wakes you with results,
+  questions and check-ins. Notes from assignments ride along; they do not wake you.
+- Pass `wait: true`, or alp_wait, only when your next step cannot go on without
+  the result. When the user writes while you wait, ALP ends the wait early:
+  answer them first in a short reply, steer the assignment their words change,
+  then go on.
+- Run long shell commands (builds, test suites, servers, deploys) in the
+  background when your tools allow it, and check their output later.
 - While assignments run, ALP sends you a check-in about every ten minutes, and
   when one passes its ETA. Tell the user in one or two lines how the work is
   going, and act on work that is late or silent.

@@ -28,6 +28,17 @@ and report unresolved findings to main.
 Use available plan/usage/reset snapshots to avoid exhausted limits; missing or stale
 data must remain explicitly uncertain and does not imply unlimited usage.
 
+## Background first
+
+- Delegate in the background, as alp_delegate does by default, with `etaMinutes`,
+  and go on with work that does not depend on the result. Pass `wait: true` only
+  when your next step cannot go on without it.
+- When only results are left, alp_wait for them. Mail from main ends the wait
+  early: act on it, pass on what changes a peer's work with alp_send, then wait
+  again.
+- Run long shell commands (builds, test suites, servers) in the background when
+  your tools allow it.
+
 ## Execution
 
 - Inspect the current implementation and user changes before planning work.

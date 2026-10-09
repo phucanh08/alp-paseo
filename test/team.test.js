@@ -39,7 +39,7 @@ async function setup(t, options = {}) {
         return this.serverRequest('item/tool/call', { threadId: this.threadId, turnId: this.turnId, callId, namespace: null, tool, arguments: args });
       },
       tool(agent, task = 'Return evidence for assigned read-only scope.', extra = {}, callId = `call-${index}`) {
-        return this.serverRequest('item/tool/call', { threadId: this.threadId, turnId: this.turnId, callId, namespace: null, tool: 'alp_delegate', arguments: { agent, task, ...extra } });
+        return this.serverRequest('item/tool/call', { threadId: this.threadId, turnId: this.turnId, callId, namespace: null, tool: 'alp_delegate', arguments: { agent, task, wait: true, ...extra } });
       },
       handoff(args, callId = `handoff-${index}`) {
         return this.serverRequest('item/tool/call', { threadId: this.threadId, turnId: this.turnId, callId, namespace: null, tool: 'alp_handoff', arguments: args });
@@ -593,12 +593,17 @@ test('a child requester that exhausts its wakes fails instead of hanging', async
   decode(await runtimes[1].tool('peer', 'Read', { wait: false }, 'peer'));
   await started(runtimes, 2);
   runtimes[1].finish('lead waiting');
+  // A note from its own peer is information: it does not wake the idle lead.
+  await runtimes[2].call('alp_send', { to: 'parent', kind: 'note', body: 'progress' }, 'note');
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(turns(runtimes[1]).length, 1);
+  // Its requester's mail does.
   for (let wake = 1; wake <= 8; wake++) {
-    await runtimes[2].call('alp_send', { to: 'parent', kind: 'note', body: `note ${wake}` }, `note-${wake}`);
+    await runtimes[0].call('alp_send', { to: 'lead', kind: 'steer', body: `steer ${wake}` }, `steer-${wake}`);
     await until(() => turns(runtimes[1]).length === wake + 1);
     runtimes[1].finish(`handled ${wake}`);
   }
-  await runtimes[2].call('alp_send', { to: 'parent', kind: 'note', body: 'one too many' }, 'note-9');
+  await runtimes[0].call('alp_send', { to: 'lead', kind: 'steer', body: 'one too many' }, 'steer-9');
   const result = decode(await lead);
   assert.equal(result.status, 'failed');
   assert.match(result.error, /Wake limit \(8\)/);

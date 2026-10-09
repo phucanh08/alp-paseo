@@ -88,7 +88,7 @@ test('a client creates, prompts and receives the events of its whole tree over t
   const { session } = await client.request('session.create', { spec: { cwd: project, persist: true } });
   assert.match(session.id, /^ses_[0-9a-f]{16}$/);
   await client.request('session.prompt', { sessionId: session.id, clientMessageId: 'm1', content: text('Delegate') });
-  const lead = runtimes[0].call('alp_delegate', { agent: 'lead', task: 'Investigate' });
+  const lead = runtimes[0].call('alp_delegate', { agent: 'lead', wait: true, task: 'Investigate' });
   await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
   runtimes[1].finish('lead proof');
   assert.equal(JSON.parse((await lead).contentItems[0].text).output, 'lead proof');
@@ -281,7 +281,7 @@ test('after a crash the next daemon reopens a root that was working; an assignme
   const first = await durable(t, directory, project, runtimes);
   const { session } = await first.client.request('session.create', { spec: { cwd: project, persist: true } });
   await first.client.request('session.prompt', { sessionId: session.id, clientMessageId: 'm1', content: text('Delegate') });
-  void runtimes[0].call('alp_delegate', { agent: 'lead', task: 'Work' });
+  void runtimes[0].call('alp_delegate', { agent: 'lead', wait: true, task: 'Work' });
   await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start') && first.events.some(e => e.event.type === 'session.opened' && e.event.session.parentId));
   const child = first.events.find(e => e.event.type === 'session.opened' && e.event.session.parentId).sessionId;
   await first.stop(false);
@@ -327,9 +327,9 @@ test('resumed history replays a grandchild while its parent is open', async t =>
   const first = await durable(t, directory, project, runtimes);
   const { session } = await first.client.request('session.create', { spec: { cwd: project, persist: true } });
   await first.client.request('session.prompt', { sessionId: session.id, clientMessageId: 'm1', content: text('Delegate') });
-  const lead = runtimes[0].call('alp_delegate', { agent: 'lead', task: 'Work' });
+  const lead = runtimes[0].call('alp_delegate', { agent: 'lead', wait: true, task: 'Work' });
   await until(() => runtimes[1]?.calls.some(c => c.method === 'turn/start'));
-  const peer = runtimes[1].call('alp_delegate', { agent: 'peer', task: 'Work' });
+  const peer = runtimes[1].call('alp_delegate', { agent: 'peer', wait: true, task: 'Work' });
   await until(() => runtimes[2]?.calls.some(c => c.method === 'turn/start'));
   runtimes[2].finish('peer done');
   await peer;
