@@ -164,6 +164,8 @@ Finished assignments stay recallable for 14 days: main, or the agent that assign
 
 See [installation and runtime behavior](docs/alp/paseo-plugin.md) and [phase acceptance evidence](docs/alp/phase-2-5-results.md). The plugin is verified with Paseo 0.11.1 and live Codex and Claude Code permission changes.
 
+**Settings → ALP** manages your library of teams, agents, skills, MCP servers and hooks, and the **ALP project** workspace panel manages a project's overrides ([settings screen](docs/alp/paseo-plugin.md#alp-settings-and-the-project-panel)).
+
 ### Build and add the plugin to Paseo
 
 Prerequisites: Node.js 20+, Paseo 0.11.1 or a later 0.11 release (the Tasks panel needs its plugin client API), and a logged-in Codex CLI and/or Claude Code installation. Set `ALP_CODEX_BIN` or `ALP_CLAUDE_BIN` to an absolute native executable path when it is not available on `PATH`.

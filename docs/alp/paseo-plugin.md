@@ -17,7 +17,7 @@ paseo plugin install /absolute/path/to/alp-workspace/plugins/paseo
 paseo provider models alp
 ```
 
-Select a Codex or Claude Code entry under **ALP** in Paseo. When a repository lacks `ALP.md` or the starter `main` agent, the provider automatically installs the missing ALP starter files (settings, agents, skills, hooks, and MCP files). Existing files are preserved, including partial and customized ALP setups. The picker mirrors the native catalogs with runtime-prefixed IDs: currently 7 `codex:` models and 17 `claude:` models. Other model names supported by the installed native runtime can be set through `.alp/settings.json`:
+Select a team under **ALP** in Paseo's model picker: Phở and Cafe, then the teams of your library, then the project's. When a repository lacks `ALP.md` or `.alp/settings.json`, the provider creates them; agents, skills and teams come from ALP's built-ins and your library, so nothing else is copied. Existing files are preserved. A team fixes its members' models; other model names supported by the installed native runtime can be set through `.alp/settings.json`:
 
 ```json
 {
@@ -58,6 +58,37 @@ try {
 ```
 
 Installation commands above target the selected user's daemon. Implementation verification used isolated homes under `.alp-test/`; it did not install the plugin into the user's existing Desktop daemon or change its configuration.
+
+## ALP settings and the project panel
+
+**Settings → ALP** edits your library in `$ALP_HOME` (default `~/.alp`), which every
+project uses. It has five sections: Teams, Agents, Skills, MCP servers and Hooks.
+- Each entry shows where it comes from: built-in, or library, possibly overriding a
+  built-in. It also shows who uses it.
+- Each section has New, and each entry Duplicate.
+- Opening an entry edits it:
+  - **Agent:** description, provider, model, thinking, default mode, instructions
+    (`AGENT.md`), and switches for the skills, MCP servers and hooks it uses.
+  - **Team:** label, main, members and their roles, each member's model and
+    thinking, who may delegate to whom (a cycle is shown and refused), the most
+    peers at once, the supervisor and its model, and the house rules.
+  - **Skill:** `SKILL.md`.
+  - **MCP server:** a command with arguments, environment and working directory, or
+    a URL with headers. **Test** starts it and lists its tools.
+  - **Hook:** its event and command, whether it blocks (only for events before an
+    action), its timeout, and an agent or task label it is limited to. **Test** runs it
+    once with a sample event.
+- Built-ins are read-only. **Save as my own** makes the library's entry of that name,
+  which overrides the built-in. Removing it brings the built-in back.
+
+The **ALP project** workspace panel shows the same lists for the workspace's project:
+- **Override in this project** copies an entry into `.alp/`.
+- **Use library** removes the project's copy.
+- Opening an entry edits the project's copy.
+
+Both use the `alp.library.*` RPC (ALPD §43), the same functions as `alp agent|team|skill|mcp|hook`.
+Each save checks the entry's revision, so two windows cannot overwrite each other.
+Changes apply to new sessions; running sessions keep what they started with.
 
 ## Mapping and supported behavior
 
