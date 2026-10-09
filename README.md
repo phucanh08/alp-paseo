@@ -110,7 +110,15 @@ You talk with main. Main can ask you a question with `alp_ask` without ending it
 
 Agents on one project share a board, even when they belong to different trees. Each one claims the paths it is about to change, and an overlapping claim from another tree is refused. Agents also pin decisions and findings, which reach other agents that are working and start every new assignment. `alp board` shows the board.
 
-Each project keeps its tasks in `.alp/tasks`, one JSON file per task, modelled on [beads](https://github.com/gastownhall/beads): types, priorities 0–4, `blockedBy`, epic parents, and a ready list of open tasks that nothing blocks. Only you and main create or change tasks: you with `alp task`, main with its `alp_task` tool. Other agents read them and report work they find to their requester. Main gives a task to lead or peer with `alp_delegate { taskId }`: the task starts, its paths are claimed, and the handoff moves it to review until main accepts it. Each of main's turns starts with what waits for review and what is ready, and Paseo shows the tasks a session worked on as a task list. The CLI writes the files directly, so it works without alpd.
+Each project keeps its tasks in `.alp/tasks`, one JSON file per task, modelled on [beads](https://github.com/gastownhall/beads): types, priorities 0–4, `blockedBy`, epic parents, and a ready list of open tasks that nothing blocks. Only you and main create or change tasks: you with `alp task`, main with its `alp_task` tool. Other agents read them and report work they find to their requester. Main gives a task to lead or peer with `alp_delegate { taskId }`: the task starts, its paths are claimed, and the handoff moves it to review until main accepts it. Each of main's turns starts with what waits for review and what is ready, and Paseo shows the tasks a session worked on as a task list.
+
+A gate holds a task back until it clears:
+- `human`: you approve it with `alp task gate clear` or in Paseo.
+- `timer`: a time passes.
+- `gh:pr`: a pull request merges.
+- `gh:run`: a workflow run succeeds.
+
+`alp tasks gates` and main's turns check the GitHub gates. `alp tasks compact` shrinks tasks closed more than 30 days ago. In Paseo, each workspace has a **Tasks** panel: you approve gates, add tasks, and accept or reopen them there. The CLI writes the files directly, so it works without alpd.
 
 `ALP_HOME` selects the daemon's directory (default `~/.alp`); `ALP_RUN_LOG_DIR` overrides where assignment logs go (default `$ALP_HOME/runs`). alpd records sessions, their timelines, and prompt receipts under `$ALP_HOME/state`, project boards under `$ALP_HOME/boards`, and its own location in `$ALP_HOME/alpd.json`. After a restart, or a crash, a root can be resumed with `send` or imported into Paseo; work that was running is marked `daemon_restarted`. The Paseo plugin starts the same daemon automatically.
 
@@ -120,7 +128,7 @@ See [installation and runtime behavior](docs/alp/paseo-plugin.md) and [phase acc
 
 ### Build and add the plugin to Paseo
 
-Prerequisites: Node.js 20+, Paseo 0.11.1, and a logged-in Codex CLI and/or Claude Code installation. Set `ALP_CODEX_BIN` or `ALP_CLAUDE_BIN` to an absolute native executable path when it is not available on `PATH`.
+Prerequisites: Node.js 20+, Paseo 0.11.1 or a later 0.11 release (the Tasks panel needs its plugin client API), and a logged-in Codex CLI and/or Claude Code installation. Set `ALP_CODEX_BIN` or `ALP_CLAUDE_BIN` to an absolute native executable path when it is not available on `PATH`.
 
 Install dependencies, type-check the plugin, and build its server bundle:
 

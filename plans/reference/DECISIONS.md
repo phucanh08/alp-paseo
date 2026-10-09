@@ -129,3 +129,5 @@ The work runs in four steps, one PR each:
 4. Optional beads import/export and formulas.
 
 Details: [alpd §20](ALPD.md).
+
+For step 3 the user raised the Paseo requirement to `>=0.11.1 <0.12.0` on 2026-10-09. The Tasks panel uses the plugin client API that the spike verified on 0.11.1. Details: [alpd §22](ALPD.md).
