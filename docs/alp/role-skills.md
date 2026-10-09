@@ -3,7 +3,7 @@
 Six workflow skills are adapted from the
 [alp-claude skill collection at f5f38dd](https://github.com/phucanh08/alp-claude/tree/f5f38dd5428866cd846b761fa15062c43a4d71cf/skills).
 The instructions are rewritten for the active-main ALP model and its actual runtime,
-with no Claude-only tools, global installation, or automatic commit/approval gates.
+with no Claude-only tools or automatic commit/approval gates.
 
 | Skill | Purpose | Main | Lead | Peer |
 |---|---|---|---|---|
@@ -20,29 +20,63 @@ write or delegation authority. Read-only diagnosis stops before changes. Lead ro
 missing user decisions to main; peer routes them to lead. Main retains responsibility
 for communicating with the user and may execute work itself.
 
-## Installation and upgrades
+## The user's skill library
 
-```powershell
-node src/cli.js init "D:\Projects\new-project"
-node src/cli.js upgrade "D:\Projects\existing-project"
+Skills and the skills each role gets live in the user's library in `$ALP_HOME`
+(default `~/.alp`), shared by every project:
+
+```text
+~/.alp/
+  role-skills.json        # { "main": [...], "lead": [...], "peer": [...], ... }
+  skills/<skill>/SKILL.md # with its references/
+  library.json            # what ALP wrote, by hash
 ```
 
-New projects receive actual files under
-`.alp/agents/<role>/skills/<skill>/SKILL.md`. Each applicable skill includes its
-relative references. There are no symlinks or dependencies on a global skill folder;
-an agent package can be moved as a unit.
+alpd seeds the library from its templates the first time it opens a session, and
+`alp init` / `alp upgrade` seed it too. The canonical source is `templates/skills/`,
+with the starter assignments in `templates/role-skills.json`; oracle, reviewer and
+supervisor get no skills by default.
 
-The canonical source is `templates/skills/`, with role assignments in
-`templates/role-skills.json`. Shared methods are maintained once in the repository
-and copied into each applicable agent package by the initializer. These starter
-assignments do not restrict filesystem discovery of custom agents or custom skills.
+The library belongs to the user. Edit a skill, add your own under `skills/`, or change
+which skills a role gets in `role-skills.json`. `library.json` records the hash of
+every file ALP wrote. When an app update ships new templates, ALP:
 
-`init` fills missing skills/resources without overwriting existing files. `upgrade`
-also updates recognized original main-only or team-v1 role definitions, saving their
-previous contents under `.alp/backups/upgrade-*`. This gives older shipped roles
-the new skill routing instructions. Customized definitions and skill files are
-preserved; the CLI identifies custom role instructions needing manual reconciliation.
-An existing skill file is never silently replaced with a newer template version.
+- adds a file it never shipped before, unless you already made a file of that name;
+- replaces a file only while it still holds exactly what ALP last wrote;
+- never recreates a file you deleted, and never touches a file you edited.
+
+So an update can change an unedited skill or `role-skills.json`, while your edits and
+deletions stay. A new shipped skill added to `role-skills.json` reaches a role only
+while you have not edited that file. A skill name in `role-skills.json` that has no
+`SKILL.md` is skipped; a name that is not a plain directory name is an error.
+
+## Skills main proposes
+
+Main may distill its lessons into a new library skill with `alp_skill` and choose
+the roles that get it. The user approves the whole skill first; then ALP writes
+`skills/<name>/SKILL.md` and adds the name to those roles in `role-skills.json`.
+These skills belong to the user like any edited file: ALP updates never replace or
+remove them. See [team workflow](team-workflow.md#skills-from-lessons).
+
+## Project skills
+
+New projects get an empty `.alp/agents/<role>/skills/` directory. A skill placed there,
+`.alp/agents/<role>/skills/<skill>/SKILL.md`, applies to that project only and replaces
+a library skill of the same name for that role. Custom agents get only their own
+project skills unless `role-skills.json` lists skills under their name. A runtime embedded without a library (`libraryDir` unset) uses project skills only.
+
+```sh
+alp init /absolute/new-project
+alp upgrade /absolute/existing-project
+```
+
+Projects created before 0.4 carry a copy of each role's skills. `alp upgrade` moves
+copies that are identical to the shipped skills into its backup under
+`.alp/backups/upgrade-*`, so the library applies, and reports customized copies,
+which stay and keep overriding. `upgrade` also updates recognized original main-only
+or team-v1 role definitions, saving their previous contents in the same backup.
+Customized definitions are preserved; the CLI identifies custom role instructions
+needing manual reconciliation.
 
 The obsolete `ask-alp` router is no longer installed. Upgrade moves recognized
 unmodified copies into its backup directory, outside agent skill discovery, and
@@ -66,9 +100,9 @@ Examples of requests to main:
 - "Giao Lead tổ chức Peer sửa lỗi này bằng bug-loop và trả bằng chứng trước/sau."
 - "Dùng sequence-execution-plan để sắp thứ tự ba việc này."
 
-Use a new session, or close/resume the existing session, after upgrading so the
-adapter reads the new role instructions and skill index. Changing only these skill
-files does not require reinstalling the Paseo plugin. Native dynamic delegation tool
+Use a new session, or close/resume the existing session, after upgrading or editing
+the library so the adapter reads the new role instructions and skill index. Changing
+only skill files does not require reinstalling the Paseo plugin. Native dynamic delegation tool
 changes still have the fresh-session requirement documented in team-workflow.md.
 
 ## Adaptation decisions
@@ -84,9 +118,10 @@ changes still have the fresh-session requirement documented in team-workflow.md.
 - Non-Git projects can hand off file artifacts. Merely editing a file does not invoke
   smart-commits or authorize a push.
 
-Validation covers skill frontmatters, role assignments, copied relative
-references, package portability, lazy adapter loading, repeated installation,
-custom-file preservation, and backed-up migration of shipped team-v1 definitions.
+Validation covers skill frontmatters, role assignments, relative references in the
+library, user-edited assignments and project overrides, updates that keep edited and
+deleted files, lazy adapter loading, archiving of unmodified project copies, and
+backed-up migration of shipped team-v1 definitions (`test/skills.test.js`).
 
 The initial seven-package version passed the skill-creator validator and 56 automated
 tests on 2026-10-07. The router was subsequently retired at the user's request. The existing

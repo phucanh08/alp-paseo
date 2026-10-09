@@ -1,52 +1,66 @@
-# Smart and Supervised workflows
+# Phở and Cafe profiles
 
-ALP has five filesystem-defined agents: main, lead, peer, oracle, and reviewer.
-The workflow is separate from Paseo's read-only/workspace-write permission mode.
+ALP has six filesystem-defined agents: main, lead, peer, oracle, reviewer, and
+supervisor. The profile is separate from the permission mode.
 
-| Workflow | Technical coordinator | Execution | Separate supervisor |
-| --- | --- | --- | --- |
-| Smart (new project default) | main | main or peer | none |
-| Supervised | lead | lead or peer | main |
+| Profile | Technical coordinator | Execution | Separate supervisor of lead | Process supervisor |
+| --- | --- | --- | --- | --- |
+| Phở (`pho`, new project default) | main | main or peer | none | supervisor |
+| Cafe (`cafe`) | lead | lead or peer | main | supervisor |
 
-Smart does not spawn lead. Supervised main delegates execution to lead, never
-straight to peer. Main and lead can ask oracle or reviewer; these advisors return
-once to their requester and cannot delegate. Lead can implement small tasks itself.
+Phở does not spawn lead. Cafe main delegates execution to lead, never straight to
+peer. Main and lead can ask oracle or reviewer; these advisors return once to
+their requester and cannot delegate. Lead can implement small tasks itself. In
+both profiles main starts a supervisor that reviews its process (see
+[Supervisor and lessons](#supervisor-and-lessons)).
 
 Oracle advises on significant uncertainty, architecture, or difficult bugs.
 Reviewer reviews one diff for logic changes and risky changes; trivial formatting
 or typo changes can skip review. These call decisions are agent instructions, not
 an automatic mandatory review gate.
 
-## Select a workflow
+## Select a profile
 
-New project `.alp/settings.json`:
+In Paseo, the model picker lists only the two profiles, Phở and Cafe, and the
+session's config shows no Workflow setting. With `alp run`, pass `--profile pho`
+or `--profile cafe` (`--workflow` is the old name of the option). New project
+`.alp/settings.json`:
 
 ```json
 {
   "defaultAgent": "main",
-  "workflow": { "mode": "smart", "maxPeers": 2 }
+  "workflow": { "mode": "pho", "maxPeers": 2 }
 }
 ```
 
-Set `workflow.mode` to `supervised` before creating a new session, or override it
-for a single session through the public Paseo client:
+`workflow.mode` also accepts `smart` and `supervised`, the profiles' names before
+0.4; `alp upgrade` renames them. Set `workflow.supervisor` to `false` to start no
+supervisor. A project with a custom `delegation` graph and no `workflow` has no
+profile and no supervisor. Through the public Paseo client, a profile is the model:
 
 ```js
 const agent = await client.agents.create({
   cwd: '/absolute/project',
-  config: {
-    provider: 'alp/codex:gpt-6.1-sol',
-    modeId: 'workspace-write',
-    options: { agent: 'main', workflow: 'supervised' },
-  },
+  config: { provider: 'alp/cafe', modeId: 'full-access' },
 });
 ```
 
-The provider also accepts `settings.workflow` in its native `session.open` contract.
-Workflow and peer limit are persisted; resume cannot change the workflow, and child
-sessions inherit the parent's snapshot. Start a new session for changes. The
-session configuration reports the selected workflow; this release does not support
-changing it through an in-session settings control. No custom Desktop UI is added.
+The provider still accepts `options.workflow` and `settings.workflow` from older
+clients; conflicting selections fail. Profile and peer limit are persisted; resume
+cannot change the profile, and child sessions inherit the parent's snapshot. Start
+a new session for changes; changing the model, effort, or profile of an open
+session is refused.
+
+## Models and permissions
+
+Main runs on `claude:claude-opus-5-5` with `high` effort, unless `.alp/settings.json`
+sets `runtime.provider` or `runtime.model`, or the caller passes a model
+(`alp run --model`). Paseo never passes a model or effort. Main's mode defaults to
+`full-access`: Claude runs with `bypassPermissions`, Codex with the
+`danger-full-access` sandbox, so it runs any command, with network access, inside
+or outside the project, without asking. The caller can choose `read-only` or
+`workspace-write` instead. A child inherits its requester's mode unless it asks for
+less, and never exceeds it; oracle, reviewer and supervisor are always read-only.
 
 Default maximum simultaneous peers is **2**. Increase `workflow.maxPeers` only at
 the user's request, then start a new session. Peer limits count across the root
@@ -122,19 +136,20 @@ worktree events, board pins, and questions to the user with their answers.
 
 ## Assignment and model selection
 
-`alp_delegate` accepts `agent`, `task`, and optional `mode`, `model`, `thinking`,
-and `modelReason`. Model IDs are runtime-prefixed (`codex:…` or `claude:…`). Main
-chooses peer model/effort in Smart; lead chooses them in Supervised. Omitted peer
-choices inherit the parent model/effort; specifying a different model without an
-effort uses that model's configured/default effort. Invalid choices fail explicitly.
+`alp_delegate` accepts `agent`, `task`, and optional `mode` (`read-only`,
+`workspace-write` or `full-access`), `model`, `thinking`, and `modelReason`. Model IDs
+are runtime-prefixed (`codex:…` or `claude:…`). Main chooses peer model/effort in
+Phở; lead chooses them in Cafe. Omitted peer choices inherit the parent model/effort;
+specifying a different model without an effort uses that model's configured/default
+effort. Invalid choices fail explicitly.
 
-Oracle requires an explicit model, effort, and nonempty selection rationale. Its
-instructions require the highest-capability available model, assessed from runtime
-catalog descriptions; there is no fixed premium model name. The host enforces
-explicit selection, not a universal model-quality ranking. Catalog data may not
-establish a ranking or guarantee quota access; the coordinator must state uncertainty
-and must not silently downgrade. There is no automatic fallback model on failure.
-Both oracle and reviewer are forced to read-only regardless of parent permissions.
+Oracle runs on Fable (`claude:claude-fable-5-1`) or Astra (`codex:gpt-6-astra`); any
+other model, or none, is refused. Its effort defaults to `high`; `modelReason` is
+optional. For two independent opinions, the coordinator starts one oracle on each
+model with `wait: false` and compares their advice: oracles, like read-only or
+worktree peers, run beside other running assignments. There is no automatic
+fallback model on failure. Oracle and reviewer are forced to read-only regardless of
+parent permissions.
 
 Every assignment has its own native runtime session and ALP instructions. By
 default the caller waits for the real handoff, or for the child's first question.
@@ -142,6 +157,77 @@ Child timelines identify parent session and tool call. Duplicate tool calls are
 deduplicated. Interrupt, inactivity, and parent shutdown close descendants; user
 steering reaches the parent and leaves its assignments running. The existing maximum
 of 16 child assignments per user turn and ancestry depth of 4 remain in effect.
+
+## Supervisor and lessons
+
+When a root main session opens in Phở or Cafe, and the host can show child
+sessions, the runtime starts its supervisor beside it without delaying main's open.
+The supervisor is agent `supervisor` on `claude:claude-sonnet-4-6` with `medium`
+effort, always read-only, and has only `alp_send` and `alp_board`. It is a child of
+main but not an assignment: it files no handoff, delegates nothing, does not count as
+a peer, and survives interrupts of main. A supervisor that fails to start never fails
+main. Projects from before 0.4 get its starter files when it first starts. Closing
+main closes it; a resumed main starts a new one.
+
+After each of main's turns, ALP sends the supervisor a digest of what happened in the
+tree during that turn, oldest first: the user's prompt or steer, main's tool calls and
+shell commands with their status, assignments with agent, model, effort, mode,
+isolation and task, their results and handoffs, mail between agents, questions to the
+user and answers, board pins, worktree events, main's final message, and
+how the turn ended. The digest is capped at 12,000 characters. A turn that ends while
+the supervisor is still reviewing is sent when that review ends. The tree counts as
+busy from the end of main's turn until the review is done, so alpd does not close an
+idle tree in between.
+
+The supervisor checks the turn against `ALP.md`, main's `AGENT.md`, the profile and
+the recorded lessons. When it finds process mistakes, it sends main one note with
+`alp_send` to `parent`. That note is deferred mail: it is never steered into a
+running turn or taken by `alp_wait`; it wakes an idle main, or rides on main's next
+turn. Main answers in that turn and records the lesson with
+`alp_lesson { scope, lesson }`. A turn that only answers supervisor notes is not
+reviewed again.
+
+`alp_lesson` is available to a supervised main only. `scope: "project"` appends to
+`.alp/lessons.md` in the project; `scope: "user"` to `$ALP_HOME/lessons.md` (only
+when the host keeps a user library, as alpd does). A lesson is one rule of at most
+600 characters, written as `- <date>: <rule>`. Later sessions load both files into
+main's and the supervisor's instructions, the newest 6,000 characters of each. Edit
+or delete lessons freely.
+
+## Skills from lessons
+
+When three or more lessons cover one theme, or a lesson recurs, the supervisor
+suggests distilling them into a skill, and main proposes one with
+`alp_skill { name, description, body, roles, lessons?, replace? }`. Main scopes it to
+the roles whose work it guides: itself, `lead`, `peer`, `oracle`, `reviewer`,
+`supervisor`, or a custom agent of the project; an unknown role is refused. `lessons`
+lists the exact text of the lessons the skill replaces.
+
+ALP asks the user before saving anything: the question shows the target file, the
+roles, the lessons that move, and the whole `SKILL.md`, with the answers Approve and
+Reject. Only an approving answer (`Approve`, `yes`, `ok`, `đồng ý`, `duyệt`, …) saves
+it; another answer comes back to main as feedback, and a dismissal or a timeout
+saves nothing. An approved skill is written to `$ALP_HOME/skills/<name>/SKILL.md`,
+added to each chosen role in `$ALP_HOME/role-skills.json`, and the lessons it
+replaces leave both lessons files. A skill of an existing name needs
+`replace: true`. New sessions of those roles list it; ALP updates never touch it,
+since ALP did not ship it. `alp_skill` is available to a supervised main with a
+user library.
+
+## Issues
+
+Root main gets `alp_issue` for GitHub issues of the project (`target: "project"`,
+the repository its `origin` remote points to) or of ALP itself (`target: "alp"`,
+`phucanh08/alp-paseo`), for problems outside the task worth tracking. `search`
+lists up to 10 matching issues, open or closed, without asking. `create` (title,
+body, optional existing labels) and `comment` (issue number, body) first show the
+user the repository, the action and the whole draft, and post only on an approving
+answer, as for skills. Posts run the GitHub CLI (`gh`, or `ALP_GH_BIN`) with the
+user's login and end with a line saying an ALP agent drafted them with the user's
+approval. A project without a GitHub `origin`, a missing `gh`, or a failed post is
+reported to main. Other agents report problems to their requester instead. Main's
+instructions forbid posting any other way; with full access ALP cannot prevent a
+shell `gh` call, so that rule is an instruction, not a guarantee.
 
 ## Mail between agents
 
@@ -221,13 +307,16 @@ npm run build
 paseo plugin reload alp-provider
 ```
 
-`init` fills missing files without replacing user content. `upgrade` backs up and
-updates recognized shipped instructions, adds oracle/reviewer, and preserves custom
-instructions and skills. Projects with the old shipped main → lead → peer graph
-migrate to Supervised; older projects without routing migrate to Smart. Explicit
-custom graphs remain unchanged and continue using legacy custom routing unless a
-workflow is explicitly selected. Existing projects are not silently rewritten on
-plugin reload. Reconcile any customized instructions reported by upgrade yourself.
+`init` fills missing files without replacing user content and seeds the user's skill
+library. `upgrade` backs up and updates recognized shipped instructions, adds
+oracle, reviewer and supervisor, renames `smart`/`supervised` settings to
+`pho`/`cafe`, archives project skill copies identical to the shipped skills (so the
+library applies), and preserves custom instructions and skills. Projects with the old
+shipped main → lead → peer graph migrate to Cafe; older projects without routing
+migrate to Phở. Explicit custom graphs remain unchanged and continue using legacy
+custom routing unless a profile is explicitly selected. Existing projects are not
+silently rewritten on plugin reload. Reconcile any customized instructions reported
+by upgrade yourself.
 
 ## Live verification
 
@@ -236,7 +325,7 @@ port 6767):
 
 ```sh
 npm run test:e2e:workflow
-ALP_TEST_PROVIDER=alp/claude:sonnet node scripts/workflow-e2e.mjs smart
+node scripts/workflow-e2e.mjs pho
 ```
 
 They create isolated fixture directories under ignored `.alp-test/`, inspect actual

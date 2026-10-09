@@ -19,15 +19,15 @@ Run `node /path/to/alp/src/cli.js init [directory]` (or `alp init [directory]` w
 
 When the Paseo plugin opens an ALP session in a repository that lacks `ALP.md` or the starter `main` agent, it performs this initialization automatically. Initialization fills missing scaffold files and never replaces existing files, so partial and customized ALP setups are preserved.
 
-Initialization creates `ALP.md`, `.alp/settings.json`, and five editable agent packages: `main`, `lead`, `peer`, `oracle`, and `reviewer`, each containing `AGENT.md`, assigned workflow skills, an empty `hooks/` directory, and `.mcp.json` with `{ "mcpServers": {} }`. Main owns delivery; Smart lets main implement or call peer, while Supervised assigns technical execution to lead. Oracle and reviewer provide read-only advice and review.
+Initialization creates `ALP.md`, `.alp/settings.json`, and six editable agent packages: `main`, `lead`, `peer`, `oracle`, `reviewer`, and `supervisor`, each containing `AGENT.md`, an empty `skills/` directory for project-only skills, an empty `hooks/` directory, and `.mcp.json` with `{ "mcpServers": {} }`. Main owns delivery; Phở lets main implement or call peer, while Cafe assigns technical execution to lead. Oracle and reviewer provide read-only advice and review; the supervisor reviews main's process after each turn.
 
-The default settings select main with the Smart workflow. Paseo exposes an `alp_delegate` tool that executes real child sessions and returns their evidence. See [team workflow and migration](docs/alp/team-workflow.md).
+The default settings select main with the Phở profile. Main runs on Opus 5.5 with high effort and full access unless settings or the caller choose otherwise. Paseo exposes an `alp_delegate` tool that executes real child sessions and returns their evidence. See [Phở and Cafe profiles](docs/alp/team-workflow.md).
 
-Six [role skills](docs/alp/role-skills.md) cover intake, research, planning, delegation briefs, bug diagnosis, and commit packaging. Main receives six, lead five, and peer three; each agent selects directly from its scoped skills and loads contents only when needed.
+Six [role skills](docs/alp/role-skills.md) cover intake, research, planning, delegation briefs, bug diagnosis, and commit packaging. They live in your skill library in `$ALP_HOME` (default `~/.alp`), seeded on first use, together with `role-skills.json`, which assigns six to main, five to lead and three to peer. Edit either freely: app updates replace only library files you have not changed. Each agent selects directly from its skills and loads contents only when needed.
 
 Repeated runs fill in missing files and preserve existing file contents, including custom settings. Conflicting filesystem entry types cause an error; files already created before an error remain available for a later retry. Run `npm run test:init` to verify initialization independently.
 
-For projects created with the original main-only or team scaffold, run `node /path/to/alp/src/cli.js upgrade [directory]`. This installs missing skills, backs up and updates recognized original instructions, and adds workflow settings. The old shipped graph migrates to Supervised; custom graphs and customized instructions/skills remain unchanged.
+For projects created with an earlier scaffold, run `node /path/to/alp/src/cli.js upgrade [directory]`. This backs up and updates recognized original instructions, adds profile settings, renames the old `smart`/`supervised` profiles to `pho`/`cafe`, and archives project copies of skills that still match the shipped ones, so the library applies. The old shipped graph migrates to Cafe; custom graphs and customized instructions/skills remain unchanged.
 
 ## Development
 
@@ -64,24 +64,24 @@ Example `.alp/settings.json`:
 ```json
 {
   "defaultAgent": "main",
-  "workflow": { "mode": "smart", "maxPeers": 2 },
+  "workflow": { "mode": "pho", "maxPeers": 2 },
   "runtime": { "provider": "codex", "model": "gpt-5.6-sol", "reasoning": "low" }
 }
 ```
 
-`runtime.provider` selects `codex` or `claude` behind the ALP Paseo plugin; the Paseo provider ID itself is `alp`. `runtime.model` is passed through to the selected native harness, so it accepts any model name supported by that installed Codex or Claude Code version. Core treats these strings as provider-neutral data. Optional agent-local `skills/<name>/SKILL.md`, `hooks/*`, and `.mcp.json` are discovered by core. This prototype rejects agents with hooks rather than executing them without a defined hook contract.
+`workflow.mode` is `pho` or `cafe` (`smart` and `supervised`, their names before 0.4, are still accepted); `workflow.supervisor: false` turns the supervisor off. `runtime.provider` selects `codex` or `claude` behind the ALP Paseo plugin; the Paseo provider ID itself is `alp`. Without `runtime.provider` and `runtime.model`, main runs on `claude:claude-opus-5-5` with `high` effort; setting either replaces that default. `runtime.model` is passed through to the selected native harness, so it accepts any model name supported by that installed Codex or Claude Code version. Core treats these strings as provider-neutral data. Optional agent-local `skills/<name>/SKILL.md`, `hooks/*`, and `.mcp.json` are discovered by core. This prototype rejects agents with hooks rather than executing them without a defined hook contract.
 
 For example, select Claude Code and one of its model aliases in `.alp/settings.json`:
 
 ```json
 {
   "defaultAgent": "main",
-  "workflow": { "mode": "smart", "maxPeers": 2 },
+  "workflow": { "mode": "pho", "maxPeers": 2 },
   "runtime": { "provider": "claude", "model": "sonnet", "reasoning": "high" }
 }
 ```
 
-The Paseo model picker mirrors all models advertised by the installed native providers: currently 7 Codex models and 17 Claude Code models. ALP prefixes their IDs with `codex:` or `claude:` so a selection also chooses its runtime, for example `codex:gpt-6.1-sol` or `claude:claude-opus-5-5`. Configure another native model name in `runtime.model` when it is not listed in the picker.
+The Paseo model picker shows only the two profiles, Phở and Cafe; a session's model and effort follow from the profile and are not chosen in Paseo. `runtime.model` in `.alp/settings.json`, or `--model` and `--thinking` on `alp run`, still override them. Those take runtime-prefixed IDs such as `codex:gpt-6.1-sol` or `claude:claude-opus-5-5`, or any native model name the installed Codex or Claude Code accepts.
 
 Use `resolveAgent(projectRoot, { agent: 'your-agent' })` from `src/core/resolver.js` to resolve an agent without starting a runtime. Explicit selection overrides settings; missing settings default to `main`. There is no central agent registry.
 
@@ -91,7 +91,7 @@ Use `resolveAgent(projectRoot, { agent: 'your-agent' })` from `src/core/resolver
 
 ```sh
 node src/cli.js daemon start          # or: status | stop | restart
-node src/cli.js run --workflow supervised "Your task"   # streams the agent tree; Ctrl-C interrupts
+node src/cli.js run --profile cafe "Your task"   # streams the agent tree; Ctrl-C interrupts
 node src/cli.js ps [--all]            # live sessions as a tree; --all adds closed ones
 node src/cli.js top [session]         # live dashboard: who runs, who waits, questions, worktrees, leases
 node src/cli.js attach <session>      # follow a running tree, or print a closed one
@@ -164,14 +164,20 @@ paseo plugin reload alp-provider
 
 If loading fails, inspect the plugin process output with `paseo plugin logs alp-provider`. A full daemon restart is not required for source changes.
 
-### Smart and Supervised
+### Phở and Cafe
 
-New projects default to Smart: main works directly or delegates to peer. Supervised
-keeps main as supervisor while lead implements or delegates. Both use read-only
-oracle/reviewer. Select at session creation with `options.workflow`, or set
+New projects default to Phở: main works directly or delegates to peer. Cafe
+keeps main as supervisor while lead implements or delegates. In both, main runs on
+Opus 5.5 with high effort and full access, and starts a supervisor on Sonnet 4.6
+that reviews its process after each turn and asks main about mistakes; main records
+lessons it follows in later sessions. Main can distill recurring lessons into a
+skill for the roles it chooses, and open or comment on GitHub issues of the
+project or of ALP; the user approves each skill and each post first. Both use read-only oracle/reviewer. Select the
+profile in the Paseo model picker, with `alp run --profile`, or in
 `.alp/settings.json` → `workflow.mode`. The default concurrent peer limit is 2;
 raise `workflow.maxPeers` only at the user's request. Writers in the shared checkout
 run one at a time, across all sessions; writing peers can run in parallel in their own
-git worktrees (`isolation: "worktree"`) and are merged with `alp_merge`. Oracle requires an explicit premium model choice and effort, without
-hardcoded model names. Runtime catalog and available plan/usage snapshots inform
-coordination. See [workflow configuration and migration](docs/alp/team-workflow.md).
+git worktrees (`isolation: "worktree"`) and are merged with `alp_merge`. Oracle runs
+on Fable (`claude:claude-fable-5-1`) or Astra (`codex:gpt-6-astra`); main may ask
+both in parallel for two opinions. Runtime catalog and available plan/usage snapshots
+inform coordination. See [profile configuration and migration](docs/alp/team-workflow.md).

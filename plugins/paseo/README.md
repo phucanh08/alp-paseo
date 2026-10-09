@@ -1,12 +1,17 @@
 # ALP provider for Paseo
 
-Filesystem-defined agents backed by local Codex or Claude Code, with two workflows:
+Filesystem-defined agents backed by local Codex or Claude Code. The model picker
+offers two profiles, and nothing else:
 
-- **Smart**: main implements or delegates directly to peer.
-- **Supervised**: main supervises lead, which implements or delegates to peer.
+- **Phở**: main implements or delegates directly to peer.
+- **Cafe**: main supervises lead, which implements or delegates to peer.
 
-Both workflows support read-only oracle and reviewer agents. New projects default
-to Smart and a maximum of two concurrent peers. Writing assignments in the shared
+In both, main runs on Opus 5.5 with high effort and full access, and starts a
+supervisor on Sonnet 4.6, shown as a child session, that reviews main's process
+after each turn and asks main about mistakes; main records lessons it follows in
+later sessions. Both profiles support read-only reviewer and oracle agents; oracle
+runs on Fable or Astra, and main may ask both for two opinions. New projects default
+to Phở and a maximum of two concurrent peers. Writing assignments in the shared
 checkout run one at a time; in a git repository, writing peers can run in parallel,
 each in its own worktree, and their changes are merged back with `alp_merge`.
 
@@ -44,18 +49,23 @@ dismissal, goes back to main. Other agents reach you only through main, unless
 you write to one of them with `alp send`. `alp top` shows the whole tree live. Sessions started with `alp run` can be
 imported into Paseo with their child agents.
 
-Select ALP when creating a new session. Missing ALP starter files are initialized
-automatically. To select Supervised for new sessions, set `.alp/settings.json`:
+Select ALP and a profile, Phở or Cafe, when creating a new session. There is no
+Workflow setting, and model and effort are not chosen in Paseo; the permission mode
+defaults to full access. Missing ALP starter files are initialized automatically.
+The profile stays fixed for the session. To change main's model, set `runtime.model`
+in `.alp/settings.json`:
 
 ```json
 {
   "defaultAgent": "main",
-  "workflow": { "mode": "supervised", "maxPeers": 2 }
+  "workflow": { "mode": "cafe", "maxPeers": 2 },
+  "runtime": { "model": "claude:claude-fable-5-1", "reasoning": "high" }
 }
 ```
 
-You can also set `options.workflow` to `smart` or `supervised` when creating a
-session through the Paseo client. Workflow stays fixed for the session.
+Skills and the skills each role gets live in your library in `ALP_HOME`
+(`skills/` and `role-skills.json`), seeded on first use; app updates do not
+overwrite what you changed.
 `ALP_CODEX_BIN` and `ALP_CLAUDE_BIN` can select absolute native executables.
 
 See [workflow and migration documentation](https://github.com/phucanh08/alp-paseo/blob/main/docs/alp/team-workflow.md)
