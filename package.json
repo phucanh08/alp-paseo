@@ -16,7 +16,7 @@
   },
   "scripts": {
     "pretest": "node scripts/build-paseo.mjs",
-    "test": "ALP_HOME=\"$(mktemp -d)\" node --test",
+    "test": "ALP_HOME=\"$(mktemp -d)\" node --test 'test/*.test.js'",
     "check": "tsc -p tsconfig.paseo.json && tsc -p tsconfig.client.json",
     "build": "node scripts/build-paseo.mjs",
     "test:init": "node --test test/init.test.js",

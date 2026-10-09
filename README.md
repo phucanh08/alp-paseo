@@ -62,7 +62,7 @@ your-project/
     skills/ mcp/ hooks/   # optional: project entries; each overrides a library entry of its name
 ```
 
-`alp agents`, `alp skills`, `alp mcp` and `alp hooks` list what a project can use: ALP's built-ins, your library in `~/.alp`, and the project's own entries, with what each overrides and which agents use it.
+`alp agents`, `alp skills`, `alp mcp` and `alp hooks` list what a project can use: ALP's built-ins, your library in `~/.alp`, and the project's own entries, with what each overrides and which agents use it. `alp agent|team|skill|mcp|hook new|edit|cp|mv|rm` change them, in your library or with `--project` in the project, and `alp mcp test` and `alp hook test` try one out ([editing](docs/alp/agent-library.md#editing)).
 
 Example `.alp/settings.json`:
 
