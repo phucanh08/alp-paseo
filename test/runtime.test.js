@@ -62,7 +62,7 @@ test('runtime sources never import a viewer SDK or the plugin', async () => {
     const source = await readFile(new URL(file, directory), 'utf8');
     for (const match of source.matchAll(/(?:from\s+|import\s*\()['"]([^'"]+)['"]/g)) {
       const target = match[1];
-      assert.ok(target.startsWith('node:') || /^\.\/[^/]+$/.test(target) || /^\.\.\/core\/[^/]+$/.test(target) || target === 'zod', `${file} imports ${target}`);
+      assert.ok(target.startsWith('node:') || /^\.\/[^/]+$/.test(target) || /^\.\.\/core\/[^/]+$/.test(target) || target === 'zod' || target === 'smol-toml', `${file} imports ${target}`);
     }
   }
 });

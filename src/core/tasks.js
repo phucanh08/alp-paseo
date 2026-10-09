@@ -576,6 +576,14 @@ export function resolveGate(projectRoot, id, gateId, { by, note, remove = false 
     const text = checkText(note, 'note', NOTE_CHARS);
     task.gates = task.gates.map(entry => entry === gate ? { ...entry, resolved: { at: now(), by, ...(text ? { note: text } : {}) } } : entry);
     addLog(task, by, 'gate cleared', { gate: describeGate(gate), ...(text ? { note: text } : {}) });
+    // A formula's human step is the user's to do: approving its gate completes it.
+    if (task.step?.human && task.status !== 'closed' && !task.gates.some(entry => gateOpen(entry))) {
+      const summary = `Approved by ${by}${text ? `: ${text}` : ''}`;
+      task.status = 'closed';
+      task.assignee = null;
+      task.closed = { at: now(), by, reason: 'done', summary };
+      addLog(task, by, 'closed', { reason: 'done', summary });
+    }
   });
 }
 
@@ -650,5 +658,79 @@ export async function compactTasks(projectRoot, { days = 30, dryRun = false } = 
       if (!dryRun) await save(projectRoot, next);
     }
     return compacted;
+  });
+}
+
+// --- batches (beads import, formulas) ---------------------------------------------------
+
+/**
+ * Runs `work` under the task lock with every task loaded and a writer for many
+ * tasks at once; the changed tasks are written together when it returns, unless dryRun.
+ * `add` creates a task like createTask (relations are linked afterwards with `link`);
+ * `touch` marks an existing task changed; `link` adds a relation or returns why it cannot.
+ */
+export function batch(projectRoot, work, { dryRun = false } = {}) {
+  return locked(projectRoot, async () => {
+    const { tasks, errors } = await loadTasks(projectRoot);
+    const created = new Set();
+    const changed = new Set();
+    const api = {
+      tasks,
+      errors,
+      add(input, by, { id, createdAt, event = 'created', details = {}, extra = {} } = {}) {
+        const values = fields(input, projectRoot);
+        if (!values.title) fail('INVALID_TASK', 'A task needs a title');
+        const parent = input.parent ? requireTask(tasks, input.parent, 'parent') : undefined;
+        const taskId = id && isTaskId(id) && !tasks.some(task => task.id === id) ? id : newId(tasks, values.title, parent?.id);
+        const task = normalize({
+          id: taskId, rev: 1, ...values, status: 'open', parent: parent?.id ?? null,
+          createdBy: by, createdAt: createdAt ?? now(), updatedAt: now(), ...extra,
+        });
+        addLog(task, by, event, details);
+        tasks.push(task);
+        created.add(task.id);
+        return task;
+      },
+      touch(task, by, event, details = {}) {
+        if (by && event) addLog(task, by, event, details);
+        if (!created.has(task.id)) changed.add(task.id);
+      },
+      link(task, kind, otherId) {
+        const index = byId(tasks);
+        const other = index.get(otherId);
+        if (!other) return `no task ${otherId}`;
+        if (other.id === task.id) return 'a task cannot depend on itself';
+        if (kind === 'related') {
+          if (!task.related.includes(other.id)) task.related = [...task.related, other.id];
+          return undefined;
+        }
+        if (kind === 'discoveredFrom') { task.discoveredFrom = other.id; return undefined; }
+        if (kind === 'parent') {
+          if (task.parent && task.parent !== other.id) return `already has parent ${task.parent}`;
+          const chain = cycle(tasks, task.id, other.id);
+          if (chain) return `cycle ${chain}`;
+          task.parent = other.id;
+          return undefined;
+        }
+        if (task.blockedBy.includes(other.id)) return undefined;
+        if (ancestors(task.id, tasks).includes(other.id)) return `${other.id} is its parent or ancestor`;
+        const chain = cycle(tasks, task.id, other.id);
+        if (chain) return `cycle ${chain}`;
+        task.blockedBy = [...task.blockedBy, other.id];
+        return undefined;
+      },
+    };
+    const result = await work(api);
+    if (!dryRun) {
+      const index = byId(tasks);
+      for (const id of created) await save(projectRoot, index.get(id));
+      for (const id of changed) {
+        const task = index.get(id);
+        task.rev += 1;
+        task.updatedAt = now();
+        await save(projectRoot, task);
+      }
+    }
+    return result;
   });
 }

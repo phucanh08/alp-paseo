@@ -27,6 +27,12 @@ export type Task = {
   closed: { at: string; by: string; reason: CloseReason; summary?: string } | null;
   log: TaskLogEntry[];
   compacted?: { at: string; by: string; chars: number };
+  /** Where an imported task came from. */
+  external?: { system: string; id: string };
+  /** The formula step a task was poured from. */
+  step?: { formula: string; id: string; human?: boolean };
+  /** The formula an epic was poured from. */
+  formula?: { name: string; version?: number; vars: Record<string, string> };
 };
 
 export type GateKind = 'human' | 'timer' | 'gh:pr' | 'gh:run';
@@ -98,3 +104,11 @@ export function addGate(projectRoot: string, id: string, gate: { kind: GateKind;
 export function resolveGate(projectRoot: string, id: string, gateId: string, resolve: { by: string; note?: string; remove?: boolean }): Promise<Task>;
 export function checkGates(projectRoot: string, gh: (args: string[], options: { cwd: string }) => Promise<string>): Promise<{ cleared: Array<{ task: string; gate: string; detail: string }>; pending: Array<{ task: string; gate: string; detail: string }>; errors: Array<{ task: string; gate: string; error: string }> }>;
 export function compactTasks(projectRoot: string, options: { days?: number; dryRun?: boolean }, by: string): Promise<Array<{ id: string; before: number; after: number }>>;
+export type TaskBatch = {
+  tasks: Task[];
+  errors: Array<{ file: string; error: string }>;
+  add(input: TaskInput & { title: string }, by: string, options?: { id?: string; createdAt?: string; event?: string; details?: Record<string, unknown>; extra?: Partial<Task> & Record<string, unknown> }): Task;
+  touch(task: Task, by?: string, event?: string, details?: Record<string, unknown>): void;
+  link(task: Task, kind: 'blockedBy' | 'parent' | 'discoveredFrom' | 'related', other: string): string | undefined;
+};
+export function batch<T>(projectRoot: string, work: (batch: TaskBatch) => T | Promise<T>, options?: { dryRun?: boolean }): Promise<T>;

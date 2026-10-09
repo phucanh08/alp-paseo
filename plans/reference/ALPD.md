@@ -627,3 +627,39 @@ A task is written only when it gets smaller. `alp tasks compact [--days N] [--dr
   - drives the three RPCs through their contracts against a real project
 - `test/paseo.test.js` checks that the plugin registers the RPCs. On 2026-10-09 the panel was checked live. The plugin was installed into an isolated Paseo 0.11.1 daemon (its own home, port 6799), which compiled and loaded the client entry with no import-boundary errors. The Desktop app's web build was served locally and connected to that daemon. In a workspace of a demo ALP project, "Tasks" appeared in the new-tab menu, and the panel showed real data in this order: the human gate with Approve, the task in review with its handoff, ready, blocked, epics, and a folded closed list. Approve cleared the gate as `user`, which made the task ready. A title typed into the panel was added as a `user` task. The same day, `alp tasks gates` cleared real `gh:pr` gates on merged PRs #5 and #6 and a `gh:run` gate on a successful CI run.
 
+
+## 23. beads interchange and formulas as built, step 4 (2026-10-09)
+
+Goal: tasks move to and from beads, and a workflow the project repeats is a template that main or the user pours into tasks (D18).
+
+**Batch writes.** `batch(root, work, { dryRun })` in the task core loads every task under the task lock and hands `work` an API:
+- `add(input, by, { id?, createdAt?, event?, details?, extra? })` creates a task in memory, numbering children under their parent.
+- `touch(task, by?, event?, details?)` marks a task changed.
+- `link(task, relation, other)` adds a relation, or returns why not (unknown task, self reference, cycle).
+
+After `work` returns, the batch writes created tasks at rev 1 and changed ones at rev + 1, through temporary files, unless `dryRun`. An error thrown inside `work` writes nothing. Import and pour both use it, so either all of their tasks appear or none do.
+
+**beads JSONL.** `src/core/beads.js`:
+- `exportBeads(tasks)` gives one issue per task, sorted by id, with `id`, `title`, `description`, `status`, `priority`, `issue_type`, `assignee`, `labels`, `dependencies [{ issue_id, depends_on_id, type }]`, `created_at`, `created_by`, `updated_at`, `closed_at`, `close_reason`, `defer_until` (the latest open timer), and `external_ref` / `source_system`. Relations map as `blockedBy` to `blocks`, `parent` to `parent-child`, and `discoveredFrom` and `related` to their own names. A task in `review` is exported `in_progress`. Review, paths, gates, the handoff, the close record, compaction, and formula details ride in `metadata.alp`.
+- `parseJsonl(text)` keeps the line number of each record and each line that does not parse.
+- `importBeads(root, records, { dryRun, by })` upserts. It skips records whose `_type` is not `issue`, records without a title or id, tombstones, and ephemeral issues. It matches an ALP task id, or a task whose `external` is that beads id; any other issue gets a new ALP id, parents first so children are numbered under them. `design`, `acceptance_criteria` and `notes` join the description. Unknown types become `task` with a `beads:<type>` label. `closed` closes the task (by `beads` unless `metadata.alp.closed` says otherwise). `metadata.alp` restores review with its handoff. `in_progress` without that becomes `open` with a warning, since no ALP assignment holds it. A future `defer_until` becomes a timer gate, unless a timer within a second of it exists, because bd keeps whole seconds. `metadata` is read whether bd wrote an object or JSON text. Relations are linked after every issue has a task, and a missing target, an unknown dependency type, or a cycle is a warning. Nothing is deleted.
+
+The CLI adds `alp tasks export [-o file]` and `alp tasks import [file] [--dry-run] [--json]`; the default file is `.beads/issues.jsonl`.
+
+**Formulas.** `src/core/formulas.js`:
+- Files are `<name>.formula.toml` or `.json`, searched in `.alp/formulas`, `$ALP_HOME/formulas`, then `.beads/formulas`; the first of a name wins. `listFormulas` reports a file that does not load with its error, and `findFormula` refuses it.
+- The core does not parse TOML itself, since it imports only Node built-ins: callers pass `{ toml }`, and the CLI and runtime pass `smol-toml`'s `parse` (pinned at 1.9.0). Without it, TOML files report that they need a parser.
+- `validateFormula` takes `formula`, optional `title`, `description`, `version` and `priority`, `vars { name: { description?, required?, default? } }`, and 1–50 `steps [{ id, title, type?, needs?, description?, priority?, labels?, paths? }]`. It refuses duplicate step ids, unknown `needs`, and cycles.
+- `pourFormula(root, formula, vars, by, { dryRun, parent })` refuses unknown variables and missing required ones, then fills `{{var}}` in titles and descriptions. In one batch it creates an epic (the formula title, or `name (k=v, …)`; label `formula:<name>`; `formula: { name, version, vars }`) and a child per step in step order, with `step: { formula, id }` and `needs` as `blockedBy`. A `human` step is a `task` with `step.human` and a human gate `Your step: <title>`.
+- `resolveGate` closes a `step.human` task when its last open gate clears, with the summary `Approved by <who>[: note]`.
+
+`alp_task` for main adds `formulas`, which lists formulas with their vars and steps and the directories searched, and `pour { formula, vars?, parent? }`, which returns the epic and its steps. Main's instructions say to check formulas for a workflow the project repeats. The CLI adds `alp formula list`, `show <name>` and `pour <name> [--var k=v]… [--parent ID] [--dry-run] [--json]`, run as `user`.
+
+**Evidence.**
+- `test/beads.test.js`:
+  - export, then import into a second project, gives the same tasks back, and a second import changes nothing, including the file as bd rewrites it (whole-second times, `_type`, metadata as text)
+  - a beads-native file: new ids with children under parents, description sections, skipped records, warnings, a timer from `defer_until`, and an upsert that closes a task
+  - formulas: lookup order, validation, variables, a dry run, the poured epic and steps, and a human step closed by the user's approval
+  - main's `formulas` and `pour` actions and the CLI `formula`, `tasks export` and `tasks import`
+- On 2026-10-09, with a release formula in a fresh project, the prompt "set up the tracked work the way this project does releases" made main on Phở, then on Cafe, list the formulas and pour `release` with the right version. Each run reported the step ids and the human step, and the supervisor found both turns sound.
+- The same day, beads 1.3.1 (`@beads/bd`, installed in a scratch directory with its own HOME) exported an epic with children, a `blocks` dependency, an in-progress task with a design, and a closed bug. `alp tasks import` took them with the parent numbering, blocker, description and close reason. The ALP export went into `bd import` with parents, blockers, the deferral and `metadata.alp` intact, and bd's own export of that imported back with nothing to change.
