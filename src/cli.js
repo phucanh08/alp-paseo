@@ -15,7 +15,7 @@ import { commandDecision, profileFor } from './core/permissions.js';
 import { describeVerification, runVerify, verifyConfig } from './core/verify.js';
 import { discoverAgents } from './core/resolver.js';
 import { parse as toml } from 'smol-toml';
-import { addGate, blockersOf, checkGates, childrenOf, closeTask, compactTasks, createTask, describeGate, gateOpen, gatesOf, getTask, isTaskId, linkTask, recordVerification, listTasks, loadTasks, readyTasks, reopenTask, resolveGate, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
+import { addGate, blockersOf, checkGates, childrenOf, closeTask, compactTasks, createTask, describeGate, gateOpen, epicReport, gatesOf, getTask, isTaskId, linkTask, recordVerification, listTasks, loadTasks, readyTasks, reopenTask, resolveGate, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
 import { alpHome, connect, ensureDaemon, lockAlive, readLock } from './client/index.js';
 
 const USAGE = `Usage:
@@ -40,6 +40,7 @@ const USAGE = `Usage:
   alp formula list | show <name> | pour <name> [--var k=v]... [--parent ID] [--dry-run]
   alp task add <title> [-d text] [-p 0-4] [-t task|bug|feature|chore|epic] [--parent ID] [--after ID]... [-l label]... [--path P]... [--from ID]
   alp task show <id> [--json]
+  alp task report <epic> [--json]           what an epic came to: tasks, time, rework, verification
   alp task edit <id> [--title T] [-d text] [-p N] [-t type] [-l label]... [--path P]... [-m note]
   alp task close <id> [--reason done|wontfix|duplicate|superseded] [-m summary] [--unverified "why"]
   alp verify [--project DIR] [--task ID] [--json]   run the project's verify commands; --task records the result
@@ -464,6 +465,9 @@ async function log(args) {
       case 'verify':
         text = `${entry.skipped ? '–' : entry.passed ? '✓' : '✗'} verify in the ${entry.where}${entry.taskId ? ` for ${entry.taskId}` : ''}${entry.assignmentId ? ` (${entry.assignmentId})` : ''}: ${entry.skipped ? `skipped: ${entry.skipped}` : entry.detail}`;
         break;
+      case 'epic.landed':
+        text = `◆ ${entry.agent} closed ${entry.id} "${entry.title}": ${entry.tasks} tasks, ${entry.reworked} reworked`;
+        break;
       case 'notice':
         text = `${entry.level === 'error' ? '‼' : entry.level === 'warning' ? '!' : 'ℹ'} ${entry.text}`;
         break;
@@ -714,6 +718,13 @@ async function taskCommand([action, ...args]) {
     if (values.json) { console.log(JSON.stringify(task)); return; }
     printTask(task, tasks);
     return;
+  } else if (action === 'report') {
+    if (positionals.length !== 1) throw new UsageError();
+    const { tasks, errors } = await loadTasks(root);
+    warnUnreadable(errors);
+    const report = epicReport(positionals[0], tasks);
+    console.log(values.json ? JSON.stringify(report) : report.text);
+    return;
   } else if (action === 'edit') {
     if (positionals.length !== 1) throw new UsageError();
     task = await updateTask(root, positionals[0], { ...fields, ...(values.title !== undefined ? { title: values.title } : {}), note: values.message }, 'user');
@@ -747,6 +758,7 @@ async function taskCommand([action, ...args]) {
   console.log(`${{ add: 'Created', close: 'Closed', reopen: 'Reopened' }[action] ?? 'Updated'} ${path.join(TASKS_DIR, `${task.id}.json`)}`);
   if (action === 'gate') for (const gate of task.gates.filter(entry => gateOpen(entry))) console.log(`  ⏸ ${describeGate(gate)}`);
   console.log(taskRow(task, tasks));
+  if (action === 'close' && tasks.some(entry => entry.parent === task.id)) console.log(`\n${epicReport(task.id, tasks).text}`);
 }
 
 function printTask(task, tasks) {

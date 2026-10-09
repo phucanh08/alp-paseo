@@ -120,3 +120,7 @@ export type TaskBatch = {
 export function batch<T>(projectRoot: string, work: (batch: TaskBatch) => T | Promise<T>, options?: { dryRun?: boolean }): Promise<T>;
 
 export type TaskVerification = { at: string; by: string; passed: boolean; where?: string; commands: Array<{ step: string; command: string; exitCode: number; ms: number; output?: string; timedOut?: boolean }>; skipped?: string };
+
+export type EpicReport = { id: string; title: string; status: TaskStatus; tasks: number; closed: number; durationMs: number; reworked: number; verification: { passed: number; failed: number; skipped: number; none: number }; unverified: string[]; lines: string[]; text: string };
+export function epicReport(id: string, tasks: Task[]): EpicReport;
+export function landedParents(tasks: Task[]): Array<{ task: Task; children: number }>;

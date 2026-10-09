@@ -50,8 +50,8 @@ export function TasksPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
   const onAction = useCallback(async ({ id, action, gate }: Action) => {
     if (!directory) return;
     try {
-      await change({ directory, id, action, ...(gate ? { gate } : {}) });
-      toast.show(action === 'approve' ? `Approved ${id}` : action === 'close' ? `Closed ${id}` : `Reopened ${id}`, { variant: 'success' });
+      const { landed } = await change({ directory, id, action, ...(gate ? { gate } : {}) });
+      toast.show(landed ?? (action === 'approve' ? `Approved ${id}` : action === 'close' ? `Closed ${id}` : `Reopened ${id}`), { variant: 'success' });
       refresh();
     } catch (cause) {
       toast.error(cause instanceof Error ? cause.message : String(cause));

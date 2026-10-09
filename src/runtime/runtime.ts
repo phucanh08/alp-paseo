@@ -21,7 +21,7 @@ import { ALP_REPO, gh, projectRepo, type GitHubRunner } from './github.js';
 import { parse as toml } from 'smol-toml';
 import { findFormula, formulaDirs, listFormulas, pourFormula } from '../core/formulas.js';
 import { ADVISORS, addAllowRule, capMode, commandDecision, profileFor, unwrapShell, type PermissionProfile } from '../core/permissions.js';
-import { CLOSE_REASONS, GATE_KINDS, addGate, checkGates, resolveGate, TASK_STATUSES, TASK_TYPES, TASKS_DIR, blockersOf, childrenOf, closeTask, recordVerification, releaseOrphans, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, releaseTask, reopenTask, startRefusal, startTask, submitTask, summarize, taskDigest, updateTask, type Task } from '../core/tasks.js';
+import { CLOSE_REASONS, GATE_KINDS, addGate, checkGates, resolveGate, TASK_STATUSES, TASK_TYPES, TASKS_DIR, blockersOf, childrenOf, closeTask, epicReport, recordVerification, releaseOrphans, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, releaseTask, reopenTask, startRefusal, startTask, submitTask, summarize, taskDigest, updateTask, type Task } from '../core/tasks.js';
 
 export type RuntimeTransport = {
   request(method: string, params: any): Promise<any>;
@@ -1379,6 +1379,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       : entry.event === 'lesson' ? `${entry.agent} recorded a ${entry.scope} lesson: ${clip(entry.lesson)}`
       : entry.event === 'skill' ? `${entry.agent} saved skill ${entry.name} for ${entry.roles.join(', ')} with the user's approval`
       : entry.event === 'task' ? `${entry.agent} ${TASK_PAST[entry.action] ?? entry.action} task ${entry.id} "${clip(entry.title, 120)}"${entry.status ? ` (now ${entry.status})` : ''}${entry.detail ? `: ${clip(entry.detail)}` : ''}`
+      : entry.event === 'epic.landed' ? `${entry.agent} closed ${entry.id} "${clip(entry.title, 120)}": ${entry.tasks} tasks, ${entry.reworked} reworked, ${entry.unverified?.length ?? 0} closed unverified`
       : entry.event === 'recall' ? `${entry.agent} recalled ${entry.recalled} assignment ${entry.assignmentId}: ${clip(entry.question)}`
       : entry.event === 'issue' ? `${entry.action === 'create' ? `opened issue "${clip(entry.title, 200)}"` : `commented on issue #${entry.issue}`} in ${entry.repo} with the user's approval: ${entry.url}`
       : entry.event?.startsWith('worktree.') ? `${entry.event.slice('worktree.'.length)} worktree of ${entry.assignmentId} (${entry.branch})${entry.status ? `: ${entry.status}` : ''}`
@@ -1542,7 +1543,22 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       touchTask(rootOf(sessionId), task.id);
       runLog(rootOf(sessionId), { event: 'task', action, agent: by, id: task.id, title: task.title, status: task.status, ...(summary ?? note ? { detail: summary ?? note } : {}) });
       const { tasks } = await loadTasks(project);
-      return toolResult(true, { task: summarize(task, tasks), rev: task.rev, ...(poured ? { steps: poured.tasks.map(step => summarize(step, tasks)) } : {}) });
+      const landed: Record<string, unknown> = {};
+      if (action === 'close') {
+        // Closing an epic reports what it came to, to main and to the user.
+        if (tasks.some(entry => entry.parent === task.id)) {
+          const report = epicReport(task.id, tasks);
+          landed.report = report.text;
+          notice('info', report.text, project);
+          runLog(rootOf(sessionId), { event: 'epic.landed', agent: by, id: task.id, title: task.title, tasks: report.tasks, durationMs: report.durationMs, reworked: report.reworked, verification: report.verification, unverified: report.unverified });
+        }
+        const parent = task.parent ? tasks.find(entry => entry.id === task.parent) : undefined;
+        const siblings = parent ? childrenOf(parent.id, tasks) : [];
+        if (parent && parent.status !== 'closed' && siblings.every(entry => entry.status === 'closed')) {
+          landed.next = `All ${siblings.length} children of ${parent.id} "${parent.title}" are closed; close it with a summary, and ALP reports it to the user`;
+        }
+      }
+      return toolResult(true, { task: summarize(task, tasks), rev: task.rev, ...(poured ? { steps: poured.tasks.map(step => summarize(step, tasks)) } : {}), ...landed });
     } catch (error) {
       return toolResult(false, { error: errorData(error).message });
     }
@@ -1684,10 +1700,10 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }).catch(() => {});
   }
 
-  /** Tells every open root, and so the user in each viewer, something about ALP as a whole. */
-  function notice(level: 'info' | 'warning' | 'error', text: string) {
+  /** Tells every open root, or those of one project, and so the user in each viewer. */
+  function notice(level: 'info' | 'warning' | 'error', text: string, project?: string) {
     for (const [id, session] of sessions) {
-      if (session.parent || session.closed) continue;
+      if (session.parent || session.closed || (project !== undefined && session.mapping.agent.projectRoot !== project)) continue;
       emit(id, { type: 'item', item: { kind: 'notice', id: `notice-${randomUUID().slice(0, 8)}`, level, text } });
       runLog(id, { event: 'notice', level, text });
     }

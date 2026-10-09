@@ -157,5 +157,5 @@ Decided by the user on 2026-10-09, after reviewing [Gas Town](https://github.com
 
 Deferred until a real need appears: an integration branch per epic, formula overlays, and per-agent and per-model statistics. Not taken: tmux, Dolt, patrol agents, federation, OTEL, email and SMS escalation, and rotating accounts to avoid limits.
 
-Step 1 was built on 2026-10-09. Details: [alpd §27](ALPD.md). Step 2 was built the same day; the user closing a task is never refused, and ALP notes the failed check instead. Details: [alpd §28](ALPD.md). Step 3 was built the same day. Details: [alpd §29](ALPD.md).
+Step 1 was built on 2026-10-09. Details: [alpd §27](ALPD.md). Step 2 was built the same day; the user closing a task is never refused, and ALP notes the failed check instead. Details: [alpd §28](ALPD.md). Step 3 was built the same day. Details: [alpd §29](ALPD.md). Step 4 was built the same day. Any task with children counts as an epic. The report reaches the user as a notice in that project's sessions, and through `alp task close`, `alp task report` and the Paseo Tasks panel. Details: [alpd §30](ALPD.md).
 

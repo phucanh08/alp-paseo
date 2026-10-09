@@ -440,8 +440,44 @@ alp task add "Add --json" -p 1 -t feature --parent t-77e0 --after t-91c2 -l cli
 alp task show t-77e0.2
 alp task dep add t-c40d --after t-77e0.2      # rm removes; also --parent, --related
 alp task close t-77e0.2 -m "Merged in #12"    # --reason wontfix | duplicate | superseded
+alp task report t-77e0                        # what an epic came to so far
 alp task reopen t-77e0.2 -m "Fails on Windows"
 ```
+
+### Epic landed
+
+An epic, or any task with children, lands when its last child closes. Main
+learns it twice: the `alp_task close` that closed the last child says so, and
+main's next task list starts with it:
+
+```text
+- ready to close: t-77e0 P1 Auth overhaul; all 3 children are closed. Close it with a summary; ALP reports it to the user
+```
+
+When main closes the epic, ALP sends the report as a notice to the open
+sessions of that project. The report also goes in main's tool result and in
+the assignment log as `epic.landed`:
+
+```text
+Landed epic t-77e0 "Auth overhaul": 3/3 tasks closed, took 2h 5m, 1 reworked, 2 verified, 1 failed verification, 1 closed unverified.
+Auth reworked end to end
+✓ t-77e0.1 Tokens — done: Rotating tokens, tested
+✓ t-77e0.2 Sessions — done: Sessions done
+  ✓ t-77e0.2.1 Cookie flags — done: Flags set (unverified)
+✗ t-77e0.3 Docs — wontfix: Covered by the README
+```
+
+The report counts only the tasks at the bottom of the tree; a parent like
+`t-77e0.2` is a group, not one more task. A task counts as reworked each time
+it is delegated again from review, and as handed back when an assignment
+released it or alpd stopped under it. Verification counts each task's last
+check, and `closed unverified` names those closed after a failed check with a
+reason. The time runs from the epic's creation to its close.
+
+`alp task report <epic>` prints the same report at any time, and says
+`Progress of …` while the epic is open. Add `--json` for the counts. When you
+close an epic yourself with `alp task close`, the CLI prints the report; in
+Paseo's Tasks panel, the toast shows its first line.
 
 ### Gates
 

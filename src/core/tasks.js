@@ -545,6 +545,57 @@ export async function releaseOrphans(projectRoot, isOrphan, describe, by) {
 export const orphanedEntry = task => task.status === 'open' && task.log.at(-1)?.event === 'orphaned' ? task.log.at(-1) : undefined;
 
 const DIGEST_CHARS = 2000;
+
+/** Open tasks whose children are all closed: epics and larger tasks ready for main to close. */
+export function landedParents(tasks) {
+  return tasks.filter(task => task.status !== 'closed' && tasks.some(child => child.parent === task.id) && childrenOf(task.id, tasks).every(child => child.status === 'closed')).sort(rank)
+    .map(task => ({ task, children: childrenOf(task.id, tasks).length }));
+}
+
+const span = ms => {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `${Math.max(1, minutes)}m`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 48 ? `${hours}h ${minutes % 60}m` : `${Math.floor(hours / 24)}d ${hours % 24}h`;
+};
+
+/**
+ * What an epic (or any task with children) came to: its tasks below it, how long
+ * it took, rework, verification, and a line per task. Works on open epics too.
+ */
+export function epicReport(id, tasks) {
+  const index = byId(tasks);
+  const epic = index.get(id) ?? fail('TASK_NOT_FOUND', `No task ${id}`);
+  const below = [];
+  const depth = new Map();
+  const walk = (parent, level) => { for (const child of childrenOf(parent, tasks)) { if (depth.has(child.id)) continue; below.push(child); depth.set(child.id, level); walk(child.id, level + 1); } };
+  walk(id, 0);
+  if (!below.length) fail('INVALID_TASK', `${id} has no child tasks to report`);
+  const leaves = below.filter(task => !below.some(other => other.parent === task.id));
+  const closed = leaves.filter(task => task.status === 'closed');
+  const count = event => leaves.reduce((sum, task) => sum + task.log.filter(entry => entry.event === event).length, 0);
+  const verification = { passed: 0, failed: 0, skipped: 0, none: 0 };
+  for (const task of leaves) {
+    if (!task.verified) verification.none++;
+    else if (task.verified.skipped) verification.skipped++;
+    else verification[task.verified.passed ? 'passed' : 'failed']++;
+  }
+  const unverified = leaves.filter(task => task.closed?.unverified).map(task => task.id);
+  const end = epic.closed?.at ?? new Date().toISOString();
+  const durationMs = Date.parse(end) - Date.parse(epic.createdAt);
+  const mark = task => task.status !== 'closed' ? '○' : task.closed.reason === 'done' ? '✓' : '✗';
+  const lines = below.map(task => `${'  '.repeat(depth.get(task.id))}${mark(task)} ${task.id} ${task.title}${task.closed ? ` — ${task.closed.reason}${task.closed.summary ? `: ${task.closed.summary.split('\n')[0].slice(0, 160)}` : ''}${task.closed.unverified ? ' (unverified)' : ''}` : ` (${task.status})`}`);
+  const facts = [
+    `${closed.length}/${leaves.length} tasks closed`,
+    `${epic.closed ? 'took' : 'open for'} ${span(durationMs)}`,
+    count('reworked') ? `${count('reworked')} reworked` : '',
+    count('released') + count('orphaned') ? `${count('released') + count('orphaned')} handed back` : '',
+    verification.passed || verification.failed || verification.skipped ? `${verification.passed} verified${verification.failed ? `, ${verification.failed} failed verification` : ''}${verification.skipped ? `, ${verification.skipped} skipped` : ''}` : '',
+    unverified.length ? `${unverified.length} closed unverified` : '',
+  ].filter(Boolean);
+  const text = `${epic.status === 'closed' ? 'Landed' : 'Progress of'} ${epic.type} ${epic.id} "${epic.title}": ${facts.join(', ')}.${epic.closed?.summary ? `\n${epic.closed.summary}` : ''}\n${lines.join('\n')}`;
+  return { id: epic.id, title: epic.title, status: epic.status, tasks: leaves.length, closed: closed.length, durationMs, reworked: count('reworked'), verification, unverified, lines, text };
+}
 const DIGEST_READY = 8;
 
 /**
@@ -558,11 +609,13 @@ export function taskDigest(tasks, errors = []) {
   const review = tasks.filter(task => task.status === 'review').sort(rank);
   const working = tasks.filter(task => task.status === 'in_progress').sort(rank);
   const interrupted = tasks.filter(task => orphanedEntry(task)).sort(rank);
+  const landed = landedParents(tasks);
   const ready = readyTasks(tasks).filter(task => !orphanedEntry(task));
   const blocked = tasks.filter(task => task.status === 'open' && task.type !== 'epic' && blockersOf(task, tasks, index).length).length;
   // Tasks only a gate holds back; a human gate waits for the user, the others clear by themselves.
   const gated = tasks.filter(task => task.status === 'open' && task.type !== 'epic' && !blockersOf(task, tasks, index).length && gatesOf(task, tasks, index).length).sort(rank);
   const lines = [
+    ...landed.map(({ task, children }) => `- ready to close: ${line(task)}; all ${children} children are closed. Close it with a summary; ALP reports it to the user`),
     ...review.map(task => `- review: ${line(task)} ← ${task.handoff?.agent ?? task.assignee?.agent ?? 'unknown'}, handoff ${task.handoff?.outcome ?? 'none'}${task.verified ? `, ${describeVerification(task.verified)}` : ''}; accept with close, or send it back`),
     ...working.map(task => `- in progress: ${line(task)} ← ${task.assignee?.agent ?? 'unknown'}${verificationFailed(task) ? `, ${describeVerification(task.verified)}` : ''}`),
     ...interrupted.map(task => { const entry = orphanedEntry(task); return `- interrupted: ${line(task)} ← ${entry.agent}; alpd stopped while it worked${entry.note ? `, ${entry.note}` : ''}; delegate it again`; }),
