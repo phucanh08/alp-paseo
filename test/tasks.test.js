@@ -1,0 +1,314 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { spawn, spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { initProject } from '../src/core/init.js';
+import { blockersOf, closeTask, createTask, getTask, linkTask, listTasks, loadTasks, readyTasks, reopenTask, startTask, updateTask } from '../src/core/tasks.js';
+import { createAlpRuntime, claudeToolShapes } from '../dist/runtime/index.js';
+
+const CLI = fileURLToPath(new URL('../src/cli.js', import.meta.url));
+
+async function project(t) {
+  const directory = await mkdtemp(path.join(tmpdir(), 'alp-tasks-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const root = path.join(directory, 'project');
+  await mkdir(path.join(root, '.alp'), { recursive: true });
+  return { directory, root };
+}
+
+const ids = tasks => tasks.map(task => task.id);
+
+test('tasks are JSON files with short hash ids; children of a task get numbered ids', async t => {
+  const { root } = await project(t);
+  const epic = await createTask(root, { title: 'alp status for scripts', type: 'epic' }, 'user');
+  assert.match(epic.id, /^t-[0-9a-f]{4}$/);
+  assert.deepEqual([epic.status, epic.priority, epic.rev, epic.createdBy, epic.log[0].event], ['open', 2, 1, 'user', 'created']);
+  const first = await createTask(root, { title: 'Normalize the status tree', parent: epic.id, priority: 1, paths: ['./src/cli.js', 'src/cli.js'] }, 'main');
+  const second = await createTask(root, { title: 'Add --json', parent: epic.id, blockedBy: [first.id], labels: ['cli'] }, 'main');
+  assert.deepEqual([first.id, second.id], [`${epic.id}.1`, `${epic.id}.2`]);
+  assert.deepEqual(first.paths, ['src/cli.js']);
+  assert.deepEqual(JSON.parse(await readFile(path.join(root, '.alp/tasks', `${second.id}.json`), 'utf8')).blockedBy, [first.id]);
+  assert.equal(await readFile(path.join(root, '.alp/tasks/.gitignore'), 'utf8'), '.lock\n*.tmp\n');
+  // Nothing is left behind by a write.
+  assert.deepEqual((await readdir(path.join(root, '.alp/tasks'))).sort(), ['.gitignore', `${epic.id}.1.json`, `${epic.id}.2.json`, `${epic.id}.json`].sort());
+
+  await assert.rejects(createTask(root, { title: ' ' }, 'user'), /title must be nonempty/);
+  await assert.rejects(createTask(root, { title: 'x', priority: 7 }, 'user'), /priority must be 0/);
+  await assert.rejects(createTask(root, { title: 'x', type: 'story' }, 'user'), /type must be one of/);
+  await assert.rejects(createTask(root, { title: 'x', paths: ['../elsewhere'] }, 'user'), /outside the project/);
+  await assert.rejects(createTask(root, { title: 'x', blockedBy: ['t-ffff'] }, 'user'), /No task t-ffff/);
+  await assert.rejects(createTask(root, { title: 'x', parent: epic.id, blockedBy: [epic.id] }, 'user'), /blocked by its parent or ancestor/);
+});
+
+test('ready lists open non-epic tasks with nothing open blocking them or their ancestors, most urgent first', async t => {
+  const { root } = await project(t);
+  const epic = await createTask(root, { title: 'Epic', type: 'epic' }, 'user');
+  const normalize = await createTask(root, { title: 'Normalize', parent: epic.id, priority: 1 }, 'user');
+  const json = await createTask(root, { title: 'Add --json', parent: epic.id, blockedBy: [normalize.id] }, 'user');
+  const docs = await createTask(root, { title: 'Document --json', blockedBy: [json.id], priority: 0 }, 'user');
+  const colors = await createTask(root, { title: 'Fix table colors', priority: 3 }, 'user');
+  const gate = await createTask(root, { title: 'Release gate', priority: 4 }, 'user');
+  let { tasks } = await loadTasks(root);
+  assert.deepEqual(ids(readyTasks(tasks)), [normalize.id, colors.id, gate.id]);
+  assert.deepEqual(blockersOf(tasks.find(task => task.id === docs.id), tasks), [json.id]);
+
+  // A blocked epic holds back its whole branch.
+  await linkTask(root, epic.id, { add: { blockedBy: [gate.id] } }, 'user');
+  ({ tasks } = await loadTasks(root));
+  assert.deepEqual(ids(readyTasks(tasks)), [colors.id, gate.id]);
+  assert.deepEqual(blockersOf(tasks.find(task => task.id === json.id), tasks), [normalize.id, gate.id]);
+
+  await closeTask(root, gate.id, { summary: 'Released' }, 'user');
+  await closeTask(root, normalize.id, { reason: 'done', summary: 'Merged' }, 'main');
+  ({ tasks } = await loadTasks(root));
+  assert.deepEqual(ids(readyTasks(tasks)), [json.id, colors.id]);
+  assert.deepEqual(ids(listTasks(tasks)), [docs.id, epic.id, json.id, colors.id]);
+  assert.deepEqual(ids(listTasks(tasks, { status: 'closed' })), [normalize.id, gate.id]);
+  assert.deepEqual(ids(listTasks(tasks, { all: true })).length, 6);
+});
+
+test('links refuse cycles and self references, and removals free the graph', async t => {
+  const { root } = await project(t);
+  const a = await createTask(root, { title: 'A' }, 'user');
+  const b = await createTask(root, { title: 'B', blockedBy: [a.id] }, 'user');
+  const c = await createTask(root, { title: 'C', blockedBy: [b.id] }, 'user');
+  await assert.rejects(linkTask(root, a.id, { add: { blockedBy: [c.id] } }, 'user'), new RegExp(`cycle \\(each waits on the next\\): ${a.id} → ${c.id} → ${b.id} → ${a.id}`));
+  await assert.rejects(linkTask(root, a.id, { add: { blockedBy: [a.id] } }, 'user'), /cannot block itself/);
+  await assert.rejects(linkTask(root, a.id, { add: { parent: a.id } }, 'user'), /its own parent/);
+  // A parent may not wait on its own child: the child waits on the parent's blockers.
+  const epic = await createTask(root, { title: 'Epic', type: 'epic' }, 'user');
+  const child = await createTask(root, { title: 'Child', parent: epic.id }, 'user');
+  await assert.rejects(linkTask(root, epic.id, { add: { blockedBy: [child.id] } }, 'user'), /cycle/);
+  await assert.rejects(linkTask(root, c.id, { add: { parent: b.id } }, 'user'), /blocked by .* which would become its parent/);
+  await assert.rejects(linkTask(root, a.id, { add: { owner: 'x' } }, 'user'), /add and remove take blockedBy, related and parent/);
+
+  // Removing the edge first makes the reverse edge legal, in one call.
+  const moved = await linkTask(root, b.id, { remove: { blockedBy: [a.id] }, add: { related: [c.id] } }, 'main');
+  assert.deepEqual([moved.blockedBy, moved.related, moved.rev], [[], [c.id], 2]);
+  assert.deepEqual(moved.log.at(-1).changes, [`-blockedBy ${a.id}`, `+related ${c.id}`]);
+  await linkTask(root, a.id, { add: { blockedBy: [c.id] } }, 'user');
+  // A link that changes nothing writes nothing.
+  assert.equal((await linkTask(root, a.id, { add: { blockedBy: [c.id] } }, 'user')).rev, 2);
+  await assert.rejects(linkTask(root, a.id, { remove: { parent: epic.id } }, 'user'), /is not a child of/);
+});
+
+test('start takes a ready task once; close and reopen move it through its lifecycle', async t => {
+  const { root } = await project(t);
+  const blocker = await createTask(root, { title: 'Blocker' }, 'user');
+  const task = await createTask(root, { title: 'Work', blockedBy: [blocker.id] }, 'user');
+  await assert.rejects(startTask(root, task.id, { agent: 'main' }, 'main'), new RegExp(`blocked by ${blocker.id}`));
+  await closeTask(root, blocker.id, {}, 'user');
+
+  // Two starts at once: the lock lets exactly one through.
+  const results = await Promise.allSettled([startTask(root, task.id, { agent: 'peer', assignment: 'a1' }, 'main'), startTask(root, task.id, { agent: 'peer', assignment: 'a2' }, 'main')]);
+  assert.deepEqual(results.map(result => result.status).sort(), ['fulfilled', 'rejected']);
+  assert.match(results.find(result => result.status === 'rejected').reason.message, /already in progress with peer/);
+  let current = await getTask(root, task.id);
+  assert.equal(current.status, 'in_progress');
+  assert.equal(current.assignee.agent, 'peer');
+
+  // A writer that read an older rev is refused.
+  await assert.rejects(updateTask(root, task.id, { priority: 1 }, 'user', { ifRev: current.rev - 1 }), /changed \(rev \d+, expected \d+\)/);
+  current = await updateTask(root, task.id, { priority: 1, note: 'Customer is waiting' }, 'user', { ifRev: current.rev });
+  assert.deepEqual(current.log.at(-1), { ...current.log.at(-1), event: 'updated', fields: ['priority'], note: 'Customer is waiting' });
+  await assert.rejects(updateTask(root, task.id, { type: 'epic' }, 'user'), /never worked on directly/);
+
+  current = await closeTask(root, task.id, { reason: 'done', summary: 'npm test: 150 passed' }, 'main');
+  assert.deepEqual([current.status, current.assignee, current.closed.reason, current.closed.summary], ['closed', null, 'done', 'npm test: 150 passed']);
+  await assert.rejects(closeTask(root, task.id, {}, 'main'), /already closed/);
+  await assert.rejects(startTask(root, task.id, { agent: 'main' }, 'main'), /closed; reopen it first/);
+  current = await reopenTask(root, task.id, { note: 'Fails on Windows' }, 'user');
+  assert.deepEqual([current.status, current.closed, current.log.at(-1).from], ['open', null, 'closed']);
+  await assert.rejects(reopenTask(root, task.id, {}, 'user'), /already open/);
+  await assert.rejects(closeTask(root, task.id, { reason: 'later' }, 'user'), /reason must be one of/);
+
+  const epic = await createTask(root, { title: 'Epic', type: 'epic' }, 'user');
+  const child = await createTask(root, { title: 'Child', parent: epic.id }, 'user');
+  await assert.rejects(startTask(root, epic.id, { agent: 'main' }, 'main'), /is an epic/);
+  await assert.rejects(closeTask(root, epic.id, { reason: 'done' }, 'user'), new RegExp(`open children: ${child.id}`));
+  await closeTask(root, epic.id, { reason: 'wontfix' }, 'user');
+  await closeTask(root, child.id, { reason: 'wontfix' }, 'user');
+  await assert.rejects(reopenTask(root, child.id, {}, 'user'), /reopen the parent first/);
+});
+
+test('unreadable task files are reported and skipped, and a stale lock is cleared', async t => {
+  const { root } = await project(t);
+  const task = await createTask(root, { title: 'Good' }, 'user');
+  await writeFile(path.join(root, '.alp/tasks/t-bad0.json'), '{ not json');
+  await writeFile(path.join(root, '.alp/tasks/t-0dd1.json'), JSON.stringify({ id: 't-other', title: 'x', status: 'open' }));
+  const { tasks, errors } = await loadTasks(root);
+  assert.deepEqual(ids(tasks), [task.id]);
+  assert.deepEqual(errors.map(error => error.file).sort(), [path.join('.alp/tasks/t-0dd1.json'), path.join('.alp/tasks/t-bad0.json')]);
+
+  const lock = path.join(root, '.alp/tasks/.lock');
+  await mkdir(lock);
+  const old = new Date(Date.now() - 60_000);
+  await utimes(lock, old, old);
+  assert.equal((await updateTask(root, task.id, { title: 'Still writable' }, 'user')).title, 'Still writable');
+  await assert.rejects(readdir(lock), { code: 'ENOENT' });
+});
+
+function cli(root, home, ...args) {
+  return spawnSync(process.execPath, [CLI, ...args], { cwd: root, encoding: 'utf8', env: { ...process.env, ALP_HOME: home } });
+}
+
+test('the CLI adds, links, lists, shows and closes tasks as the user', async t => {
+  const { directory, root } = await project(t);
+  const home = path.join(directory, 'home');
+  const json = (...args) => {
+    const result = cli(root, home, ...args, '--json');
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const epic = json('task', 'add', 'alp status', 'for scripts', '-t', 'epic');
+  assert.equal(epic.title, 'alp status for scripts');
+  const first = json('task', 'add', 'Normalize', '-p', '1', '--parent', epic.id, '-l', 'cli', '-l', 'core', '--path', 'src/cli.js');
+  const second = json('task', 'add', 'Add --json', '--parent', epic.id, '--after', first.id, '-d', 'Print JSON.');
+  assert.deepEqual([first.createdBy, first.labels, second.blockedBy, second.description], ['user', ['cli', 'core'], [first.id], 'Print JSON.']);
+
+  assert.deepEqual(ids(json('tasks', 'ready')), [first.id]);
+  const listed = cli(root, home, 'tasks');
+  assert.match(listed.stdout, new RegExp(`○ ${second.id.replace('.', '\\.')}\\s+P2 task\\s+open\\s+Add --json  blocked by ${first.id}`));
+
+  const cycle = cli(root, home, 'task', 'dep', 'add', first.id, '--after', second.id);
+  assert.equal(cycle.status, 1);
+  assert.match(cycle.stderr, /alp: That would make a cycle/);
+  assert.match(cli(root, home, 'task', 'close', first.id, '-m', 'Merged').stdout, /Closed \.alp\/tasks\/.*\n● .*closed\s+Normalize/);
+  assert.deepEqual(ids(json('tasks', 'ready')), [second.id]);
+  assert.equal(json('task', 'edit', second.id, '-p', 'p0', '-m', 'urgent').priority, 0);
+  assert.deepEqual(json('task', 'dep', 'rm', second.id, '--after', first.id).blockedBy, []);
+  assert.equal(json('task', 'reopen', first.id, '-m', 'Regressed').status, 'open');
+
+  const shown = cli(root, home, 'task', 'show', epic.id);
+  assert.match(shown.stdout, /○ t-[0-9a-f]{4}  alp status for scripts\n  epic, P2, open; created by user/);
+  assert.match(shown.stdout, /Normalize/);
+  assert.equal(json('tasks', '--all').length, 3);
+  assert.equal(json('tasks', '--status', 'closed').length, 0);
+
+  const outside = cli(path.dirname(root), home, 'tasks');
+  assert.equal(outside.status, 1);
+  assert.match(outside.stderr, /is not an ALP project/);
+  assert.equal(cli(root, home, 'task', 'add').status, 1);
+  assert.equal(cli(root, home, 'task', 'fly', 'x').status, 1);
+  assert.equal(cli(root, home, 'tasks', 'later').status, 1);
+});
+
+test('concurrent CLI processes take the lock in turn', async t => {
+  const { directory, root } = await project(t);
+  const home = path.join(directory, 'home');
+  const epic = JSON.parse(cli(root, home, 'task', 'add', 'Epic', '-t', 'epic', '--json').stdout);
+  const run = n => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI, 'task', 'add', `Child ${n}`, '--parent', epic.id], { cwd: root, env: { ...process.env, ALP_HOME: home }, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('close', code => code === 0 ? resolve() : reject(new Error(stderr)));
+  });
+  await Promise.all([1, 2, 3, 4, 5].map(run));
+  const { tasks } = await loadTasks(root);
+  assert.deepEqual(tasks.filter(task => task.parent === epic.id).map(task => task.id).sort(), [1, 2, 3, 4, 5].map(n => `${epic.id}.${n}`));
+});
+
+// --- alp_task in the runtime ----------------------------------------------------
+
+let calls = 0;
+function fakeTransport(runtimes) {
+  return (cwd, env, kind) => {
+    const index = runtimes.length;
+    let turns = 0;
+    const runtime = {
+      kind, calls: [], threadId: `thread-${index}`, turnId: undefined,
+      async initialize() {},
+      onNotification(fn) { this.notification = fn; }, onFailure(fn) { this.failure = fn; }, onRequest(fn) { this.serverRequest = fn; },
+      async close() { this.closed = true; },
+      async request(method, params) {
+        this.calls.push({ method, params });
+        if (method.startsWith('thread/')) return { thread: { id: this.threadId } };
+        if (method === 'turn/start') { this.turnId = `turn-${index}-${++turns}`; return { turn: { id: this.turnId } }; }
+        return {};
+      },
+      get started() { return this.calls.filter(call => call.method === 'turn/start'); },
+      get config() { return this.calls.find(call => call.method === 'thread/start').params; },
+      async call(tool, args) {
+        return JSON.parse((await this.serverRequest('item/tool/call', { threadId: this.threadId, turnId: this.turnId, callId: `${tool}-${index}-${++calls}`, namespace: null, tool, arguments: args })).contentItems[0].text);
+      },
+      finish(text = 'done') {
+        this.notification('item/completed', { threadId: this.threadId, item: { type: 'agentMessage', id: `output-${index}-${turns}`, text } });
+        this.notification('turn/completed', { threadId: this.threadId, turn: { id: this.turnId, status: 'completed' } });
+      },
+    };
+    runtimes.push(runtime);
+    return runtime;
+  };
+}
+
+async function until(check) {
+  for (let i = 0; i < 400; i++) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 5)); }
+  assert.fail('Expected condition did not arrive');
+}
+
+const tool = (harness, name) => harness.config.dynamicTools.find(candidate => candidate.name === name);
+
+test('main changes tasks with alp_task; assignments and the supervisor only read them', async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'alp-task-tool-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const root = path.join(directory, 'project');
+  await initProject(root);
+  const runtimes = [];
+  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: path.join(directory, 'home'), runLogDir: path.join(directory, 'runs') });
+  t.after(() => runtime.shutdown());
+  await runtime.open('root', { cwd: root });
+  await until(() => runtimes.length === 2 && runtimes[1].calls.some(call => call.method === 'thread/start'));
+  const [main, supervisor] = runtimes;
+
+  const mainTool = tool(main, 'alp_task');
+  assert.deepEqual(mainTool.inputSchema.properties.action.enum, ['create', 'update', 'link', 'start', 'close', 'reopen', 'show', 'list', 'ready']);
+  assert.deepEqual(Object.keys(mainTool.inputSchema.properties).sort(), Object.keys(claudeToolShapes.alp_task).sort());
+  assert.match(main.config.developerInstructions, /Tasks: the project's task graph lives in \.alp\/tasks[\s\S]*Only you and the user create or change tasks/);
+  assert.deepEqual(tool(supervisor, 'alp_task').inputSchema.properties.action.enum, ['show', 'list']);
+
+  await runtime.prompt('root', { clientMessageId: 'm1', delivery: 'auto', content: [{ type: 'text', text: 'Plan the status work' }] });
+  const epic = (await main.call('alp_task', { action: 'create', title: 'alp status for scripts', type: 'epic' })).task;
+  const first = (await main.call('alp_task', { action: 'create', title: 'Normalize the tree', parent: epic.id, priority: 1 })).task;
+  const second = (await main.call('alp_task', { action: 'create', title: 'Add --json', parent: epic.id, blockedBy: [first.id] })).task;
+  assert.deepEqual(second.blockedBy, [first.id]);
+  assert.deepEqual((await main.call('alp_task', { action: 'ready' })).tasks.map(task => task.id), [first.id]);
+  assert.match((await main.call('alp_task', { action: 'link', id: first.id, add: { blockedBy: [second.id] } })).error, /cycle/);
+  assert.match((await main.call('alp_task', { action: 'start', id: second.id })).error, new RegExp(`blocked by ${first.id}`));
+  assert.match((await main.call('alp_task', { action: 'close', id: first.id, title: 'x' })).error, /close does not take title/);
+  assert.match((await main.call('alp_task', { action: 'show' })).error, /show needs id/);
+  const started = await main.call('alp_task', { action: 'start', id: first.id });
+  assert.deepEqual([started.task.status, started.task.assignee], ['in_progress', 'main']);
+  assert.equal((await main.call('alp_task', { action: 'close', id: first.id, summary: 'npm test passed' })).task.status, 'closed');
+  const shown = await main.call('alp_task', { action: 'show', id: epic.id });
+  assert.deepEqual(shown.children.map(child => [child.id, child.status]), [[first.id, 'closed'], [second.id, 'open']]);
+  assert.equal((await getTask(root, first.id)).assignee, null);
+  assert.equal((await getTask(root, epic.id)).createdBy, 'main');
+
+  // A peer reads tasks but cannot create or change them.
+  await main.call('alp_delegate', { agent: 'peer', task: 'Look at the tree', wait: false });
+  await until(() => runtimes.length === 3 && runtimes[2].started.length === 1);
+  const peer = runtimes[2];
+  const peerTool = tool(peer, 'alp_task');
+  assert.deepEqual(peerTool.inputSchema.properties.action.enum, ['show', 'ready']);
+  assert.deepEqual(Object.keys(peerTool.inputSchema.properties).sort(), ['action', 'id', 'limit']);
+  assert.match(peer.config.developerInstructions, /Tasks: read the project's task graph with alp_task \(show, ready\)/);
+  assert.match((await peer.call('alp_task', { action: 'create', title: 'Mine' })).error, /Only main and the user change tasks; you may show, ready/);
+  assert.deepEqual((await peer.call('alp_task', { action: 'ready' })).tasks.map(task => task.id), [second.id]);
+  assert.equal((await peer.call('alp_task', { action: 'show', id: second.id })).task.title, 'Add --json');
+  peer.call('alp_handoff', { outcome: 'complete', summary: 'Looked' });
+  peer.finish('Looked');
+  await main.call('alp_wait', {});
+  main.finish('Planned the status work');
+
+  // The supervisor's digest shows what main did with tasks.
+  await until(() => supervisor.started.length === 1);
+  const digest = supervisor.started[0].params.input.at(-1).text;
+  assert.match(digest, new RegExp(`main created task ${epic.id} "alp status for scripts" \\(now open\\)`));
+  assert.match(digest, new RegExp(`main started task ${first.id.replace('.', '\\.')} "Normalize the tree" \\(now in_progress\\)`));
+  assert.match(digest, new RegExp(`main closed task ${first.id.replace('.', '\\.')} "Normalize the tree" \\(now closed\\): npm test passed`));
+  assert.equal((await supervisor.call('alp_task', { action: 'list' })).tasks.length, 2);
+  assert.match((await supervisor.call('alp_task', { action: 'ready' })).error, /you may show, list/);
+});

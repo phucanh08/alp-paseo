@@ -70,11 +70,14 @@ test('main starts a supervisor on Sonnet 4.6 that reviews each turn and asks mai
   assert.ok(main.config.dynamicTools.some(tool => tool.name === 'alp_lesson'));
   assert.match(main.config.developerInstructions, /A supervisor reviews your process after each turn/);
   assert.deepEqual([supervisor.kind, supervisor.config.model, supervisor.config.thinking, supervisor.config.sandbox], ['claude', 'claude-sonnet-4-6', 'medium', 'read-only']);
-  assert.deepEqual(supervisor.config.dynamicTools.map(tool => tool.name), ['alp_send', 'alp_board']);
+  assert.deepEqual(supervisor.config.dynamicTools.map(tool => tool.name), ['alp_send', 'alp_board', 'alp_task']);
   assert.match(supervisor.config.developerInstructions, /Supervisor — process reviewer for main/);
   assert.ok(supervisor.config.developerInstructions.includes(`Lessons main has recorded: ${path.join(root, '.alp/lessons.md')} and ${path.join(library, 'lessons.md')}`));
   for (const tool of [...main.config.dynamicTools, ...supervisor.config.dynamicTools]) {
-    assert.deepEqual(Object.keys(claudeToolShapes[tool.name] ?? {}).sort(), Object.keys(tool.inputSchema.properties).sort(), `${tool.name} differs for Claude`);
+    const shape = Object.keys(claudeToolShapes[tool.name] ?? {}).sort();
+    const properties = Object.keys(tool.inputSchema.properties).sort();
+    if (tool.name === 'alp_task') assert.ok(properties.every(property => shape.includes(property)), 'alp_task has a field Claude lacks');
+    else assert.deepEqual(shape, properties, `${tool.name} differs for Claude`);
   }
   assert.ok(['alp_lesson', 'alp_skill', 'alp_issue'].every(name => main.config.dynamicTools.some(tool => tool.name === name)));
   const status = runtime.status('root');
@@ -96,7 +99,7 @@ test('main starts a supervisor on Sonnet 4.6 that reviews each turn and asks mai
   // The tree stays busy while its supervisor reviews.
   assert.equal(runtime.snapshot('root').busy, true);
 
-  assert.match((await supervisor.call('alp_pin', { kind: 'finding', body: 'x' })).error, /only uses alp_send and alp_board/);
+  assert.match((await supervisor.call('alp_pin', { kind: 'finding', body: 'x' })).error, /only uses alp_send, alp_board and alp_task/);
   assert.equal((await supervisor.call('alp_send', { to: 'parent', kind: 'note', body: 'Tests failed with exit 1 but you said they pass. Why, and what will you do from now on?' })).sent.startsWith('#'), true);
   supervisor.finish('Asked about the claimed test result');
   await until(() => main.started.length === 2);

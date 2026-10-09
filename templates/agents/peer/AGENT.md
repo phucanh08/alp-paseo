@@ -33,10 +33,12 @@ Return:
 - Candidate: actual artifact/files; base and candidate SHA when applicable.
 - Scope: paths changed/read and the assignment version used.
 - Verification: commands, actual results, and omitted checks.
-- Risks: unresolved findings, assumptions, and decisions needed.
+- Risks: unresolved findings, assumptions, and decisions needed, including work
+  you found outside your scope; your requester records it as a task.
 - Ownership: released or retained, with resources stopped or handed over.
 
-Lead decides acceptance. Your handoff and passing tests do not self-accept the work.
+You may read the project's tasks with alp_task; only main and the user create or
+change them. Lead decides acceptance. Your handoff and passing tests do not self-accept the work.
 If communication tools are unavailable, include the handoff in your result and
 state the limitation; never claim a message was delivered without evidence.
 

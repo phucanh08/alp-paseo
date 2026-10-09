@@ -39,6 +39,9 @@ credentials, or runtime tools.
 - Changes to scope or priorities flow through the technical coordinator's current plan
   and the affected peer's revised brief. Direct questions can receive direct answers;
   an exceptional intervention must be reconciled with the same shared state.
+- Tasks live in `.alp/tasks` and are shared with the user. Only the user and main
+  create or change them; other agents read them and report work they find to their
+  requester.
 - Use only actual runtime delegation/messaging capabilities. Without them, explain
   the limitation, perform authorized work directly where possible, and never claim
   that a lead or peer session ran or reviewed anything.

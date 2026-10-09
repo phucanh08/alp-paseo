@@ -4,6 +4,7 @@ import { optionalRead, claudeUsage } from './runtime-context.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { PIN_KINDS } from './board.js';
+import { CLOSE_REASONS, TASK_STATUSES, TASK_TYPES } from '../core/tasks.js';
 
 // Keep the Claude SDK behind the runtime boundary. Paseo inspects static
 // imports while compiling plugin entrypoints, including their declaration
@@ -22,6 +23,8 @@ type ClaudeQuery = AsyncGenerator<SDKMessage, void> & {
 
 // Zod mirrors of the provider's dynamic tool schemas; the provider validates again.
 const handoffList = z.array(z.string().min(1)).max(100).optional();
+const taskIds = z.array(z.string().min(1)).max(50).optional();
+const taskLinks = z.object({ blockedBy: taskIds, related: taskIds, parent: z.string().min(1).optional() }).strict().optional();
 export const toolShapes: Record<string, Record<string, z.ZodType>> = {
   alp_delegate: {
     agent: z.string().min(1),
@@ -56,6 +59,27 @@ export const toolShapes: Record<string, Record<string, z.ZodType>> = {
     body: z.string().min(1).max(20_000).optional(),
     issue: z.number().int().positive().optional(),
     labels: z.array(z.string().min(1).max(50)).max(10).optional(),
+  },
+  alp_task: {
+    action: z.enum(['create', 'update', 'link', 'start', 'close', 'reopen', 'show', 'list', 'ready']),
+    id: z.string().min(1).optional(),
+    title: z.string().min(1).max(200).optional(),
+    description: z.string().max(8000).optional(),
+    type: z.enum(TASK_TYPES as [string, ...string[]]).optional(),
+    priority: z.number().int().min(0).max(4).optional(),
+    labels: z.array(z.string().min(1).max(50)).max(10).optional(),
+    paths: z.array(z.string().min(1)).max(50).optional(),
+    parent: z.string().min(1).optional(),
+    blockedBy: taskIds,
+    discoveredFrom: z.string().min(1).optional(),
+    add: taskLinks,
+    remove: taskLinks,
+    reason: z.enum(CLOSE_REASONS as [string, ...string[]]).optional(),
+    summary: z.string().min(1).max(2000).optional(),
+    note: z.string().min(1).max(2000).optional(),
+    status: z.enum(TASK_STATUSES as [string, ...string[]]).optional(),
+    label: z.string().min(1).optional(),
+    limit: z.number().int().positive().optional(),
   },
   alp_discard: {
     assignmentId: z.string().min(1),
@@ -292,8 +316,14 @@ export class ClaudeTransport {
 
     if (config.dynamicTools.length) {
       const tools = config.dynamicTools.map(definition => {
-        const shape = toolShapes[definition.name];
-        if (!shape) throw new Error(`Unsupported ALP tool '${definition.name}'`);
+        const base = toolShapes[definition.name];
+        if (!base) throw new Error(`Unsupported ALP tool '${definition.name}'`);
+        // A role's definition may offer fewer actions (alp_task) and fewer fields than the full shape.
+        const schema = (definition as { inputSchema?: { properties?: Record<string, { enum?: string[] }> } }).inputSchema?.properties;
+        const actions = schema?.action?.enum;
+        const shape = Object.fromEntries(Object.entries(base)
+          .filter(([key]) => !schema || key in schema)
+          .map(([key, value]) => [key, key === 'action' && actions?.length ? z.enum(actions as [string, ...string[]]) : value]));
         return tool(definition.name, definition.description, shape, async (args: Record<string, unknown>) => {
           if (!this.requestHandler || !this.activeTurn) {
             return {

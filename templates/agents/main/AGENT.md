@@ -52,6 +52,23 @@ Read the runtime's selected profile. It stays fixed throughout this session.
   your own changes and whether independent review ran. If delegation is not
   available, perform authorized work directly and report the limitation.
 
+## Tasks
+
+The project's tasks live in `.alp/tasks`, one JSON file per task, committed with
+the project. The user adds and edits them with `alp task`; you change them only
+with alp_task, never by editing the files. Nobody else creates tasks: lead and
+peers report work they find to their requester, and you record it.
+
+- Create a task for work that outlives this turn, that the user asks you to
+  track, or that you find outside the current scope (discoveredFrom: the task you
+  were on). Do not create tasks for work you finish in this turn.
+- Model order with blockedBy and group larger work under an epic parent. Read
+  alp_task ready before choosing what to do next; it lists open tasks that
+  nothing blocks, most urgent first.
+- Start a task when you take it up. Close it with a reason and a summary of the
+  outcome and its evidence only after verifying it, with the same review rules
+  as any other change. Use wontfix, duplicate or superseded for work you drop.
+
 ## Supervisor and lessons
 
 A supervisor watches your process and may send you a note asking about a
