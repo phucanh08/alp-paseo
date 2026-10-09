@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { initProject } from './core/init.js';
 import { upgradeProject } from './core/upgrade.js';
@@ -13,8 +14,12 @@ const USAGE = `Usage:
   alp daemon <start|stop|status|restart>
   alp run [--agent A] [--workflow smart|supervised] [--model M] [--mode read-only|workspace-write] [--thinking T] [--project DIR] [--json] <prompt>
   alp ps [--all]
+  alp top [session] [--once]
   alp attach <session> [--json]
   alp send <session> [--json] <text>
+  alp questions [--json]
+  alp answer <question> <text> | alp answer <question> --dismiss [--reason R]
+  alp log <session> [--json]
   alp interrupt <session>`;
 
 const DAEMON_ENTRY = fileURLToPath(new URL('../dist/alpd.js', import.meta.url));
@@ -118,6 +123,12 @@ function printer(json) {
       }
     } else if (event.type === 'mail') {
       line(sessionId, `  ✉ ${event.mail.kind} from ${event.mail.from}`);
+    } else if (event.type === 'question') {
+      const { question } = event;
+      line(sessionId, `  ? ${question.agent} asks you [${question.id}]: ${question.body}${question.options?.length ? ` (${question.options.join(' | ')})` : ''}`);
+      line(sessionId, `    answer here, or with: alp answer ${question.id} <text>`);
+    } else if (event.type === 'question.resolved') {
+      line(sessionId, `  ↳ ${event.questionId} ${event.outcome}${event.answer !== undefined ? `: ${event.answer}` : ''}`);
     } else if (event.type === 'turn.ended') {
       for (const [id, entry] of latest) {
         if (entry.sessionId !== sessionId || printed.has(id) || entry.item.kind !== 'assistant_message') continue;
@@ -133,12 +144,44 @@ function printer(json) {
   };
 }
 
+/** Reads answers to questions for the user from the terminal, one question at a time. */
+function answerer(client) {
+  const waiting = [];
+  let rl;
+  const ask = () => {
+    if (rl || !waiting.length) return;
+    const question = waiting[0];
+    rl = createInterface({ input: process.stdin, output: process.stderr });
+    rl.question(`answer ${question.id}> `, text => {
+      rl.close();
+      rl = undefined;
+      waiting.shift();
+      // An empty line leaves the question for another client, such as Paseo or alp answer.
+      if (text.trim()) client.request('question.answer', { questionId: question.id, text }).catch(error => console.error(`alp: ${error.message}`));
+      ask();
+    });
+  };
+  return {
+    accept(event) {
+      if (event.type === 'question') { waiting.push(event.question); ask(); }
+      if (event.type === 'question.resolved') {
+        const index = waiting.findIndex(question => question.id === event.questionId);
+        if (index === 0 && rl) { rl.close(); rl = undefined; console.error(''); }
+        if (index >= 0) waiting.splice(index, 1);
+        ask();
+      }
+    },
+    close() { rl?.close(); rl = undefined; },
+  };
+}
+
 /** Streams a tree until its root is idle; the first Ctrl-C interrupts it, the second detaches. */
-function follow(client, rootId, print, { untilIdle }) {
+function follow(client, rootId, print, { untilIdle, interactive = false }) {
+  const answering = interactive ? answerer(client) : undefined;
   const done = new Promise((resolve, reject) => {
     let failed = false;
     let interrupted = false;
-    const finish = () => { process.off('SIGINT', onSignal); resolve(!failed); };
+    const finish = () => { process.off('SIGINT', onSignal); answering?.close(); resolve(!failed); };
     const onSignal = () => {
       if (interrupted) { finish(); return; }
       interrupted = true;
@@ -149,6 +192,7 @@ function follow(client, rootId, print, { untilIdle }) {
     client.onClose(error => { process.off('SIGINT', onSignal); reject(error); });
     client.onEvent(envelope => {
       print(envelope);
+      answering?.accept(envelope.event);
       const { sessionId, event } = envelope;
       if (sessionId !== rootId) return;
       if (event.type === 'turn.ended') {
@@ -180,7 +224,7 @@ async function run(args) {
   try {
     const spec = { cwd: path.resolve(values.project ?? process.cwd()), persist: true, agent: values.agent, workflow: values.workflow, model: values.model, mode: values.mode, thinking: values.thinking };
     const sessionId = `cli-${randomUUID()}`;
-    const done = follow(client, sessionId, printer(values.json), { untilIdle: true });
+    const done = follow(client, sessionId, printer(values.json), { untilIdle: true, interactive: !values.json && process.stdin.isTTY });
     await client.request('session.create', { sessionId, spec });
     await client.request('session.prompt', { sessionId, clientMessageId: randomUUID(), content: [{ type: 'text', text }] });
     if (!await done) process.exitCode = 1;
@@ -214,7 +258,7 @@ async function attach(args) {
   if (positionals.length !== 1) throw new UsageError();
   const client = await running();
   try {
-    const done = follow(client, positionals[0], printer(values.json), { untilIdle: false });
+    const done = follow(client, positionals[0], printer(values.json), { untilIdle: false, interactive: !values.json && process.stdin.isTTY });
     const { session } = await client.request('session.attach', { sessionId: positionals[0] });
     if (session.id !== positionals[0]) console.error(`Following root ${session.id}`);
     // A closed session has only history; resume it with alp send.
@@ -233,8 +277,13 @@ async function send(args) {
   const client = await connect(await start(), { name: 'alp-cli', version: '1' });
   try {
     const { session } = await client.request('session.get', { sessionId });
-    if (session.parentId) throw new Error('Send to the root session; assignments are reached through their requester');
-    const done = follow(client, sessionId, printer(values.json), { untilIdle: true });
+    if (session.parentId) {
+      // An assignment gets the text as mail from the user, in its running turn.
+      await client.request('session.message', { sessionId, text });
+      if (!values.json) console.error(`Sent to ${session.agent} as mail from the user`);
+      return;
+    }
+    const done = follow(client, sessionId, printer(values.json), { untilIdle: true, interactive: !values.json && process.stdin.isTTY });
     const live = session.status === 'idle' || session.status === 'running';
     if (live) await client.request('session.attach', { sessionId, replay: false });
     else await client.request('session.create', { sessionId, spec: { cwd: session.projectRoot } });
@@ -248,6 +297,119 @@ async function send(args) {
   }
 }
 
+async function questions(args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { json: { type: 'boolean' } } });
+  if (positionals.length) throw new UsageError();
+  const client = await running();
+  const { questions: pending } = await client.request('question.list').finally(() => client.close());
+  if (values.json) { console.log(JSON.stringify(pending)); return; }
+  if (!pending.length) { console.log('No questions wait for you'); return; }
+  for (const question of pending) {
+    console.log(`${question.id}  ${question.agent}  ${ago(question.askedAt)} ago  root ${question.rootId}`);
+    console.log(`  ${question.body.replace(/\n/g, '\n  ')}`);
+    if (question.options?.length) console.log(`  options: ${question.options.join(' | ')}`);
+  }
+}
+
+async function answer(args) {
+  const { values, positionals: [questionId, ...words] } = parseArgs({ args, allowPositionals: true, options: { dismiss: { type: 'boolean' }, reason: { type: 'string' } } });
+  const text = words.join(' ').trim();
+  if (!questionId || (values.dismiss ? text : !text)) throw new UsageError();
+  const client = await running();
+  const result = await client.request('question.answer', values.dismiss ? { questionId, dismiss: true, reason: values.reason } : { questionId, text }).finally(() => client.close());
+  console.log(`${values.dismiss ? 'Dismissed' : 'Answered'} ${result.questionId}`);
+}
+
+const ago = (since) => {
+  const seconds = Math.max(0, Math.round((Date.now() - Date.parse(since)) / 1000));
+  return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s` : `${Math.floor(seconds / 3600)}h${String(Math.floor(seconds % 3600 / 60)).padStart(2, '0')}m`;
+};
+const duration = ms => ago(new Date(Date.now() - ms).toISOString());
+
+/** One tree as text: sessions by depth, then questions, unmerged worktrees and leases. */
+function renderStatus(status, root) {
+  const lines = [`${root?.title ? `"${root.title}"  ` : ''}${status.rootId}  ${status.sessions[0]?.projectRoot ?? ''}`];
+  const depth = new Map();
+  const assignments = new Map(status.assignments.map(assignment => [assignment.id, assignment]));
+  for (const session of status.sessions) {
+    depth.set(session.id, session.parentId ? (depth.get(session.parentId) ?? 0) + 1 : 0);
+    const assignment = assignments.get(session.id);
+    const where = assignment?.worktree ? `  worktree ${assignment.worktree.branch}` : '';
+    const mail = session.unreadMail ? `  ✉${session.unreadMail}` : '';
+    lines.push(`${'  '.repeat(depth.get(session.id) + 1)}${session.agent.padEnd(9)} ${session.state.padEnd(14)} idle ${duration(session.idleMs).padEnd(7)} ${session.runtime}:${session.model}  ${session.mode}${where}${mail}`);
+  }
+  for (const question of status.questions) lines.push(`  ? ${question.id} ${question.agent} asks (${ago(question.askedAt)}): ${question.body.split('\n')[0]}`);
+  for (const worktree of status.worktrees) lines.push(`  ⎇ unmerged ${worktree.branch} from ${worktree.agent}: ${worktree.files.length} files${worktree.stat ? ` (${worktree.stat.trim()})` : ''}`);
+  for (const lease of status.leases) lines.push(`  ⚿ ${lease.agent} holds the write lease on ${lease.checkout}`);
+  return lines.join('\n');
+}
+
+/** A live dashboard of every tree, or of one, refreshed every second. */
+async function top(args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { once: { type: 'boolean' } } });
+  if (positionals.length > 1) throw new UsageError();
+  const client = await running();
+  const frame = async () => {
+    const { sessions } = await client.request('session.list', { rootsOnly: true });
+    const roots = positionals.length ? sessions.filter(session => session.id === positionals[0]) : sessions;
+    if (positionals.length && !roots.length) throw new Error(`Session ${positionals[0]} is not a live root`);
+    const blocks = [];
+    for (const root of roots) {
+      const { status } = await client.request('session.status', { sessionId: root.id }).catch(() => ({}));
+      if (status) blocks.push(renderStatus(status, root));
+    }
+    return `alp top  ${new Date().toLocaleTimeString()}  ${roots.length} live ${roots.length === 1 ? 'tree' : 'trees'}\n\n${blocks.join('\n\n') || 'No live sessions'}`;
+  };
+  try {
+    if (values.once || !process.stdout.isTTY) { console.log(await frame()); return; }
+    let stop = false;
+    process.once('SIGINT', () => { stop = true; });
+    while (!stop) {
+      const text = await frame();
+      process.stdout.write(`\x1b[2J\x1b[H${text}\n\n(Ctrl-C to exit)\n`);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  } finally {
+    client.close();
+  }
+}
+
+/** The tree's assignment log: delegations, mail, handoffs, worktrees and questions to the user. */
+async function log(args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { json: { type: 'boolean' } } });
+  if (positionals.length !== 1) throw new UsageError();
+  const client = await running();
+  const { rootId, entries } = await client.request('session.log', { sessionId: positionals[0] }).finally(() => client.close());
+  if (values.json) { for (const entry of entries) console.log(JSON.stringify(entry)); return; }
+  if (!entries.length) { console.log(`No assignment log for ${rootId}`); return; }
+  const agents = new Map();
+  for (const entry of entries) {
+    const time = entry.ts.slice(11, 19);
+    let text;
+    switch (entry.event) {
+      case 'assignment.started':
+        agents.set(entry.assignmentId, entry.agent);
+        text = `${entry.parentAgent} → ${entry.agent} (${entry.mode}${entry.isolation === 'worktree' ? ', worktree' : ''}, ${entry.model}${entry.wait === false ? ', async' : ''}): ${entry.task.split('\n')[0].slice(0, 120)}`;
+        break;
+      case 'assignment.finished':
+        text = `${entry.agent} ${entry.status} after ${duration(entry.durationMs ?? 0)}${entry.handoff ? `, handoff ${entry.handoff.outcome}: ${entry.handoff.summary.split('\n')[0].slice(0, 120)}` : ''}${entry.error ? `: ${entry.error}` : ''}${entry.reconciled ? ' (after a restart)' : ''}`;
+        break;
+      case 'mail':
+        text = `✉ ${entry.kind} ${entry.from} → ${entry.to === rootId ? 'main' : agents.get(entry.to) ?? entry.to}${entry.body ? `: ${entry.body.split('\n')[0].slice(0, 120)}` : ''}`;
+        break;
+      case 'human.question':
+        text = `? ${entry.agent} asks the user [${entry.questionId}]: ${entry.body.split('\n')[0].slice(0, 120)}`;
+        break;
+      case 'human.answer':
+        text = `↳ ${entry.questionId} ${entry.outcome}${entry.answer !== undefined ? `: ${entry.answer.split('\n')[0].slice(0, 120)}` : ''}`;
+        break;
+      default:
+        text = `${entry.event}${entry.branch ? ` ${entry.branch}` : ''}${entry.status ? ` ${entry.status}` : ''}`;
+    }
+    console.log(`${time}  ${text}`);
+  }
+}
+
 async function interrupt(args) {
   if (args.length !== 1) throw new UsageError();
   const client = await running();
@@ -255,7 +417,7 @@ async function interrupt(args) {
   console.log('Interrupted');
 }
 
-const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, attach, send, interrupt };
+const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, run, ps, top, attach, send, questions, answer, log, interrupt };
 const [command, ...args] = process.argv.slice(2);
 try {
   if (!Object.hasOwn(commands, command)) throw new UsageError();
