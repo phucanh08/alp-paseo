@@ -12,12 +12,33 @@ checkout remain serialized.
 ## Install
 
 Requires Paseo 0.11.1, Node.js 20+, and an authenticated native Codex or
-Claude Code executable on PATH. Enable plugins in Paseo Settings → Plugins, then:
+Claude Code executable on PATH.
+
+ALP sessions run in `alpd`, a per-user daemon from the `alp-cli` package; Paseo
+only views them. Install the CLI and start the daemon once, so it records where
+it is installed:
+
+```sh
+npm install -g alp-cli
+alp daemon start
+```
+
+Then enable plugins in Paseo Settings → Plugins and add the provider:
 
 ```sh
 paseo plugin add npm:alp-paseo-plugin
 paseo provider models alp
 ```
+
+From then on the plugin starts alpd by itself when needed. If the provider
+reports that alpd.js was not found, run `alp daemon start` once, or set
+`ALP_DAEMON_ENTRY` to the absolute path of `alpd.js` in the Paseo daemon's
+environment. `ALP_HOME` (default `~/.alp`) selects the daemon's directory and
+must match between the CLI and Paseo.
+
+Closing an agent in Paseo stops watching it; work in progress finishes in
+alpd. Use interrupt to stop work. Sessions started with `alp run` can be
+imported into Paseo with their child agents.
 
 Select ALP when creating a new session. Missing ALP starter files are initialized
 automatically. To select Supervised for new sessions, set `.alp/settings.json`:

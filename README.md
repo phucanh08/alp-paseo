@@ -2,6 +2,17 @@
 
 Provider-neutral filesystem agent resolution with a server-side Paseo provider. Includes project initialization and the existing Phases 2–5 prototype. A standalone ACP server is not implemented.
 
+## Install
+
+Requires Node.js 20+ and an authenticated Codex or Claude Code executable on PATH.
+
+```sh
+npm install -g alp-cli
+alp daemon start
+```
+
+The package provides the `alp` command and `alpd`, the per-user daemon that runs ALP sessions. To view and drive sessions in Paseo, also install the [Paseo plugin](plugins/paseo/README.md).
+
 ## Initialize a project
 
 Run `node /path/to/alp/src/cli.js init [directory]` (or `alp init [directory]` when the package command is installed). The directory defaults to the current working directory.

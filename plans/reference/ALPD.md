@@ -298,7 +298,7 @@ src/cli.js       # gains daemon/run/ps/attach/send/interrupt
 plugins/paseo/   # becomes a proxy over src/client
 ```
 
-`src/runtime`, `src/daemon`, `src/client` are TypeScript, built with the existing esbuild script. An import-graph test (as `adapter.test.js:29` does for core) enforces that `src/runtime` and `src/daemon` never import `@getpaseo/*`. Packaging: the `alp` npm package ships the CLI and daemon; `alp-paseo-plugin` depends on it (Q5).
+`src/runtime`, `src/daemon`, `src/client` are TypeScript, built with the existing esbuild script. An import-graph test (as `adapter.test.js:29` does for core) enforces that `src/runtime` and `src/daemon` never import `@getpaseo/*`. Packaging: the `alp-cli` npm package ships the CLI and daemon; `alp-paseo-plugin` expects it installed (Q5, §15).
 
 ## 11. Migration steps
 
@@ -341,7 +341,7 @@ Each step ends with all existing unit tests and live e2e green.
 - **Q2 — Lifetime:** runs until `alp daemon stop`; no idle exit.
 - **Q3 — Environment:** the daemon uses the environment of whoever started it, scrubbed as today. Clients never forward their own process environment. A session's explicit `spec.env` variables (Paseo's per-agent env) are still applied to that session, as before.
 - **Q4 — Global concurrency:** `maxRunningSessions = 8` across all projects, configurable in `~/.alp/config.json`.
-- **Q5 — Packaging:** the `alp` package ships the CLI and daemon; `alp-paseo-plugin` depends on it and auto-starts the daemon.
+- **Q5 — Packaging:** the `alp` package ships the CLI and daemon; `alp-paseo-plugin` depends on it and auto-starts the daemon. *(As built: the package is `alp-cli`, and the plugin finds an installed CLI rather than depending on it; §15.)*
 - **Q6 — Retention:** timelines of archived sessions are deleted after 30 days; live sessions are kept indefinitely; receipts after 7 days.
 
 ## 14. As built in step 2 (2026-10-08)
@@ -384,7 +384,7 @@ Step 2 implements a subset of §6 and changes a few shapes. §6 stays the target
 
 **Receipts.** `session.prompt` delivers a `clientMessageId` at most once per session, across restarts, as Paseo's `MessageReceipts`: alpd writes a `pending` receipt with a fingerprint of `delivery` and `content`, sends, then marks it `completed`. A repeat with the same content returns `{ duplicate: true }` without sending; with other content it fails with `1004` and `data.reason: 'key_conflict'`; a receipt still `pending`, left by a crash during delivery, fails with `1004` and `data.reason: 'outcome_unknown'`, because the native harness may already have the message. Concurrent repeats wait for the first. Receipts are pruned 7 days after their last write. `session.create` needs no separate `idempotencyKey`: clients choose the session id, and creating an existing id attaches to or resumes it.
 
-**Packaging (Q5).** Paseo re-bundles plugin code and does not tell the plugin where it is installed, so the plugin cannot find the `alpd.js` it ships. alpd records its own path in `$ALP_HOME/alpd.json` whenever it starts. A client that must start alpd tries, in order: its own candidates (`ALP_DAEMON_ENTRY`, then the build-time path), the recorded path, then the ALP CLI: an `alp` executable on `PATH` or in common global bin directories whose real path is `<package>/src/cli.js` in a package named `alp`, using `<package>/dist/alpd.js`. If alpd is already running, no path is needed. Verified with a packed plugin whose build-time path does not exist: Paseo reports a clear error until alpd has run once, then starts alpd by itself and the Paseo e2e passes. Publishing remains: the root package is still `private` and named `alp`, which needs a free npm name, and the plugin's README must ask users to install the CLI.
+**Packaging (Q5).** Paseo re-bundles plugin code and does not tell the plugin where it is installed, so the plugin cannot find the `alpd.js` it ships. alpd records its own path in `$ALP_HOME/alpd.json` whenever it starts. A client that must start alpd tries, in order: its own candidates (`ALP_DAEMON_ENTRY`, then the build-time path), the recorded path, then the ALP CLI: an `alp` executable on `PATH` or in common global bin directories whose real path is `<package>/src/cli.js` in a package named `alp-cli`, using `<package>/dist/alpd.js`. If alpd is already running, no path is needed. Verified with a packed plugin whose build-time path does not exist: Paseo reports a clear error until alpd has run once, then starts alpd by itself and the Paseo e2e passes. The CLI package is `alp-cli` (the npm name `alp` belongs to another author), with the `alp` command; a packed `alp-cli` installed into a fresh prefix starts alpd and is found on PATH. Both READMEs ask users to install it and run `alp daemon start` once.
 
 **CLI.** `alp ps --all` includes closed and errored sessions with their last error. `alp send` to a closed or errored root resumes it first. `alp attach` to a closed session prints its stored timeline and exits.
 
