@@ -23,6 +23,13 @@ export const TaskRowSchema = z.object({
   approvals: z.array(z.object({ gate: z.string(), note: z.string() })).optional(),
   handoff: z.object({ outcome: z.string(), summary: z.string(), agent: z.string().optional() }).optional(),
   closed: z.object({ reason: z.string(), summary: z.string().optional(), at: z.string() }).optional(),
+  /** What the task is about, for its detail view; at most 4000 characters. */
+  description: z.string().optional(),
+  labels: z.array(z.string()).optional(),
+  paths: z.array(z.string()).optional(),
+  /** An epic or parent task: how many of its children are closed. */
+  progress: z.object({ done: z.number(), total: z.number() }).optional(),
+  createdAt: z.string().optional(),
   updatedAt: z.string(),
 });
 export type TaskRow = z.infer<typeof TaskRowSchema>;

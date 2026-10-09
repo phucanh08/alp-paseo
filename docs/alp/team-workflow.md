@@ -735,17 +735,25 @@ line, which `bd import` reads. `alp tasks import [file] [--dry-run]` reads what
 
 The plugin adds a **Tasks** panel to every workspace, also reachable from the
 command center as "Open ALP tasks". It shows the tasks of the ALP project that
-contains the workspace's directory, grouped as:
+contains the workspace's directory, the way the beads viewers do:
 
-1. Waiting for your approval (human gates, with Approve)
-2. In review (with the handoff and "Accept and close")
-3. In progress
-4. Ready
-5. Blocked or waiting
-6. Epics
-7. Closed, folded until you open it
+- **List**, grouped by what you act on: waiting for your approval (with Approve),
+  in review, in progress, ready, blocked or waiting, epics, closed. Each group
+  folds. A row shows the state dot, type icon, priority (P0 and P1 stand out), id,
+  title, assignee and age; a second line shows blockers, gates, the epic and labels.
+- **Board**: a column per state (needs approval, blocked, ready, in progress, in
+  review, closed), with cards of type, priority, id, age, title, assignee,
+  blocker count and labels.
+- **Epics**: each epic with a progress bar of its closed tasks, and its tasks as a
+  tree.
+- Filters Open, Ready, Closed and All, and a search over id, title, type, assignee
+  and labels.
+- A task opens its detail: type, priority, assignee, parent, blocked by, blocks,
+  gates, labels, paths, progress, dates, the description, the handoff, how it
+  closed, its tasks, and Approve, "Accept and close", Close or Reopen. When the
+  panel is 820 px wide or more, the detail sits beside the list.
 
-The panel also adds tasks with a priority, closes and reopens them. All writes
+**+** adds a task with a priority. All writes
 are made as the user. It works through the plugin's server RPCs
 (`alp.tasks.list`, `alp.tasks.add`, `alp.tasks.change`), which read and write
 the files directly, without alpd. Plugin RPC cannot push, so the panel asks

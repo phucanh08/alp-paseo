@@ -39,7 +39,7 @@ function load(code, overrides = {}) {
   const modules = {
     '@getpaseo/plugin': sdk, zod: require('zod'), react: require('react'), 'react/jsx-runtime': require('react/jsx-runtime'),
     'react-native': { View: tag('view'), Text: tag('text'), Pressable: tag('button'), TextInput: tag('input') },
-    '@getpaseo/plugin/client/react-native': { ScrollView: tag('scroll'), useToast: () => ({ show() {}, error() {} }) },
+    '@getpaseo/plugin/client/react-native': { ScrollView: tag('scroll'), Icon: tag('icon'), TextInput: tag('input'), useToast: () => ({ show() {}, error() {} }) },
     '@getpaseo/plugin/client': { useRpc: () => async () => ({}), useWorkspace: () => null },
     '@getpaseo/plugin/client/ui': kit,
     ...overrides,
@@ -53,7 +53,7 @@ function load(code, overrides = {}) {
 }
 
 const theme = { colors: { surface0: '#fff', surface1: '#eee', surface2: '#ddd', border: '#ccc', foreground: '#000', foregroundMuted: '#666', accent: '#06c', accentForeground: '#fff', statusSuccess: '#0a0', statusWarning: '#a60', statusDanger: '#c00' } };
-const actions = { open() {}, create() {}, close() {}, duplicate: async () => true, override: async () => true, useLibrary: async () => true, save: async () => true, remove: async () => true, test: async () => null };
+const actions = { select() {}, duplicate: async () => true, override: async () => true, useLibrary: async () => true, save: async () => true, remove: async () => true, test: async () => null };
 const lists = {
   teams: [{ name: 'pho', source: 'builtin' }, { name: 'cafe', source: 'builtin' }, { name: 'docs', source: 'library', usedBy: ['project settings'] }],
   agents: [{ name: 'main', source: 'library', overrides: 'builtin', description: 'My main' }, { name: 'peer', source: 'builtin' }, { name: 'writer', source: 'library' }, { name: 'supervisor', source: 'builtin' }],
@@ -79,88 +79,122 @@ test('the client registers the ALP settings screen and the project panel, with o
   assert.deepEqual(panels.map(panel => [panel.id, panel.title, panel.context]), [['alp-tasks', 'Tasks', 'workspace'], ['alp-project', 'ALP project', 'workspace']]);
 });
 
-test('the library lists each kind with where entries come from, what they override and who uses them', async () => {
+/** The markup of one settings section, by its title. */
+const section = (html, title) => {
+  const start = html.indexOf(`<section data-title="${title}">`);
+  assert.ok(start >= 0, `no section ${title}`);
+  return html.slice(start, html.indexOf('</section>', start));
+};
+const where = { projectRoot: null, library: '/home/u/.alp' };
+
+test('the settings screen has an aside of kinds and entries, and lists a kind with where entries come from and who uses them', async () => {
   const { code } = await compileClient('client/library.tsx');
-  const { LibraryLists } = load(code);
-  const html = renderToStaticMarkup(createElement(LibraryLists, { theme, compact: false, scope: 'library', where: { projectRoot: null, library: '/home/u/.alp' }, lists, error: null, actions }));
-  const order = ['Teams', 'Agents', 'Skills', 'MCP servers', 'Hooks', 'Providers'].map(title => html.indexOf(`<h2>${title}</h2>`));
+  const { LibraryWorkspace, navGroups } = load(code);
+  assert.deepEqual(navGroups('library', lists).map(group => [group.label, group.items.map(item => `${item.label} ${item.count}`)]), [
+    ['Organisation', ['Teams 3', 'Agents 4']], ['Capabilities', ['Skills 1', 'MCP servers 0', 'Hooks 1']], ['Runtimes', ['Providers 1']],
+  ]);
+  // Providers live in the library only.
+  assert.ok(!navGroups('project', lists).some(group => group.items.some(item => item.key === 'providers')));
+  const render = (kind, extra = {}) => renderToStaticMarkup(createElement(LibraryWorkspace, { theme, compact: false, scope: 'library', where, lists, error: null, selection: { kind }, entry: null, actions, ...extra }));
+  const html = render('agents');
+  const order = ['Teams', 'Agents', 'Skills', 'MCP servers', 'Hooks', 'Providers'].map(title => html.indexOf(`data-label="${title}"`));
   assert.ok(order.every(position => position >= 0), html);
   assert.deepEqual([...order].sort((a, b) => a - b), order);
-  assert.match(html, /Your library in \/home\/u\/\.alp: every project uses it/);
-  assert.match(html, /<text>main<\/text><text>library · overrides built-in<\/text><text>My main<\/text>/);
-  assert.match(html, /<text>style<\/text><text>library<\/text><text>Used by agent writer<\/text>/);
-  assert.match(html, /No mcp servers yet\./);
-  assert.match(html, /data-label="New team"/);
+  assert.match(html, /ALP library/);
+  assert.match(html, /data-label="Agents main"/, 'the aside lists the open kind\'s entries');
+  assert.match(html, /<text>Library<\/text><text>\/<\/text><text>Agents<\/text>/);
+  assert.match(html, /data-label="All"[\s\S]*data-label="Built-in"[\s\S]*data-label="Library"/);
+  assert.match(html, /<text>main<\/text>[\s\S]{0,80}<text>library<\/text>[\s\S]{0,80}<text>overrides built-in<\/text>[\s\S]{0,40}<text>My main<\/text>/);
+  assert.match(html, /data-label="New agent"/);
   assert.match(html, /data-label="Duplicate agent peer"/);
   // The library screen offers no project actions.
   assert.doesNotMatch(html, /Override in this project|Use library/);
+  assert.match(render('skills'), /<text>Used by agent writer<\/text>/);
+  assert.match(render('mcp'), /No mcp servers yet\./);
+  assert.match(render('agents', { compact: true }), /data-label="Open navigation"/, 'a narrow screen opens the aside from a menu button');
 });
 
 test('the project panel overrides an entry here, or drops the override to use the library again', async () => {
   const { code } = await compileClient('client/library.tsx');
-  const { LibraryLists } = load(code);
+  const { LibraryWorkspace } = load(code);
   const project = { ...lists, agents: [{ name: 'main', source: 'project', overrides: 'builtin' }, { name: 'peer', source: 'builtin' }, { name: 'scout', source: 'project' }] };
-  const html = renderToStaticMarkup(createElement(LibraryLists, { theme, compact: true, scope: 'project', where: { projectRoot: '/p', library: '/home/u/.alp' }, lists: project, error: null, actions }));
-  assert.match(html, /What \/p overrides/);
-  // Providers live in the library only.
-  assert.doesNotMatch(html, /<h2>Providers<\/h2>/);
-  assert.match(html, /<text>main<\/text><text>project · overrides built-in<\/text>.*?<text>Use library<\/text>/);
-  assert.match(html, /<text>peer<\/text><text>built-in<\/text>.*?<text>Override in this project<\/text>/);
+  const html = renderToStaticMarkup(createElement(LibraryWorkspace, { theme, compact: true, scope: 'project', where: { projectRoot: '/p', library: '/home/u/.alp' }, lists: project, error: null, selection: { kind: 'agents' }, entry: null, actions }));
+  assert.match(html, /What this project overrides/);
+  assert.match(html, /<text>Project<\/text><text>\/<\/text><text>Agents<\/text>/);
+  assert.doesNotMatch(html, /data-label="Providers"/);
+  const rowOf = name => html.slice(html.indexOf(`data-label="Open agent ${name}"`), html.indexOf(`data-label="Duplicate agent ${name}"`));
+  assert.match(rowOf('main'), /<text>project<\/text>[\s\S]*<text>overrides built-in<\/text>[\s\S]*<text>Use library<\/text>/);
+  assert.match(rowOf('peer'), /<text>built-in<\/text>[\s\S]*<text>Override in this project<\/text>/);
   // A project-only agent has nothing below it to return to.
-  assert.doesNotMatch(html.slice(html.indexOf('<text>scout</text>'), html.indexOf('<text>scout</text>') + 400), /Use library/);
-  const outside = renderToStaticMarkup(createElement(LibraryLists, { theme, compact: true, scope: 'project', where: { projectRoot: null, library: '/home/u/.alp' }, lists: {}, error: null, actions }));
+  assert.doesNotMatch(rowOf('scout'), /Use library/);
+  const outside = renderToStaticMarkup(createElement(LibraryWorkspace, { theme, compact: true, scope: 'project', where: { projectRoot: null, library: '/home/u/.alp' }, lists: {}, error: null, selection: { kind: 'teams' }, entry: null, actions }));
   assert.match(outside, /not an ALP project\. Run alp init/);
 });
 
-test('editors: an agent picks skills, MCP servers and hooks; a team its members, graph, supervisor and house rules', async () => {
+test('editors: an agent picks skills, MCP servers and hooks; a team its members, graph, supervisor and house rules; a tab at a time', async () => {
   const { code } = await compileClient('client/library.tsx');
-  const { EntryEditor, delegationCycle, blank } = load(code);
+  const { EntryEditor, LibraryWorkspace, delegationCycle, blank, entryTabs } = load(code);
+  const layout = { title: 'ALP library', groups: [], onSelect() {} };
+  const editor = (kind, entry, tab, scope = 'library') => renderToStaticMarkup(createElement(EntryEditor, { theme, compact: false, scope, kind, entry, lists, actions, layout, initialTab: tab }));
   const main = { kind: 'agents', name: 'main', source: 'builtin', content: { instructions: '# Main\n', config: { skills: ['style'] } }, revision: null, usedBy: ['team pho'] };
-  const agent = renderToStaticMarkup(createElement(EntryEditor, { theme, compact: false, scope: 'library', kind: 'agents', entry: main, lists, actions }));
-  assert.match(agent, /Built into ALP\. Saving makes your library&#x27;s own main, which overrides it\. Used by team pho\./);
-  assert.match(agent, /<switch data-label="style" data-value="true">/);
-  assert.match(agent, /<option value="gemini">gemini \(ACP\)<\/option>/);
-  assert.match(agent, /<switch data-label="tests" data-value="false">/);
-  assert.match(agent, /No mcp servers to choose from yet/);
-  assert.match(agent, /data-label="AGENT.md" data-value="# Main\n"/);
-  assert.match(agent, /<text>Save as my own<\/text>/);
-  assert.doesNotMatch(agent, />Remove</);
+  const general = editor('agents', main);
+  assert.match(general, /Built into ALP\. Saving makes your library&#x27;s own main, which overrides it\./);
+  assert.match(general, /Used by team pho\./);
+  assert.match(general, /<text>Agents<\/text><text>\/<\/text><text>main<\/text>/);
+  assert.match(general, /<option value="gemini">gemini \(ACP\)<\/option>/);
+  assert.match(general, /<text>Save as my own<\/text>/);
+  assert.match(general, /No changes/);
+  assert.doesNotMatch(general, />Remove</);
+  assert.doesNotMatch(general, /AGENT\.md/, 'one tab at a time');
+  assert.match(editor('agents', main, 'instructions'), /data-label="AGENT.md" data-value="# Main\n"/);
+  const capabilities = editor('agents', main, 'capabilities');
+  assert.match(capabilities, /<switch data-label="style" data-value="true">/);
+  assert.match(capabilities, /<switch data-label="tests" data-value="false">/);
+  assert.match(capabilities, /No mcp servers to choose from yet/);
+  // The workspace opens the selected entry's editor.
+  assert.match(renderToStaticMarkup(createElement(LibraryWorkspace, { theme, compact: false, scope: 'library', where, lists, error: null, selection: { kind: 'agents', name: 'main' }, entry: main, actions })), /Save as my own/);
 
   const team = { kind: 'teams', name: 'docs', source: 'library', overrides: undefined, revision: 'r1', usedBy: [], content: {
     team: { label: 'Docs', main: 'main', members: { main: { model: 'claude:claude-opus-5-5' }, writer: { role: 'peer' } }, delegation: { main: ['writer'] }, supervisor: { agent: 'supervisor', model: 'claude:claude-sonnet-4-6' } },
     houseRules: 'Review every page.\n',
   } };
-  const html = renderToStaticMarkup(createElement(EntryEditor, { theme, compact: false, scope: 'library', kind: 'teams', entry: team, lists, actions }));
-  assert.match(html, /<select data-label="Main" data-value="main">/);
-  assert.match(html, /<switch data-label="writer" data-value="true">/);
-  assert.match(html, /<select data-label="writer&#x27;s role" data-value="peer">/);
-  assert.match(html, /<switch data-label="peer" data-value="false">/);
-  assert.match(html, /<field data-label="main&#x27;s model" data-value="claude:claude-opus-5-5">/);
-  assert.match(html, /<switch data-label="main → writer" data-value="true">/);
+  assert.deepEqual(entryTabs('teams', true).map(tab => tab.label), ['General', 'Members', 'Delegation', 'Supervisor', 'House rules']);
+  assert.match(editor('teams', team), /<select data-label="Main" data-value="main">/);
+  const members = editor('teams', team, 'members');
+  assert.match(section(members, 'main · main'), /<field data-label="Model" data-value="claude:claude-opus-5-5">/);
+  assert.match(section(members, 'writer'), /<switch data-label="In this team" data-value="true">[\s\S]*<select data-label="Role" data-value="peer">/);
+  assert.match(section(members, 'peer'), /<switch data-label="In this team" data-value="false">/);
+  assert.doesNotMatch(section(members, 'peer'), /Role/);
+  const delegation = editor('teams', team, 'delegation');
+  assert.match(section(delegation, 'main may delegate to'), /<switch data-label="writer" data-value="true">/);
   // Main is never assigned work.
-  assert.doesNotMatch(html, /data-label="writer → main"/);
-  assert.match(html, /<select data-label="Supervisor agent" data-value="supervisor">/);
-  assert.match(html, /data-label="House rules" data-value="Review every page.\n"/);
-  assert.match(html, />Remove</);
+  assert.doesNotMatch(section(delegation, 'writer may delegate to'), /data-label="main"/);
+  assert.match(editor('teams', team, 'supervisor'), /<select data-label="Supervisor agent" data-value="supervisor">/);
+  assert.match(editor('teams', team, 'rules'), /data-label="House rules" data-value="Review every page.\n"/);
+  assert.match(editor('teams', team), />Remove</);
   assert.equal(delegationCycle({ main: ['lead'], lead: ['peer'], peer: ['lead'] }), 'lead');
   assert.equal(delegationCycle({ main: ['lead'], lead: ['peer'] }), null);
 
-  const hook = renderToStaticMarkup(createElement(EntryEditor, { theme, compact: false, scope: 'project', kind: 'hooks', entry: { kind: 'hooks', name: 'tests', source: 'library', content: { hook: { event: 'turn.end', command: 'npm test' } }, revision: 'r', usedBy: [] }, lists, actions }));
+  const hookEntry = { kind: 'hooks', name: 'tests', source: 'library', content: { hook: { event: 'turn.end', command: 'npm test' } }, revision: 'r', usedBy: [] };
+  const hook = editor('hooks', hookEntry, undefined, 'project');
   assert.match(hook, /From the library\. Saving makes this project&#x27;s own copy\./);
   assert.match(hook, /<select data-label="Event" data-value="turn.end">/);
   // Only events before an action can block it.
   assert.doesNotMatch(hook, /Block the action when it fails/);
-  assert.match(hook, /<action data-label="Run once with a sample event">Test<\/action>/);
-  const provider = renderToStaticMarkup(createElement(EntryEditor, { theme, compact: false, scope: 'library', kind: 'providers', entry: { kind: 'providers', name: 'gemini', source: 'library', content: { provider: { kind: 'acp', command: 'gemini', args: ['--experimental-acp'], models: [{ id: 'gemini-2.5-pro' }] } }, revision: 'r', usedBy: ['agent scout'] }, lists, actions }));
+  assert.match(editor('hooks', hookEntry, 'test', 'project'), /<action data-label="Run once with a sample event">Test<\/action>/);
+  const providerEntry = { kind: 'providers', name: 'gemini', source: 'library', content: { provider: { kind: 'acp', command: 'gemini', args: ['--experimental-acp'], models: [{ id: 'gemini-2.5-pro' }] } }, revision: 'r', usedBy: ['agent scout'] };
+  const provider = editor('providers', providerEntry);
   assert.match(provider, /<field data-label="Command" data-value="gemini">/);
   assert.match(provider, /<field data-label="Arguments" data-value="--experimental-acp">/);
   assert.match(provider, /<field data-label="Models" data-value="gemini-2.5-pro">/);
   assert.match(provider, /it cannot steer it mid-turn or sandbox its commands/);
-  assert.match(provider, /<action data-label="Start the agent and ask what it supports">Test<\/action>/);
-  const created = renderToStaticMarkup(createElement(EntryEditor, { theme, compact: false, scope: 'library', kind: 'mcp', entry: null, lists, actions }));
+  assert.match(editor('providers', providerEntry, 'test'), /<action data-label="Start the agent and ask what it supports">Test<\/action>/);
+  const created = editor('mcp', null);
   assert.match(created, /New MCP server/);
+  assert.match(created, /<field data-label="Name" data-value="">/);
+  assert.match(created, /Name the entry first/);
   assert.match(created, /<select data-label="Transport" data-value="stdio">/);
-  assert.doesNotMatch(created, /Test</);
+  assert.doesNotMatch(created, /data-label="Test"/, 'a new entry has nothing saved to test');
   assert.deepEqual(blank('teams', 'x').team, { label: 'x', main: 'main', members: { main: {} }, delegation: {}, supervisor: false });
 });
 

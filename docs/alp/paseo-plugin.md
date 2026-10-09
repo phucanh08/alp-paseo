@@ -62,7 +62,17 @@ Installation commands above target the selected user's daemon. Implementation ve
 ## ALP settings and the project panel
 
 **Settings → ALP** edits your library in `$ALP_HOME` (default `~/.alp`), which every
-project uses. It has six sections: Teams, Agents, Skills, MCP servers, Hooks and Providers.
+project uses. The screen has two columns:
+- The aside on the left lists the kinds in three groups: Organisation (Teams, Agents),
+  Capabilities (Skills, MCP servers, Hooks) and Runtimes (Providers). Each kind shows
+  its count and, opened, its entries with a dot for where they come from. It stays
+  in place, so you always see where you are and switch with one click.
+- The aside folds to icons with its toggle, and folds on its own when the screen is
+  narrower than 640 px. On a phone it opens from **Menu** over the screen.
+- The working area has a breadcrumb, and a secondary menu on top: the source filters
+  (All, Built-in, Library, Project) on a kind's list, or the parts of an entry
+  (General, Members, Delegation, Supervisor, House rules for a team) in its editor.
+  The editor keeps Save and Remove in a bar at the bottom.
 - Each entry shows where it comes from: built-in, or library, possibly overriding a
   built-in. It also shows who uses it.
 - Each section has New, and each entry Duplicate.
