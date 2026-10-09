@@ -135,7 +135,7 @@ function printer(json) {
 
 /** Streams a tree until its root is idle; the first Ctrl-C interrupts it, the second detaches. */
 function follow(client, rootId, print, { untilIdle }) {
-  return new Promise((resolve, reject) => {
+  const done = new Promise((resolve, reject) => {
     let failed = false;
     let interrupted = false;
     const finish = () => { process.off('SIGINT', onSignal); resolve(!failed); };
@@ -164,6 +164,9 @@ function follow(client, rootId, print, { untilIdle }) {
       }
     });
   });
+  // A request can fail before the caller awaits this; closing the client must not crash the CLI then.
+  done.catch(() => {});
+  return done;
 }
 
 async function run(args) {
