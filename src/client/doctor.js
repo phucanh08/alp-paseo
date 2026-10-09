@@ -6,6 +6,7 @@ import { installedProgram, serviceFor } from './service.js';
 import { jsonObject, agentSources, resolveAgent } from '../core/resolver.js';
 import { loadHooks } from '../core/hooks.js';
 import { isTrusted } from '../core/trust.js';
+import { listProviders } from '../core/providers.js';
 import { settingsWarnings, validateSettings, validateUserSettings } from '../core/validation.js';
 
 /**
@@ -217,6 +218,25 @@ async function hooksCheck(project, home, hooks) {
   };
 }
 
+/**
+ * ACP providers of the library (ALPD §46): whether their commands exist, and what ALP
+ * cannot do for an agent it reaches through ACP.
+ */
+async function providersCheck(home, env) {
+  let providers;
+  try { providers = await listProviders(home); } catch (error) { return { id: 'providers', status: 'fail', summary: error.message }; }
+  if (!providers.length) return undefined;
+  const missing = [];
+  for (const provider of providers) if (!await executable(provider.command, { ...env, ...provider.env })) missing.push(`${provider.id}: ${provider.command} is not found`);
+  return {
+    id: 'providers', status: 'warn',
+    summary: `${providers.length} ACP provider${providers.length > 1 ? 's' : ''} (${providers.map(provider => provider.id).join(', ')})${missing.length ? `; ${missing.length} cannot start` : ''}`,
+    details: [...missing,
+      'ALP has no sandbox around an ACP agent: it holds the session\'s mode only by answering the permission requests the agent sends, so a command the agent runs without asking runs unchecked',
+      'ALP cannot steer an ACP agent mid-turn (mail waits for the turn to end), resumes its sessions only when it supports session/load, and cannot recall them or give them review copies'],
+  };
+}
+
 async function librarySkillsCheck(home) {
   const file = path.join(home, 'role-skills.json');
   let roles;
@@ -328,6 +348,8 @@ export async function diagnose({ home, project, env = process.env, run = runComm
   checks.push(await userSettingsCheck(home));
   const skills = await librarySkillsCheck(home);
   if (skills) checks.push(skills);
+  const providers = await providersCheck(home, env);
+  if (providers) checks.push(providers);
   const live = await liveCheck(home, running);
   if (live) checks.push(live);
   if (project) {

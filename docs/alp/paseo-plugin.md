@@ -62,7 +62,7 @@ Installation commands above target the selected user's daemon. Implementation ve
 ## ALP settings and the project panel
 
 **Settings → ALP** edits your library in `$ALP_HOME` (default `~/.alp`), which every
-project uses. It has five sections: Teams, Agents, Skills, MCP servers and Hooks.
+project uses. It has six sections: Teams, Agents, Skills, MCP servers, Hooks and Providers.
 - Each entry shows where it comes from: built-in, or library, possibly overriding a
   built-in. It also shows who uses it.
 - Each section has New, and each entry Duplicate.
@@ -78,15 +78,19 @@ project uses. It has five sections: Teams, Agents, Skills, MCP servers and Hooks
   - **Hook:** its event and command, whether it blocks (only for events before an
     action), its timeout, and an agent or task label it is limited to. **Test** runs it
     once with a sample event.
+  - **Provider:** an ACP agent's label, command, arguments, environment and models.
+    **Test** starts it and shows what it supports ([ACP providers](agent-library.md#acp-providers)).
+    The agent form's Provider list offers the library's providers.
 - Built-ins are read-only. **Save as my own** makes the library's entry of that name,
   which overrides the built-in. Removing it brings the built-in back.
 
-The **ALP project** workspace panel shows the same lists for the workspace's project:
+The **ALP project** workspace panel shows the same lists for the workspace's project,
+except Providers, which live only in the library:
 - **Override in this project** copies an entry into `.alp/`.
 - **Use library** removes the project's copy.
 - Opening an entry edits the project's copy.
 
-Both use the `alp.library.*` RPC (ALPD §43), the same functions as `alp agent|team|skill|mcp|hook`.
+Both use the `alp.library.*` RPC (ALPD §43), the same functions as `alp agent|team|skill|mcp|hook|provider`.
 Each save checks the entry's revision, so two windows cannot overwrite each other.
 Changes apply to new sessions; running sessions keep what they started with.
 

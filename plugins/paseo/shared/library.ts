@@ -9,7 +9,8 @@ import { z } from 'zod';
  */
 
 const Directory = z.string().min(1).optional();
-export const KindSchema = z.enum(['agents', 'skills', 'mcp', 'hooks', 'teams']);
+// Providers (ACP agents, ALPD §46) live only in the library; the project scope refuses them.
+export const KindSchema = z.enum(['agents', 'skills', 'mcp', 'hooks', 'teams', 'providers']);
 export const ScopeSchema = z.enum(['library', 'project']);
 const Name = z.string().regex(/^[\w.-]+$/).refine(name => name !== '.' && name !== '..');
 const Source = z.enum(['builtin', 'library', 'project']);
@@ -74,7 +75,7 @@ export const libraryRename = defineRpc({
 
 export const libraryTest = defineRpc({
   name: 'alp.library.test',
-  input: z.object({ directory: Directory, kind: z.enum(['mcp', 'hooks']), name: Name, scope: ScopeSchema.optional() }),
+  input: z.object({ directory: Directory, kind: z.enum(['mcp', 'hooks', 'providers']), name: Name, scope: ScopeSchema.optional() }),
   output: z.object({
     ok: z.boolean(),
     /** MCP: the server and its tools. */
@@ -88,5 +89,11 @@ export const libraryTest = defineRpc({
     stdout: z.string().optional(),
     stderr: z.string().optional(),
     durationMs: z.number().optional(),
+    /** Providers: who the ACP agent says it is, and what it supports. */
+    protocolVersion: z.number().optional(),
+    agent: z.object({ name: z.string().optional(), title: z.string().optional(), version: z.string().optional() }).optional(),
+    loadSession: z.boolean().optional(),
+    mcpHttp: z.boolean().optional(),
+    authMethods: z.array(z.string()).optional(),
   }),
 });

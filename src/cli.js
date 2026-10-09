@@ -41,6 +41,7 @@ const USAGE = `Usage:
   alp log <session> [--json]
   alp board [--project DIR] [--json]
   alp <agents|skills|mcp|hooks> [--project DIR] [--json]   the library: built-in, ~/.alp and project entries
+  alp providers [--json]                    ACP agents in your library that agents may run on
   alp teams [--project DIR] [--json]         teams sessions run in: members, delegation, house rules
   alp agent <new|edit> <name> [--project [DIR]] [--from A] [-d text] [--provider P] [--model M] [--thinking T] [--mode M]
             [--skills a,b] [--mcp a,b] [--hooks a,b] [--instructions FILE]
@@ -50,8 +51,9 @@ const USAGE = `Usage:
   alp skill new <name> [--project [DIR]] [--from S] [--file FILE]
   alp mcp add <name> [--project [DIR]] (--command C [--arg A]... [--env K=V]... [--cwd D] | --url U [--header K=V]...)
   alp hook add <name> [--project [DIR]] --event E --command C [--blocking] [--timeout SEC] [--match-agent A] [--match-label L]
-  alp <agent|team|skill|mcp|hook> <rm|show> <name> [--project [DIR]] | <cp|mv> <from> <to> [--project [DIR]]
-  alp <mcp|hook> test <name> [--project [DIR]]     start the server and list its tools; run the hook with a sample event
+  alp provider add <id> --command C [--arg A]... [--env K=V]... [--label L] [-d text] [--models a,b]   an ACP agent; library only
+  alp <agent|team|skill|mcp|hook|provider> <rm|show> <name> [--project [DIR]] | <cp|mv> <from> <to> [--project [DIR]]
+  alp <mcp|hook|provider> test <name> [--project [DIR]]   list an MCP server's tools; run a hook once; initialize a provider
             without --project, changes go to your library in ~/.alp; built-in agents and teams are never changed
   alp trust [--project DIR] | --revoke [--project DIR] | --list [--json]   whether the project's hooks may run
   alp permissions [--project DIR] [--json]   each agent's permission profile
@@ -554,7 +556,7 @@ async function libraryCommand(kind, args) {
   const root = path.resolve(values.project ?? process.cwd());
   const rows = await libraryEntries(kind, root, { library: alpHome() });
   if (values.json) { console.log(JSON.stringify(rows)); return; }
-  if (!rows.length) { console.log(`No ${kind} in ${path.join(alpHome(), kind)} or ${path.join(root, '.alp', kind)}`); return; }
+  if (!rows.length) { console.log(kind === 'providers' ? `No providers in ${path.join(alpHome(), kind)}; add an ACP agent with alp provider add` : `No ${kind} in ${path.join(alpHome(), kind)} or ${path.join(root, '.alp', kind)}`); return; }
   const width = Math.max(...rows.map(row => row.name.length));
   for (const row of rows) {
     const where = row.source === 'builtin' ? 'built-in' : row.source;
@@ -594,6 +596,8 @@ const EDIT_OPTIONS = {
   file: { type: 'string' }, command: { type: 'string' }, arg: { type: 'string', multiple: true }, env: { type: 'string', multiple: true }, cwd: { type: 'string' },
   url: { type: 'string' }, header: { type: 'string', multiple: true }, event: { type: 'string' }, blocking: { type: 'boolean' }, timeout: { type: 'string' },
   'match-agent': { type: 'string' }, 'match-label': { type: 'string' },
+  // provider
+  models: { type: 'string' },
 };
 
 /** The content of an entry after a CLI new or edit: the current content with the options applied. */
@@ -669,6 +673,16 @@ async function edited(kind, name, current, values) {
       if (Object.keys(match).length) hook.match = match; else delete hook.match;
     }
     content.hook = hook;
+  } else if (kind === 'providers') {
+    const provider = content.provider ?? { kind: 'acp' };
+    set(provider, 'label', values.label);
+    set(provider, 'description', values.description);
+    set(provider, 'command', values.command);
+    if (values.arg?.length) provider.args = values.arg;
+    if (values.env?.length) provider.env = pairs(values.env, '--env');
+    const models = names(values.models);
+    if (models) { if (models.length) provider.models = models.map(id => provider.models?.find(model => model.id === id) ?? { id }); else delete provider.models; }
+    content.provider = provider;
   }
   return content;
 }
@@ -677,7 +691,7 @@ async function edited(kind, name, current, values) {
 async function editCommand(kind, args) {
   const { values, positionals } = parseArgs({ args: projectFlag(args), allowPositionals: true, options: EDIT_OPTIONS });
   const [action, name, target] = positionals;
-  const creates = { agents: 'new', teams: 'new', skills: 'new', mcp: 'add', hooks: 'add' }[kind];
+  const creates = { agents: 'new', teams: 'new', skills: 'new', mcp: 'add', hooks: 'add', providers: 'add' }[kind];
   if (!name || positionals.length > (['cp', 'mv'].includes(action) ? 3 : 2) || (['cp', 'mv'].includes(action) && !target)) throw new UsageError();
   const scope = values.project !== undefined ? 'project' : 'library';
   let root = values.project !== undefined ? path.resolve(values.project) : undefined;
@@ -698,9 +712,10 @@ async function editCommand(kind, args) {
   if (action === 'mv') { done(await renameEntry(kind, name, target, options), `Renamed ${name} to ${target} in ${where}.`); return; }
   if (action === 'cp') { done(await duplicateEntry(kind, name, target, options), `Copied ${name} to ${target} in ${where}.`); return; }
   if (action === 'test') {
-    if (!['mcp', 'hooks'].includes(kind)) throw new UsageError();
+    if (!['mcp', 'hooks', 'providers'].includes(kind)) throw new UsageError();
     const result = await testEntry(kind, name, { root, library: alpHome(), ...(values.project !== undefined ? { scope } : {}) });
     if (values.json) console.log(JSON.stringify(result));
+    else if (kind === 'providers') console.log(`${name}: ${result.agent?.title ?? result.agent?.name ?? 'agent'} ${result.agent?.version ?? ''} speaks ACP ${result.protocolVersion}; ${result.loadSession ? 'resumes sessions' : 'cannot resume sessions'}${result.mcpHttp ? '; takes HTTP MCP servers' : ''}${result.authMethods.length ? `; signs in with ${result.authMethods.join(', ')}` : ''}`);
     else if (kind === 'mcp') console.log(`${name}: ${result.server?.name ?? 'server'} ${result.server?.version ?? ''} offers ${result.tools.length} tools${result.tools.length ? `:\n${result.tools.map(tool => `  ${tool.name}${tool.description ? `  ${tool.description.split('\n')[0]}` : ''}`).join('\n')}` : ''}`);
     else console.log(`${name}: ${result.timedOut ? 'timed out' : `exit ${result.exitCode ?? result.signal}`} in ${result.durationMs} ms${result.wouldBlock ? '; as a blocking hook it would refuse the action' : ''}${result.stdout.trim() ? `\nstdout: ${result.stdout.trim()}` : ''}${result.stderr.trim() ? `\nstderr: ${result.stderr.trim()}` : ''}`);
     if (!result.ok) process.exitCode = 1;
@@ -1123,7 +1138,7 @@ async function interrupt(args) {
   console.log('Interrupted');
 }
 
-const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, doctor, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, agents: args => libraryCommand('agents', args), skills: args => libraryCommand('skills', args), mcp: args => ['add', 'rm', 'mv', 'cp', 'test', 'show', 'edit'].includes(args[0]) ? editCommand('mcp', args) : libraryCommand('mcp', args), hooks: args => libraryCommand('hooks', args), teams: teamsCommand, trust: trustCommand, agent: args => editCommand('agents', args), team: args => editCommand('teams', args), skill: args => editCommand('skills', args), hook: args => editCommand('hooks', args), verify, recall, pause, resume, interrupt };
+const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, doctor, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, agents: args => libraryCommand('agents', args), skills: args => libraryCommand('skills', args), mcp: args => ['add', 'rm', 'mv', 'cp', 'test', 'show', 'edit'].includes(args[0]) ? editCommand('mcp', args) : libraryCommand('mcp', args), hooks: args => libraryCommand('hooks', args), providers: args => libraryCommand('providers', args), provider: args => editCommand('providers', args), teams: teamsCommand, trust: trustCommand, agent: args => editCommand('agents', args), team: args => editCommand('teams', args), skill: args => editCommand('skills', args), hook: args => editCommand('hooks', args), verify, recall, pause, resume, interrupt };
 const [command, ...args] = process.argv.slice(2);
 try {
   if (!Object.hasOwn(commands, command)) throw new UsageError();

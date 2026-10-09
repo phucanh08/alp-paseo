@@ -161,6 +161,11 @@
   - ALP cannot sandbox an ACP agent's own tools, so `read-only` and `workspace-write` depend on the agent asking permission. Reviewer copies (§26) need an agent that does.
 - Providers are added in Settings or with `alp provider add`. An agent then picks `provider: "<id>"` and a model.
 - **Tests:** a scripted fake ACP agent in `test/support` that streams messages, calls ALP tools through the bridge, asks permission, gets cancelled, loads a session and crashes. No real agent is used (decision 3).
+- **As built** (ALPD §46):
+  - The bridge is a self-contained stdio script that the transport starts through `node -e`, connected to a socket of its own; there is no `alp mcp-bridge` command.
+  - Providers live in the library only.
+  - ACP sessions are not recallable.
+  - ACP plan updates are not shown.
 
 ## Answers to the open questions (2026-10-09)
 

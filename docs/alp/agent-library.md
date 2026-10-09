@@ -42,6 +42,7 @@ agent.
 }
 ```
 
+- `provider` is `codex`, `claude`, or an [ACP provider](#acp-providers) of your library.
 - `provider`, `model` and `thinking` apply when nothing earlier chooses. The order is: the
   caller (such as `alp run --model` or a delegation's model), then settings' `runtime`,
   then the session's team for that member, then `agent.json`.
@@ -105,6 +106,61 @@ ALP runs an agent's hooks itself, whatever runtime the agent is on (ALPD §45):
   - Hooks in your library are always trusted.
 - `alp doctor` lists the hooks agents use, whether the project's are trusted, and
   hooks whose program is not found.
+
+## ACP providers
+
+An ACP provider is any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com)
+on stdio, such as Gemini CLI or opencode. `providers/<id>.json` in your library
+defines one:
+
+```json
+{
+  "kind": "acp",
+  "label": "Gemini",
+  "command": "gemini",
+  "args": ["--experimental-acp"],
+  "env": {},
+  "models": [{ "id": "gemini-2.5-pro" }]
+}
+```
+
+- **Where they live:** providers live only in your library, never in a project. A
+  project's provider would run a command from its repository on your machine.
+  `codex`, `claude` and `acp` cannot name a provider.
+- **Using one:** an agent runs on a provider with `"provider": "<id>"` in its
+  `agent.json`, optionally with a `model`. The model `acp:<id>` or `acp:<id>/<model>`
+  also chooses one, in `alp run --model`, in a team member's model, and in
+  `alp_delegate`.
+  - With `models`, only those model ids are accepted.
+  - ALP asks the agent to switch models only when the agent offers a choice.
+  - ACP agents choose their own effort, so `thinking` does not apply.
+- **What ALP does for an ACP agent:**
+  - It sends the agent's instructions with its first prompt.
+  - It shows the agent's messages and tool calls in the timeline, and its context use.
+  - It gives the agent ALP's tools (`alp_handoff`, `alp_delegate`, `alp_task` and the
+    others) as an MCP server named `alp`, beside the agent's own MCP servers.
+  - It answers the agent's permission requests by the session's mode:
+    - read-only allows reading and searching;
+    - workspace-write also allows running commands, and changing files inside the
+      workspace;
+    - full access allows everything.
+  - A permission profile's `Bash(...)` rules apply to the commands the agent asks to
+    run. Anything beyond the mode is refused, or goes to the user with
+    `"beyondMode": "ask"`.
+- **Limits** (`alp doctor` warns about them):
+  - ALP has no sandbox around an ACP agent. It holds the mode only by answering the
+    permission requests the agent sends, so a command the agent runs without asking
+    runs unchecked.
+  - Mail waits for the turn to end, since ACP cannot steer a running turn.
+  - A session resumes only when the agent supports `session/load`.
+  - `alp_recall` cannot ask a finished ACP assignment, and review copies cannot run on
+    one.
+- **Commands:**
+  - `alp provider add <id> --command C [--arg A]... [--env K=V]... [--models a,b]`
+    adds a provider;
+  - `alp providers` lists them, with the agents that use each;
+  - `alp provider test <id>` starts the agent, runs `initialize`, and reports what it
+    supports.
 
 ## Teams
 
@@ -177,6 +233,7 @@ alp mcp rm docs
   the entry below it applies again.
 - **Testing:**
   - `alp mcp test <name>` starts the server, lists its tools, and stops it;
+  - `alp provider test <id>` starts an ACP agent, runs `initialize`, and stops it;
   - `alp hook test <name>` runs the hook once, with a sample event on stdin and
     `ALP_EVENT`, `ALP_SESSION`, `ALP_AGENT`, `ALP_TASK` and `ALP_PROJECT` set, and
     says whether a blocking hook would refuse the action.

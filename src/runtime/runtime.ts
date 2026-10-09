@@ -7,6 +7,7 @@ import { resolveDelegation } from '../core/delegation.js';
 import { discoverAgents } from '../core/resolver.js';
 import { CodexTransport } from './transport.js';
 import { ClaudeTransport } from './claude-transport.js';
+import { AcpTransport, acpDecision, acpWhat, type AcpPermission, type AcpProvider } from './acp-transport.js';
 import { modes, ORACLE_MODELS, withinMode, writes } from './catalog.js';
 import { runHook } from '../core/hook-run.js';
 import { hookMatches } from '../core/hooks.js';
@@ -51,6 +52,8 @@ export type RuntimeOptions = {
     cwd: string,
     env: NodeJS.ProcessEnv,
     runtime?: RuntimeKind,
+    /** The ACP provider, when runtime is acp. */
+    acp?: AcpProvider,
   ) => RuntimeTransport;
 
   /** An assignment with no activity this long is reported stalled; twice this long, it fails. */
@@ -783,9 +786,15 @@ function createTransport(
   runtimeKind: RuntimeKind,
   cwd: string,
   environment: NodeJS.ProcessEnv,
+  acp?: AcpProvider,
 ): RuntimeTransport {
   if (options.transport) {
-    return options.transport(cwd, environment, runtimeKind);
+    return options.transport(cwd, environment, runtimeKind, acp);
+  }
+
+  if (runtimeKind === 'acp') {
+    if (!acp) throw new Error('An ACP session needs its provider');
+    return new AcpTransport(acp, cwd, environment);
   }
 
   if (runtimeKind === 'claude') {
@@ -806,7 +815,7 @@ function createTransport(
 /**
  * The runtime speaks a normalized protocol to its transport.
  *
- * CodexTransport and ClaudeTransport map it to each native harness.
+ * CodexTransport, ClaudeTransport and AcpTransport map it to each native harness.
  *
  * The runtime therefore owns orchestration only; the transport adapters
  * preserve the full native harness underneath.
@@ -842,6 +851,8 @@ function permissionNote(mapping: Pick<ResolvedSession, 'mode' | 'permissions' | 
   const profile = mapping.permissions;
   const floor = claudeFloor(mapping);
   const notes = [
+    // ALPD §46: ALP has no sandbox around an ACP agent; it answers the agent's permission requests.
+    ...(mapping.runtimeKind === 'acp' ? [`ALP's tools (alp_*) come from the MCP server named alp. ALP answers your permission requests by your ${mapping.mode} mode: ${mapping.mode === 'read-only' ? 'reading and searching only' : mapping.mode === 'workspace-write' ? `reading, running commands, and changing files inside ${mapping.workdir} only` : 'everything'}. Ask permission before every tool use that changes something, even where you would not need to.`] : []),
     ...(mapping.copy ? [`You work in a disposable copy of your requester's tree at ${mapping.workdir}: the same files and git state, uncommitted changes included${mapping.copyOf ? `, mirroring ${mapping.copyOf}` : ''}. Write, build and test there; nothing you change reaches the requester, and the copy is removed when you finish. Where your brief names a path${mapping.copyOf ? ` under ${mapping.copyOf}` : ''}, use the same path in your copy. Never run a command in, or write to, the requester's tree.`] : []),
     ...(floor ? [`Bash runs in an OS sandbox: ${floor === 'read-only' ? 'it writes nothing but temporary files' : `it writes only ${mapping.workdir} and temporary files`}, and has no network. Run any command you need for your work in it.${profile?.allow.length || profile?.ask.length || profile?.beyondMode === 'ask' ? ' To run a command outside it (one your profile allows, or one for the user to approve), set dangerouslyDisableSandbox on that Bash call.' : ''}`] : []),
   ];
@@ -1549,6 +1560,31 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   }
 
   /**
+   * An ACP agent asks before using a tool (ALPD §46): ALP's tools, reading, and what the
+   * mode allows run; deny and allow rules hold for commands; an ask rule, or anything
+   * beyond the mode when the profile asks beyond it, goes to the user.
+   */
+  async function acpPermissionRequest(sessionId: string, session: Session, request: AcpPermission) {
+    const profile = session.mapping.permissions;
+    const decision = acpDecision(request, session.mapping.mode, profile, session.mapping.workdir);
+    const log = (result: string, extra: Record<string, unknown> = {}) => runLog(rootOf(sessionId), {
+      event: 'permission', agent: session.mapping.agent.name, sessionId, request: request.kind,
+      ...(request.command !== undefined ? { command: request.command.slice(0, 500) } : request.title ? { command: request.title.slice(0, 500) } : {}),
+      decision: result, ...(profile ? { profile: profile.name } : {}), ...extra,
+    });
+    if (decision === 'allow') return { allow: true };
+    if (decision === 'deny' || (decision === 'mode' && profile?.beyondMode !== 'ask')) {
+      log('decline', decision === 'deny' ? { rule: 'deny' } : {});
+      return { allow: false };
+    }
+    const exact = request.command !== undefined ? unwrapShell(request.command) : undefined;
+    const always = decision === 'mode' && exact && !exact.includes(')') ? `Bash(${exact})` : undefined;
+    const answer = await askPermission(sessionId, session, { what: acpWhat(request), reason: decision, always, recheck: request.command });
+    log(answer.allow ? 'accept' : 'decline', { asked: true, ...(decision === 'rule' ? { rule: 'ask' } : {}), ...(answer.always ? { always } : {}) });
+    return answer;
+  }
+
+  /**
    * Asks the user about one permission, one question per session at a time.
    * "Always allow" adds the rule to the profile in its settings file and to the
    * open sessions that use it; an ask rule offers only once or no.
@@ -1921,7 +1957,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
   const RUNTIMES: RuntimeKind[] = ['codex', 'claude'];
   const LIMIT_ERRORS = ['usageLimitExceeded', 'rateLimitExceeded'];
-  const label = (kind: RuntimeKind) => kind === 'claude' ? 'Claude' : 'Codex';
+  const label = (kind: RuntimeKind) => kind === 'claude' ? 'Claude' : kind === 'acp' ? 'ACP agent' : 'Codex';
   const pauseOf = (kind: RuntimeKind) => paused.all ?? paused.runtimes[kind];
   /** Whether a session may not start a turn by itself now: parked, or on a paused runtime. */
   const held = (session: Session) => !!session.parked || !!pauseOf(session.runtimeKind);
@@ -2725,7 +2761,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
     await closeSession(assignment.id);
     // Its native thread stays on disk, so its requesters can ask it about its work later.
-    if (child?.threadId && child.mapping.keepThread) {
+    // An ACP agent cannot fork a session to answer questions about it.
+    if (child?.threadId && child.mapping.keepThread && child.runtimeKind !== 'acp') {
       void recalls.add({
         assignmentId: assignment.id, rootId: assignment.rootId, requesters: lineage(parentId), agent: assignment.agent,
         project: child.mapping.agent.projectRoot, runtime: child.runtimeKind, threadId: child.threadId, cwd: child.mapping.workdir,
@@ -3201,7 +3238,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     for (const key of ['model', 'thinking', 'modelReason']) {
       if (args[key] !== undefined && (typeof args[key] !== 'string' || !args[key].trim())) return toolResult(false, { error: `Invalid ${key}` });
     }
-    if (args.model !== undefined && !/^(codex|claude):[^\s]+$/.test(args.model)) return toolResult(false, { error: 'Use a runtime-prefixed model ID' });
+    if (args.model !== undefined && !/^(codex|claude|acp):[^\s]+$/.test(args.model)) return toolResult(false, { error: 'Use a runtime-prefixed model ID' });
     if (args.agent === 'oracle' && !ORACLE_MODELS.includes(args.model)) return toolResult(false, { error: `Oracle runs on ${ORACLE_MODELS.join(' or ')}; pass one as model. For two opinions, start one on each with wait: false` });
     // A paused runtime takes no new assignments; another runtime may.
     const childRuntime = (args.model?.split(':')[0] ?? session.runtimeKind) as RuntimeKind;
@@ -3510,6 +3547,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       runtimeKind,
       mapping.workdir,
       environment,
+      mapping.acp,
     );
 
     const session: Session = {
@@ -3671,6 +3709,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       async (method, params) =>
         method === 'item/tool/call' ? toolCall(sessionId, session, params)
           : method === 'item/permission/request' ? claudePermission(sessionId, session, params)
+          : method === 'item/acp/permission' ? acpPermissionRequest(sessionId, session, params)
           : approve(sessionId, session, method, params),
     );
     transport.onNotification((method, params) => notification(sessionId, session, method, params));
@@ -3751,7 +3790,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     const old = session.runtime;
     void old.close().catch(() => {});
     try {
-      const transport = createTransport(options, session.runtimeKind, session.mapping.workdir, nativeEnvironment(options, session.mapping.env));
+      const transport = createTransport(options, session.runtimeKind, session.mapping.workdir, nativeEnvironment(options, session.mapping.env), session.mapping.acp);
       session.runtime = transport;
       session.pending = true;
       wire(sessionId, session, transport);

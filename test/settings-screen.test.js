@@ -60,6 +60,7 @@ const lists = {
   skills: [{ name: 'style', source: 'library', usedBy: ['agent writer'] }],
   mcp: [],
   hooks: [{ name: 'tests', source: 'library' }],
+  providers: [{ name: 'gemini', source: 'library', usedBy: ['scout'] }],
 };
 
 test('the client registers the ALP settings screen and the project panel, with only the modules Paseo supplies', async () => {
@@ -82,7 +83,7 @@ test('the library lists each kind with where entries come from, what they overri
   const { code } = await compileClient('client/library.tsx');
   const { LibraryLists } = load(code);
   const html = renderToStaticMarkup(createElement(LibraryLists, { theme, compact: false, scope: 'library', where: { projectRoot: null, library: '/home/u/.alp' }, lists, error: null, actions }));
-  const order = ['Teams', 'Agents', 'Skills', 'MCP servers', 'Hooks'].map(title => html.indexOf(`<h2>${title}</h2>`));
+  const order = ['Teams', 'Agents', 'Skills', 'MCP servers', 'Hooks', 'Providers'].map(title => html.indexOf(`<h2>${title}</h2>`));
   assert.ok(order.every(position => position >= 0), html);
   assert.deepEqual([...order].sort((a, b) => a - b), order);
   assert.match(html, /Your library in \/home\/u\/\.alp: every project uses it/);
@@ -101,6 +102,8 @@ test('the project panel overrides an entry here, or drops the override to use th
   const project = { ...lists, agents: [{ name: 'main', source: 'project', overrides: 'builtin' }, { name: 'peer', source: 'builtin' }, { name: 'scout', source: 'project' }] };
   const html = renderToStaticMarkup(createElement(LibraryLists, { theme, compact: true, scope: 'project', where: { projectRoot: '/p', library: '/home/u/.alp' }, lists: project, error: null, actions }));
   assert.match(html, /What \/p overrides/);
+  // Providers live in the library only.
+  assert.doesNotMatch(html, /<h2>Providers<\/h2>/);
   assert.match(html, /<text>main<\/text><text>project · overrides built-in<\/text>.*?<text>Use library<\/text>/);
   assert.match(html, /<text>peer<\/text><text>built-in<\/text>.*?<text>Override in this project<\/text>/);
   // A project-only agent has nothing below it to return to.
@@ -116,6 +119,7 @@ test('editors: an agent picks skills, MCP servers and hooks; a team its members,
   const agent = renderToStaticMarkup(createElement(EntryEditor, { theme, compact: false, scope: 'library', kind: 'agents', entry: main, lists, actions }));
   assert.match(agent, /Built into ALP\. Saving makes your library&#x27;s own main, which overrides it\. Used by team pho\./);
   assert.match(agent, /<switch data-label="style" data-value="true">/);
+  assert.match(agent, /<option value="gemini">gemini \(ACP\)<\/option>/);
   assert.match(agent, /<switch data-label="tests" data-value="false">/);
   assert.match(agent, /No mcp servers to choose from yet/);
   assert.match(agent, /data-label="AGENT.md" data-value="# Main\n"/);
@@ -147,6 +151,12 @@ test('editors: an agent picks skills, MCP servers and hooks; a team its members,
   // Only events before an action can block it.
   assert.doesNotMatch(hook, /Block the action when it fails/);
   assert.match(hook, /<action data-label="Run once with a sample event">Test<\/action>/);
+  const provider = renderToStaticMarkup(createElement(EntryEditor, { theme, compact: false, scope: 'library', kind: 'providers', entry: { kind: 'providers', name: 'gemini', source: 'library', content: { provider: { kind: 'acp', command: 'gemini', args: ['--experimental-acp'], models: [{ id: 'gemini-2.5-pro' }] } }, revision: 'r', usedBy: ['agent scout'] }, lists, actions }));
+  assert.match(provider, /<field data-label="Command" data-value="gemini">/);
+  assert.match(provider, /<field data-label="Arguments" data-value="--experimental-acp">/);
+  assert.match(provider, /<field data-label="Models" data-value="gemini-2.5-pro">/);
+  assert.match(provider, /it cannot steer it mid-turn or sandbox its commands/);
+  assert.match(provider, /<action data-label="Start the agent and ask what it supports">Test<\/action>/);
   const created = renderToStaticMarkup(createElement(EntryEditor, { theme, compact: false, scope: 'library', kind: 'mcp', entry: null, lists, actions }));
   assert.match(created, /New MCP server/);
   assert.match(created, /<select data-label="Transport" data-value="stdio">/);

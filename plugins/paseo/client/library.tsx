@@ -13,7 +13,7 @@ import { libraryDelete, libraryDuplicate, libraryGet, libraryList, librarySave, 
  * makes the library's (or the project's) entry of that name.
  */
 
-export type Kind = 'teams' | 'agents' | 'skills' | 'mcp' | 'hooks';
+export type Kind = 'teams' | 'agents' | 'skills' | 'mcp' | 'hooks' | 'providers';
 export type Scope = 'library' | 'project';
 export const KINDS: Array<{ kind: Kind; title: string; one: string }> = [
   { kind: 'teams', title: 'Teams', one: 'team' },
@@ -21,7 +21,10 @@ export const KINDS: Array<{ kind: Kind; title: string; one: string }> = [
   { kind: 'skills', title: 'Skills', one: 'skill' },
   { kind: 'mcp', title: 'MCP servers', one: 'MCP server' },
   { kind: 'hooks', title: 'Hooks', one: 'hook' },
+  // ACP agents (ALPD §46): in the library only, so the project panel leaves them out.
+  { kind: 'providers', title: 'Providers', one: 'provider' },
 ];
+const shownIn = (scope: Scope) => KINDS.filter(item => scope === 'library' || item.kind !== 'providers');
 const HOOK_EVENTS = ['session.start', 'turn.end', 'assignment.start', 'assignment.end', 'handoff', 'task.close', 'merge'];
 const BLOCKING_EVENTS = ['handoff', 'task.close', 'merge'];
 const ROLES = ['lead', 'peer', 'advisor', 'reviewer'];
@@ -109,7 +112,7 @@ function LibraryManager({ theme, compact, scope, directory }: { theme: PluginThe
       return removed;
     },
     test: async (kind, name) => {
-      try { return await probe({ ...base, kind: kind as 'mcp' | 'hooks', name }); }
+      try { return await probe({ ...base, kind: kind as 'mcp' | 'hooks' | 'providers', name }); }
       catch (cause) { toast.error(message(cause)); return null; }
     },
   };
@@ -148,7 +151,7 @@ export function LibraryLists({ theme, compact, scope, where, lists, error, actio
           : `What ${where?.projectRoot ?? 'this project'} overrides. Override an entry to change it here only; Use library drops the project's copy.`}
       </Text>
       {error ? <Text style={styles.danger}>{error}</Text> : null}
-      {KINDS.map(({ kind, title, one }) => {
+      {shownIn(scope).map(({ kind, title, one }) => {
         const rows = lists[kind];
         return (
           <SettingsSection key={kind} title={title} trailing={<Pressable accessibilityRole="button" accessibilityLabel={`New ${one}`} onPress={() => actions.create(kind)}><Text style={styles.link}>New</Text></Pressable>}>
@@ -189,6 +192,7 @@ export function blank(kind: Kind, name = 'new'): Content {
   if (kind === 'skills') return { body: `---\nname: ${name}\ndescription: When to use this skill.\n---\n\n# ${name}\n\nSteps and checks.\n` };
   if (kind === 'mcp') return { server: { command: '' } };
   if (kind === 'hooks') return { hook: { event: 'handoff', command: '', blocking: false } };
+  if (kind === 'providers') return { provider: { kind: 'acp', label: name, command: '' } };
   return { team: { label: name, main: 'main', members: { main: {} }, delegation: {}, supervisor: false }, houseRules: '' };
 }
 
@@ -223,9 +227,10 @@ export function EntryEditor({ theme, compact, scope, kind, entry, lists, actions
       {kind === 'skills' ? <SettingsSection title="SKILL.md"><Multiline value={content.body ?? ''} onChange={text => update(draft => { draft.body = text; })} styles={styles} theme={theme} label="SKILL.md" /></SettingsSection> : null}
       {kind === 'mcp' ? <McpForm content={content} update={update} /> : null}
       {kind === 'hooks' ? <HookForm content={content} update={update} lists={lists} /> : null}
-      {(kind === 'mcp' || kind === 'hooks') && entry ? (
+      {kind === 'providers' ? <ProviderForm content={content} update={update} /> : null}
+      {(kind === 'mcp' || kind === 'hooks' || kind === 'providers') && entry ? (
         <SettingsSection title="Test">
-          <SettingsAction label={kind === 'mcp' ? 'Start the server and list its tools' : 'Run once with a sample event'} hint="Save first: the test runs what is saved." actionLabel="Test" onPress={async () => setResult(await actions.test(kind, entry.name))} />
+          <SettingsAction label={kind === 'mcp' ? 'Start the server and list its tools' : kind === 'providers' ? 'Start the agent and ask what it supports' : 'Run once with a sample event'} hint="Save first: the test runs what is saved." actionLabel="Test" onPress={async () => setResult(await actions.test(kind, entry.name))} />
           {result ? <TestResult kind={kind} result={result} styles={styles} /> : null}
         </SettingsSection>
       ) : null}
@@ -249,8 +254,8 @@ export function AgentForm({ content, update, lists, styles, theme }: FormProps) 
     <>
       <SettingsSection title="Agent">
         <SettingsInput label="Description" initialValue={config.description ?? ''} onChangeText={field('description')} />
-        <SettingsSelect label="Provider" hint="The team or project settings may choose another" value={config.provider ?? ''} options={[{ label: 'Default', value: '' }, { label: 'Codex', value: 'codex' }, { label: 'Claude Code', value: 'claude' }]} onValueChange={field('provider')} />
-        <SettingsInput label="Model" hint="Such as claude:claude-sonnet-5-5 or codex:gpt-6-sol" initialValue={config.model ?? ''} onChangeText={field('model')} />
+        <SettingsSelect label="Provider" hint="The team or project settings may choose another" value={config.provider ?? ''} options={[{ label: 'Default', value: '' }, { label: 'Codex', value: 'codex' }, { label: 'Claude Code', value: 'claude' }, ...names(lists, 'providers').map(provider => ({ label: `${provider} (ACP)`, value: provider }))]} onValueChange={field('provider')} />
+        <SettingsInput label="Model" hint="Such as claude:claude-sonnet-5-5, codex:gpt-6-sol or acp:gemini" initialValue={config.model ?? ''} onChangeText={field('model')} />
         <SettingsInput label="Thinking" hint="Effort, such as low, medium or high" initialValue={config.thinking ?? ''} onChangeText={field('thinking')} />
         <SettingsSelect label="Default mode" value={config.mode ?? ''} options={MODES.map(mode => ({ label: mode || 'As its requester chooses', value: mode }))} onValueChange={field('mode')} />
       </SettingsSection>
@@ -416,6 +421,21 @@ export function McpForm({ content, update }: Omit<FormProps, 'lists'>) {
   );
 }
 
+export function ProviderForm({ content, update }: Omit<FormProps, 'lists'>) {
+  const provider: Content = content.provider ?? {};
+  const set = (key: string, value: unknown) => update(draft => { draft.provider ??= { kind: 'acp' }; setOrDelete(draft.provider, key, value); });
+  return (
+    <SettingsSection title="ACP agent" info={<Text>Any agent that speaks the Agent Client Protocol on stdio. ALP answers its permission requests by the session's mode; it cannot steer it mid-turn or sandbox its commands.</Text>}>
+      <SettingsInput label="Label" initialValue={provider.label ?? ''} onChangeText={value => set('label', value.trim())} />
+      <SettingsInput label="Description" initialValue={provider.description ?? ''} onChangeText={value => set('description', value.trim())} />
+      <SettingsInput label="Command" hint="Such as gemini, or an absolute path" initialValue={provider.command ?? ''} onChangeText={value => update(draft => { draft.provider.command = value.trim(); })} />
+      <SettingsInput label="Arguments" hint="Separated by spaces, such as --experimental-acp" initialValue={(provider.args ?? []).join(' ')} onChangeText={value => set('args', value.split(/\s+/).filter(Boolean))} />
+      <SettingsInput label="Environment" hint="NAME=value, separated by ';'" initialValue={unpairs(provider.env).replaceAll('\n', '; ')} onChangeText={value => set('env', Object.keys(pairs(value.replaceAll(';', '\n'))).length ? pairs(value.replaceAll(';', '\n')) : undefined)} />
+      <SettingsInput label="Models" hint="Ids the agent offers, separated by ','; empty lets any through" initialValue={(provider.models ?? []).map((model: { id: string }) => model.id).join(', ')} onChangeText={value => set('models', value.split(',').map(id => id.trim()).filter(Boolean).map(id => (provider.models ?? []).find((model: { id: string }) => model.id === id) ?? { id }))} />
+    </SettingsSection>
+  );
+}
+
 export function HookForm({ content, update, lists }: FormProps) {
   const hook: Content = content.hook ?? {};
   const set = (key: string, value: unknown) => update(draft => { setOrDelete(draft.hook, key, value); });
@@ -433,6 +453,14 @@ export function HookForm({ content, update, lists }: FormProps) {
 }
 
 function TestResult({ kind, result, styles }: { kind: Kind; result: Record<string, any>; styles: Styles }) {
+  if (kind === 'providers') {
+    return (
+      <View>
+        <Text style={styles.success}>{result.agent?.title ?? result.agent?.name ?? 'The agent'}{result.agent?.version ? ` ${result.agent.version}` : ''} speaks ACP {result.protocolVersion}</Text>
+        <Text style={styles.muted}>{result.loadSession ? 'Resumes sessions' : 'Cannot resume sessions'}{result.mcpHttp ? '; takes HTTP MCP servers' : '; takes stdio MCP servers only'}{result.authMethods?.length ? `; signs in with ${result.authMethods.join(', ')}` : ''}</Text>
+      </View>
+    );
+  }
   if (kind === 'mcp') {
     return (
       <View>

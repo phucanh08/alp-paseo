@@ -5,6 +5,8 @@ import { initProject } from '../core/init.js';
 import { resolveAgent } from '../core/resolver.js';
 import { resolveTeam } from '../core/teams.js';
 import { loadHooks } from '../core/hooks.js';
+import { acpModel, loadProvider } from '../core/providers.js';
+import type { AcpProvider } from './acp-transport.js';
 import { ensureLibrary } from '../core/library.js';
 import { compileAgent } from '../core/adapter.js';
 import { capMode, profileFor } from '../core/permissions.js';
@@ -13,7 +15,8 @@ import type { ResolvedAgent } from '../core/types.js';
 import type { AlpRuntimeAdapter } from '../core/adapter.js';
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_MODEL, ORACLE_MODELS, ORACLE_THINKING, modes, thinkingOptions, thinkingOptionsFor } from './catalog.js';
 
-export type RuntimeKind = 'codex' | 'claude';
+/** Codex and Claude Code, or an ACP agent the user's library defines (ALPD §46). */
+export type RuntimeKind = 'codex' | 'claude' | 'acp';
 
 /** MCP servers a client adds to the agent's own; the agent's names win no collisions. */
 export type HostMcpServer =
@@ -26,7 +29,7 @@ export type SessionSpec = {
   agent?: string;
   /** Workflow selected for a new session; omitted uses settings or the restored snapshot. */
   workflow?: string;
-  /** Native model, or runtime-prefixed (`codex:`/`claude:`) to also choose the runtime. */
+  /** Native model, or runtime-prefixed (`codex:`/`claude:`, or `acp:<provider>[/<model>]`) to also choose the runtime. */
   model?: string;
   mode?: string;
   thinking?: string;
@@ -110,14 +113,25 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
   if (model.startsWith('claude:')) { runtimeKind = 'claude'; model = model.slice('claude:'.length); }
   if (model.startsWith('codex/')) { runtimeKind = 'codex'; model = model.slice('codex/'.length); }
   if (model.startsWith('claude/')) { runtimeKind = 'claude'; model = model.slice('claude/'.length); }
-  if (!['codex', 'claude'].includes(runtimeKind)) throw new Error(`Unsupported ALP runtime provider '${runtimeKind}'`);
+  if (model.startsWith('acp:')) { runtimeKind = 'acp'; model = model.slice('acp:'.length); }
+  // An agent.json provider other than codex or claude names an ACP provider of the library; its model is that provider's.
+  if (!['codex', 'claude', 'acp'].includes(runtimeKind)) { model = model === DEFAULT_MODEL && agent.runtime.model !== DEFAULT_MODEL ? runtimeKind : `${runtimeKind}/${model}`; runtimeKind = 'acp'; }
   if (restored?.runtime && runtimeKind !== restored.runtime) throw new Error('Cannot resume a thread with a different runtime provider');
+  let acp: AcpProvider | undefined;
+  if (runtimeKind === 'acp') {
+    const { provider: id, model: native } = acpModel(model);
+    acp = await loadProvider(options.library, id) as AcpProvider | undefined;
+    if (!acp) throw new Error(`No ACP provider '${id}': add one to your library with alp provider add ${id}, or name codex or claude`);
+    if (native && acp.models && !acp.models.some(candidate => candidate.id === native)) throw new Error(`ACP provider '${id}' lists no model '${native}'`);
+    if (spec.copy) throw new Error('A review copy cannot run on an ACP agent: ALP cannot keep its commands inside the copy');
+  }
   // Main has full access unless the caller limits it; a permission profile caps the mode at its base.
   const permissions = await profileFor(agent.projectRoot, options.library, agent.name);
   const requested = spec.mode ?? agent.mode ?? (agent.name === main ? 'full-access' : 'read-only');
   const mode = permissions ? capMode(requested, permissions.base) : requested;
-  const availableThinking = thinkingOptionsFor(runtimeKind as RuntimeKind, model);
-  const thinking = spec.thinking ?? agent.projectRuntime?.reasoning ?? teamChoice?.thinking ?? agent.runtime.reasoning ??
+  // An ACP agent chooses its own effort.
+  const availableThinking = runtimeKind === 'acp' ? [] : thinkingOptionsFor(runtimeKind as 'codex' | 'claude', model);
+  const thinking = runtimeKind === 'acp' ? 'none' : spec.thinking ?? agent.projectRuntime?.reasoning ?? teamChoice?.thinking ?? agent.runtime.reasoning ??
     (agent.name === 'oracle' ? ORACLE_THINKING : availableThinking.length ? 'medium' : 'none');
   if (!model.trim()) throw new Error('Model must be nonempty');
   if (!modes.some(m => m.id === mode)) throw new Error(`Unsupported mode '${mode}'`);
@@ -152,7 +166,7 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
   const houseRules = base.houseRules;
   const hooks = await loadHooks(agent);
   return {
-    agent, workflow, team, houseRules, hooks, runtimeKind: runtimeKind as RuntimeKind, model, mode, permissions, thinking, threadId: restored?.threadId,
+    agent, workflow, team, houseRules, hooks, runtimeKind: runtimeKind as RuntimeKind, model, ...(acp ? { acp } : {}), mode, permissions, thinking, threadId: restored?.threadId,
     workdir: spec.workdir ?? agent.projectRoot,
     copy: Boolean(spec.copy && spec.workdir),
     ...(spec.copy && spec.copyOf ? { copyOf: spec.copyOf } : {}),
