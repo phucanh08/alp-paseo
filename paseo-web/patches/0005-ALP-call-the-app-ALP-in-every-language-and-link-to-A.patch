@@ -1,0 +1,2732 @@
+From af76435eba3d67ba4e592126fc5fd00c9dc9576f Mon Sep 17 00:00:00 2001
+From: anhlp <phucanhdn08@gmail.com>
+Date: Sat, 10 Oct 2026 21:42:59 +0700
+Subject: [PATCH 5/5] ALP: call the app ALP in every language, and link to ALP's
+ repository
+
+---
+ .../app/src/components/community-links.tsx    | 31 +------
+ .../components/sidebar/sidebar-help-menu.tsx  | 18 +----
+ .../src/diagnostics/app-diagnostic-report.ts  |  2 +-
+ packages/app/src/i18n/resources/ar.ts         | 78 +++++++++---------
+ packages/app/src/i18n/resources/en.ts         | 78 +++++++++---------
+ packages/app/src/i18n/resources/es.ts         | 78 +++++++++---------
+ packages/app/src/i18n/resources/fr.ts         | 78 +++++++++---------
+ packages/app/src/i18n/resources/ja.ts         | 74 ++++++++---------
+ packages/app/src/i18n/resources/ko.ts         | 76 +++++++++---------
+ packages/app/src/i18n/resources/pt-BR.ts      | 78 +++++++++---------
+ packages/app/src/i18n/resources/ru.ts         | 80 +++++++++----------
+ packages/app/src/i18n/resources/zh-CN.ts      | 78 +++++++++---------
+ .../screens/settings/browser-tools-config.ts  |  2 +-
+ .../app/src/screens/startup-splash-screen.tsx |  4 +-
+ .../workspace/workspace-route-state.ts        |  2 +-
+ 15 files changed, 356 insertions(+), 401 deletions(-)
+
+diff --git a/packages/app/src/components/community-links.tsx b/packages/app/src/components/community-links.tsx
+index bbecedc..cceb46d 100644
+--- a/packages/app/src/components/community-links.tsx
++++ b/packages/app/src/components/community-links.tsx
+@@ -1,26 +1,15 @@
+ import { useCallback } from "react";
+ import { View } from "react-native";
+ import { StyleSheet } from "react-native-unistyles";
+-import { Heart } from "lucide-react-native";
+ import { Button } from "@/components/ui/button";
+ import { GitHubIcon } from "@/components/icons/github-icon";
+-import { DiscordIcon } from "@/components/icons/discord-icon";
+ import { openExternalUrl } from "@/utils/open-external-url";
+ 
+ const renderGitHubIcon = (color: string) => <GitHubIcon color={color} size={14} />;
+-const renderDiscordIcon = (color: string) => <DiscordIcon color={color} size={14} />;
+ 
+ export function CommunityLinks() {
+   const handleOpenGitHub = useCallback(() => {
+-    void openExternalUrl("https://github.com/getpaseo/paseo");
+-  }, []);
+-
+-  const handleOpenSponsor = useCallback(() => {
+-    void openExternalUrl("https://github.com/sponsors/boudra");
+-  }, []);
+-
+-  const handleOpenDiscord = useCallback(() => {
+-    void openExternalUrl("https://discord.gg/jz8T2uahpH");
++    void openExternalUrl("https://github.com/phucanh08/alp-paseo");
+   }, []);
+ 
+   return (
+@@ -34,24 +23,6 @@ export function CommunityLinks() {
+       >
+         Star
+       </Button>
+-      <Button
+-        variant="ghost"
+-        size="sm"
+-        leftIcon={Heart}
+-        onPress={handleOpenSponsor}
+-        testID="community-links-sponsor"
+-      >
+-        Sponsor
+-      </Button>
+-      <Button
+-        variant="ghost"
+-        size="sm"
+-        leftIcon={renderDiscordIcon}
+-        onPress={handleOpenDiscord}
+-        testID="community-links-discord"
+-      >
+-        Community
+-      </Button>
+     </View>
+   );
+ }
+diff --git a/packages/app/src/components/sidebar/sidebar-help-menu.tsx b/packages/app/src/components/sidebar/sidebar-help-menu.tsx
+index 5f60339..3d2a257 100644
+--- a/packages/app/src/components/sidebar/sidebar-help-menu.tsx
++++ b/packages/app/src/components/sidebar/sidebar-help-menu.tsx
+@@ -3,7 +3,6 @@ import { Text, View } from "react-native";
+ import { Activity, CircleHelp, Gift, Keyboard } from "lucide-react-native";
+ import { useTranslation } from "react-i18next";
+ import { StyleSheet, withUnistyles } from "react-native-unistyles";
+-import { DiscordIcon } from "@/components/icons/discord-icon";
+ import { GitHubIcon } from "@/components/icons/github-icon";
+ import {
+   DropdownMenu,
+@@ -29,13 +28,11 @@ import { resolveAppVersion } from "@/utils/app-version";
+ import { openChangelog } from "@/changelog";
+ import { openExternalUrl } from "@/utils/open-external-url";
+ 
+-const DISCORD_URL = "https://discord.gg/jz8T2uahpH";
+-const GITHUB_ISSUE_URL = "https://github.com/getpaseo/paseo/issues/new";
++const GITHUB_ISSUE_URL = "https://github.com/phucanh08/alp-paseo/issues/new";
+ const ThemedActivity = withUnistyles(Activity);
+ const ThemedCircleHelp = withUnistyles(CircleHelp);
+ const ThemedGift = withUnistyles(Gift);
+ const ThemedKeyboard = withUnistyles(Keyboard);
+-const ThemedDiscordIcon = withUnistyles(DiscordIcon);
+ const ThemedGitHubIcon = withUnistyles(GitHubIcon);
+ const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
+ const foregroundMutedColorMapping = (theme: Theme) => ({
+@@ -47,9 +44,6 @@ const diagnosticLeadingIcon = (
+ const shortcutsLeadingIcon = (
+   <ThemedKeyboard size={ICON_SIZE.sm} uniProps={foregroundMutedColorMapping} />
+ );
+-const discordLeadingIcon = (
+-  <ThemedDiscordIcon size={ICON_SIZE.sm} uniProps={foregroundMutedColorMapping} />
+-);
+ const githubLeadingIcon = (
+   <ThemedGitHubIcon size={ICON_SIZE.sm} uniProps={foregroundMutedColorMapping} />
+ );
+@@ -92,9 +86,6 @@ export function SidebarHelpMenu() {
+     setShortcutsDialogOpen(true);
+   }, [setShortcutsDialogOpen]);
+ 
+-  const openDiscord = useCallback(() => {
+-    void openExternalUrl(DISCORD_URL);
+-  }, []);
+ 
+   const openGitHubIssue = useCallback(() => {
+     void openExternalUrl(GITHUB_ISSUE_URL);
+@@ -151,13 +142,6 @@ export function SidebarHelpMenu() {
+         </DropdownMenuItem>
+         <DropdownMenuSeparator />
+         <DropdownMenuLabel>{t("sidebar.help.reportIssue")}</DropdownMenuLabel>
+-        <DropdownMenuItem
+-          testID="sidebar-help-discord"
+-          leading={discordLeadingIcon}
+-          onSelect={openDiscord}
+-        >
+-          {t("sidebar.help.discord")}
+-        </DropdownMenuItem>
+         <DropdownMenuItem
+           testID="sidebar-help-github"
+           leading={githubLeadingIcon}
+diff --git a/packages/app/src/diagnostics/app-diagnostic-report.ts b/packages/app/src/diagnostics/app-diagnostic-report.ts
+index afb38e7..4c47af9 100644
+--- a/packages/app/src/diagnostics/app-diagnostic-report.ts
++++ b/packages/app/src/diagnostics/app-diagnostic-report.ts
+@@ -22,7 +22,7 @@ export function formatAppDiagnosticHeader(input: {
+   isDesktopApp: boolean;
+   hostCount: number;
+ }): string {
+-  return formatDiagnosticSection("Paseo app diagnostics", [
++  return formatDiagnosticSection("ALP app diagnostics", [
+     { label: "Collected at", value: new Date().toISOString() },
+     { label: "App version", value: input.appVersion ?? "unknown" },
+     { label: "Platform", value: input.platform },
+diff --git a/packages/app/src/i18n/resources/ar.ts b/packages/app/src/i18n/resources/ar.ts
+index 79355f7..126fdb6 100644
+--- a/packages/app/src/i18n/resources/ar.ts
++++ b/packages/app/src/i18n/resources/ar.ts
+@@ -873,7 +873,7 @@ export const ar: TranslationResources = {
+           updateCurrent: "التحديث غير متاح لأن هذا الفرع محدث بالفعل باستخدام{{baseRef}}",
+           mergePrNoGithub: "دمج PR غير متاح الآن لأن GitHub غير متصل",
+           archiveNotWorktree:
+-            "الأرشيف غير متاح هنا لأنه لم يتم إنشاء مساحة العمل هذه كشجرة عمل Paseo",
++            "الأرشيف غير متاح هنا لأنه لم يتم إنشاء مساحة العمل هذه كشجرة عمل ALP",
+           mergePrNoForge: "دمج {{noun}} غير متاح الآن لأن {{brand}} غير متصل",
+           mergePrMissing: "دمج PR غير متاح لأنه لا يوجد طلب سحب حتى الآن",
+           mergePrDraft: "دمج PR غير متاح لأن طلب السحب لا يزال مسودة",
+@@ -1220,7 +1220,7 @@ export const ar: TranslationResources = {
+       discord: "Discord",
+       github: "إنشاء مشكلة على GitHub",
+       whatsNew: "ما الجديد",
+-      appName: "Paseo",
++      appName: "ALP",
+     },
+     sections: {
+       sessions: "السجل",
+@@ -1367,7 +1367,7 @@ export const ar: TranslationResources = {
+       close: "إغلاق النافذة",
+     },
+     quitting: {
+-      title: "جارٍ إنهاء Paseo...",
++      title: "جارٍ إنهاء ALP...",
+       detail: "إيقاف البرنامج الخفي المحلي.",
+     },
+     daemon: {
+@@ -1382,20 +1382,20 @@ export const ar: TranslationResources = {
+       },
+       management: {
+         title: "إدارة البرنامج الخفي المدمج",
+-        hint: "اسمح لـ Paseo ببدء تشغيل البرنامج الخفي المدمج وإيقافه",
++        hint: "اسمح لـ ALP ببدء تشغيل البرنامج الخفي المدمج وإيقافه",
+         pauseTitle: "وقفة المدمج في البرنامج الخفي",
+         pauseMessage:
+           "سيؤدي هذا إلى إيقاف البرنامج الخفي المدمج على الفور. سيتم إيقاف تشغيل الوكلاء والمحطات الطرفية المتصلة بالبرنامج الخفي المدمج.",
+         pauseAndStop: "وقفة وتوقف",
+         registrationFailed:
+-          "Built-in daemon started, but Paseo could not save the localhost connection. Toggle daemon management off and on again, or add localhost manually.",
++          "Built-in daemon started, but ALP could not save the localhost connection. Toggle daemon management off and on again, or add localhost manually.",
+         pausedStopFailed:
+-          "تم إيقاف إدارة البرنامج الخفي المضمنة مؤقتًا، لكن لم يتمكن Paseo من إيقاف البرنامج الخفي.",
++          "تم إيقاف إدارة البرنامج الخفي المضمنة مؤقتًا، لكن لم يتمكن ALP من إيقاف البرنامج الخفي.",
+         updateFailed: "غير قادر على تحديث إدارة البرنامج الخفي المضمنة.",
+       },
+       keepRunning: {
+         title: "استمر في تشغيل البرنامج الخفي بعد الإقلاع عن التدخين",
+-        hint: "يستمر تشغيل Daemon عند إنهاء Paseo",
++        hint: "يستمر تشغيل Daemon عند إنهاء ALP",
+       },
+       logs: {
+         title: "ملف السجل",
+@@ -1410,7 +1410,7 @@ export const ar: TranslationResources = {
+       fullStatus: {
+         title: "الوضع الكامل",
+         modalTitle: "حالة Daemon",
+-        hint: "يقوم بتشغيل`paseo daemon status`ويظهر الإخراج",
++        hint: "يقوم بتشغيل`alp daemon status`ويظهر الإخراج",
+         view: "عرض الحالة",
+         copied: "تم نسخ الحالة إلى الحافظة.",
+         fetchFailed: "فشل جلب حالة البرنامج الخفي:{{message}}",
+@@ -1461,7 +1461,7 @@ export const ar: TranslationResources = {
+     },
+     rosetta: {
+       title: "قم بتنزيل نسخة Apple Silicon",
+-      runningIntel: "أنت تقوم بتشغيل إصدار Intel من Paseo ضمن Rosetta على Apple Silicon.",
++      runningIntel: "أنت تقوم بتشغيل إصدار Intel من ALP ضمن Rosetta على Apple Silicon.",
+       highCpu:
+         "يؤدي هذا إلى ارتفاع استخدام وحدة المعالجة المركزية. قم بتنزيل إصدار Apple Silicon لإصلاحه.",
+       download: "تحميل",
+@@ -1504,7 +1504,7 @@ export const ar: TranslationResources = {
+         microphone: "لم يتم التحقق من حالة الميكروفون بعد.",
+       },
+       testNotification: {
+-        title: "اختبار الإخطار Paseo",
++        title: "اختبار الإخطار ALP",
+         body: "إذا كان بإمكانك رؤية ذلك، فهذا يعني أن إشعارات سطح المكتب تعمل.",
+         notDelivered: "لم يتم تسليم الإخطار. تحقق من إعدادات النظام > الإشعارات.",
+         failed: "فشل في إرسال الإخطار.",
+@@ -1513,12 +1513,12 @@ export const ar: TranslationResources = {
+     integrations: {
+       cli: {
+         statusFailed: "غير قادر على التحقق من حالة تثبيت CLI.",
+-        installFailed: "غير قادر على تثبيت PaseoCLI.",
++        installFailed: "غير قادر على تثبيت ALPCLI.",
+       },
+     },
+   },
+   rootError: {
+-    title: "واجه Paseo مشكلة.",
++    title: "واجه ALP مشكلة.",
+     body: "جرّب مرة أخرى لإعادة تحميل التطبيق. إذا استمر حدوث ذلك، فأرفق التفاصيل أدناه عند الإبلاغ عنه.",
+     details: "التفاصيل",
+   },
+@@ -1614,7 +1614,7 @@ export const ar: TranslationResources = {
+     },
+   },
+   onboarding: {
+-    title: "مرحبا بكم في Paseo",
++    title: "مرحبا بكم في ALP",
+     subtitle: "قم بتوصيل جهاز الكمبيوتر الخاص بك للبدء",
+     actions: {
+       settings: "إعدادات",
+@@ -1717,7 +1717,7 @@ export const ar: TranslationResources = {
+     },
+     direct: {
+       title: "اتصال مباشر",
+-      helper: "أدخل عنوان خادم Paseo.",
++      helper: "أدخل عنوان خادم ALP.",
+       fields: {
+         host: "Host",
+         port: "ميناء",
+@@ -1760,7 +1760,7 @@ export const ar: TranslationResources = {
+     },
+     remoteSsh: {
+       title: "SSH عن بُعد",
+-      helper: "الاتصال بخادم Paseo يعمل على المضيف البعيد.",
++      helper: "الاتصال بخادم ALP يعمل على المضيف البعيد.",
+       fields: {
+         target: "مضيف SSH",
+         password: "كلمة مرور الدايمون",
+@@ -1821,15 +1821,15 @@ export const ar: TranslationResources = {
+       enableDescription:
+         "يتيح التتابع لهذا الجهاز الاتصال من أي مكان. حركة مرور الإقران مشفرة من طرف إلى طرف.",
+       relayDocs: "كيفية عمل التتابع",
+-      relayDocsAccessibility: "اقرأ كيفية عمل تتابع Paseo",
++      relayDocsAccessibility: "اقرأ كيفية عمل تتابع ALP",
+       enableRelay: "تمكين التتابع",
+       enablingRelay: "جارٍ التمكين...",
+       notNow: "ليس الآن",
+       directConnectionHint:
+         "بدون التتابع، اتصل مباشرة عبر TCP أو Tailscale أو شبكة VPN أخرى. لن يتم إنشاء رمز QR.",
+-      updateRequired: "حدّث المضيف لتمكين التتابع من Paseo Desktop.",
++      updateRequired: "حدّث المضيف لتمكين التتابع من ALP Desktop.",
+       unavailable: "عرض الاقتران غير متاح.",
+-      hint: "قم بمسح رمز QR هذا باستخدام Paseo على هاتفك، أو انسخ الرابط أدناه.",
++      hint: "قم بمسح رمز QR هذا باستخدام ALP على هاتفك، أو انسخ الرابط أدناه.",
+       securityWarning:
+         "تعامل مع رابط الاقتران هذا ككلمة مرور. يمكن لأي شخص يملكه الوصول إلى هذا البرنامج الخفي.",
+       qrUnavailable: "رمز QR غير متاح.",
+@@ -1864,7 +1864,7 @@ export const ar: TranslationResources = {
+   serviceUrl: {
+     title: "افتح الخدمة URL",
+     message: "افتح{{url}}؟",
+-    inPaseo: "في Paseo",
++    inPaseo: "في ALP",
+     externalBrowser: "متصفح خارجي",
+     dontAskAgain: "لا تسأل مرة أخرى",
+   },
+@@ -1984,8 +1984,8 @@ export const ar: TranslationResources = {
+       other: "استخدم {{count}} أدوات أخرى",
+     },
+     paseoCalls: {
+-      one: "استدعى Paseo {{count}} مرة",
+-      other: "استدعى Paseo {{count}} مرات",
++      one: "استدعى ALP {{count}} مرة",
++      other: "استدعى ALP {{count}} مرات",
+     },
+     and: "و",
+   },
+@@ -2082,7 +2082,7 @@ export const ar: TranslationResources = {
+       send: "إرسال",
+       sending: "جارٍ الإرسال...",
+       sentTitle: "تم إرسال إشعار الاختبار",
+-      sentDescription: "سلّم Paseo الإشعار إلى نظام التشغيل.",
++      sentDescription: "سلّم ALP الإشعار إلى نظام التشغيل.",
+       sendFailedTitle: "تعذر إرسال إشعار الاختبار",
+     },
+     hostSections: {
+@@ -2101,14 +2101,14 @@ export const ar: TranslationResources = {
+     metadataGeneration: {
+       title: "إنشاء البيانات الوصفية",
+       description:
+-        "اختر النموذج الذي يستخدمه Paseo لعناوين مساحات العمل وأسماء الفروع ورسائل الالتزام ومسودات طلبات السحب",
++        "اختر النموذج الذي يستخدمه ALP لعناوين مساحات العمل وأسماء الفروع ورسائل الالتزام ومسودات طلبات السحب",
+       selection: "اختيار النموذج",
+       automatic: "تلقائي",
+       preferred: "يدوي",
+-      automaticHint: "يختار Paseo نموذجًا سريعًا متاحًا",
+-      preferredHint: "اختر النموذج الذي يستخدمه Paseo",
++      automaticHint: "يختار ALP نموذجًا سريعًا متاحًا",
++      preferredHint: "اختر النموذج الذي يستخدمه ALP",
+       model: "النموذج",
+-      fallbackHint: "إذا لم يكن متاحًا، يستخدم Paseo نموذجًا آخر متاحًا",
++      fallbackHint: "إذا لم يكن متاحًا، يستخدم ALP نموذجًا آخر متاحًا",
+       docs: "الوثائق",
+       saveError: "تعذر تحديث إنشاء البيانات الوصفية",
+     },
+@@ -2118,7 +2118,7 @@ export const ar: TranslationResources = {
+       browserData: {
+         title: "بيانات المتصفح",
+         siteData: "ملفات تعريف الارتباط وبيانات المواقع",
+-        description: "تتشارك علامات تبويب المتصفح تسجيلات الدخول وبيانات المواقع عبر Paseo.",
++        description: "تتشارك علامات تبويب المتصفح تسجيلات الدخول وبيانات المواقع عبر ALP.",
+         clear: "مسح بيانات المتصفح",
+         clearing: "جارٍ المسح...",
+         confirmTitle: "هل تريد مسح بيانات المتصفح؟",
+@@ -2144,7 +2144,7 @@ export const ar: TranslationResources = {
+       serviceUrls: {
+         options: {
+           ask: "بسأل",
+-          inApp: "في Paseo",
++          inApp: "في ALP",
+           external: "متصفح خارجي",
+         },
+       },
+@@ -2228,7 +2228,7 @@ export const ar: TranslationResources = {
+         label: "تحديثات التطبيق",
+         readyToInstall: "جاهز للتثبيت:{{version}}",
+         installTitle: "تثبيت تحديث سطح المكتب",
+-        installMessage: "يؤدي هذا إلى تحديث Paseo على هذا الكمبيوتر",
++        installMessage: "يؤدي هذا إلى تحديث ALP على هذا الكمبيوتر",
+         installConfirm: "تثبيت التحديث",
+         update: "تحديث",
+         updateTo: "التحديث إلى{{version}}",
+@@ -2476,10 +2476,10 @@ export const ar: TranslationResources = {
+         title: "مهارات التنسيق",
+         description: "قم بتعليم عملائك كيفية التنسيق من خلال CLI",
+         updateAvailable: "التحديث متاح",
+-        updateTitle: "تحديث مهارات Paseo ؟",
++        updateTitle: "تحديث مهارات ALP ؟",
+         updateFallback: "مزامنة المهارات المجمعة لجهازك.",
+-        uninstallTitle: "إلغاء تثبيت مهارات Paseo ؟",
+-        uninstallMessage: "يزيل جميع مهارات تنسيق Paseo من ~/.agents ، ~/.claude ، ~/.codex.",
++        uninstallTitle: "إلغاء تثبيت مهارات ALP ؟",
++        uninstallMessage: "يزيل جميع مهارات تنسيق ALP من ~/.agents ، ~/.claude ، ~/.codex.",
+         choose: "اختيار المهارات",
+         chooseAll: "كل المهارات",
+         chooseAllHint: "أبقِ جميع المهارات المرفقة مثبتة، بما فيها ما يُضاف لاحقًا.",
+@@ -2515,9 +2515,9 @@ export const ar: TranslationResources = {
+         title: "التنسيق",
+         unavailable: "اتصل بهذا المضيف لإدارة التنسيق",
+         enableTools: {
+-          title: "تمكين أدوات Paseo",
++          title: "تمكين أدوات ALP",
+           hint: "سيتمكن الوكلاء من إدارة أشجار العمل والوكلاء والجداول الزمنية",
+-          accessibilityLabel: "حقن أدوات Paseo",
++          accessibilityLabel: "حقن أدوات ALP",
+         },
+         systemPrompt: {
+           title: "موجه النظام",
+@@ -2619,15 +2619,15 @@ export const ar: TranslationResources = {
+             "هذا المضيف غير متصل. انتظر حتى يصبح متصلاً بالإنترنت قبل إعادة التشغيل.",
+           offlineTitle: "Host غير متصل",
+           offlineMessage:
+-            "هذا المضيف غير متصل.  يقوم Paseo بإعادة الاتصال تلقائيًا - انتظر حتى يتم الاتصال بالإنترنت مرة أخرى قبل إعادة التشغيل.",
++            "هذا المضيف غير متصل.  يقوم ALP بإعادة الاتصال تلقائيًا - انتظر حتى يتم الاتصال بالإنترنت مرة أخرى قبل إعادة التشغيل.",
+           requestFailedTitle: "خطأ",
+           requestFailedMessage:
+-            "فشل في إرسال طلب إعادة التشغيل.  يقوم Paseo بإعادة الاتصال تلقائيًا - حاول مرة أخرى بمجرد ظهور المضيف على أنه متصل بالإنترنت.",
++            "فشل في إرسال طلب إعادة التشغيل.  يقوم ALP بإعادة الاتصال تلقائيًا - حاول مرة أخرى بمجرد ظهور المضيف على أنه متصل بالإنترنت.",
+           dialogFailedMessage: "غير قادر على فتح مربع حوار تأكيد إعادة التشغيل.",
+         },
+         update: {
+           desktopManagedHint:
+-            "يدير Paseo Desktop هذا البرنامج الخفي. حدّث Paseo Desktop على المضيف.",
++            "يدير ALP Desktop هذا البرنامج الخفي. حدّث ALP Desktop على المضيف.",
+           title: "Update daemon",
+           hint: "Update the daemon to the latest version and restart it",
+           confirm: "Update",
+@@ -2787,7 +2787,7 @@ export const ar: TranslationResources = {
+         newScript: "نص جديد",
+         editScript: "تحرير{{name}}",
+         runAsService: "تشغيل كخدمة",
+-        serviceHint: "يشرف Paseo على العملية ويعين منفذًا عبر $PASEO_PORT",
++        serviceHint: "يشرف ALP على العملية ويعين منفذًا عبر $PASEO_PORT",
+         actions: {
+           add: "إضافة البرنامج النصي",
+           edit: "يحرر",
+@@ -2796,7 +2796,7 @@ export const ar: TranslationResources = {
+       },
+       metadata: {
+         title: "توليد البيانات الوصفية",
+-        info: "تعليمات خاصة بالمشروع يتم إدخالها في الذكاء الاصطناعي الذي يستخدمه Paseo لإنشاء بيانات التعريف - استخدمها لفرض اصطلاحات فريقك مثل تسمية الفرع أو نمط الالتزام أو تنسيق PR",
++        info: "تعليمات خاصة بالمشروع يتم إدخالها في الذكاء الاصطناعي الذي يستخدمه ALP لإنشاء بيانات التعريف - استخدمها لفرض اصطلاحات فريقك مثل تسمية الفرع أو نمط الالتزام أو تنسيق PR",
+         branchName: "اسماء الفروع",
+         branchNamePlaceholder: "بادئة الفروع بـ fet/ أو Fix/, mb/ للفروع الشخصية",
+         commitMessage: "ارتكاب الرسائل",
+diff --git a/packages/app/src/i18n/resources/en.ts b/packages/app/src/i18n/resources/en.ts
+index 35606c8..6cd9c62 100644
+--- a/packages/app/src/i18n/resources/en.ts
++++ b/packages/app/src/i18n/resources/en.ts
+@@ -879,7 +879,7 @@ export const en = {
+             "Update isn't available because this branch is already up to date with {{baseRef}}",
+           mergePrNoGithub: "Merge PR isn't available right now because GitHub isn't connected",
+           archiveNotWorktree:
+-            "Archive isn't available here because this workspace was not created as a Paseo worktree",
++            "Archive isn't available here because this workspace was not created as an ALP worktree",
+           mergePrNoForge:
+             "Merge {{noun}} isn't available right now because {{brand}} isn't connected",
+           mergePrMissing: "Merge PR isn't available because there isn't a pull request yet",
+@@ -1228,7 +1228,7 @@ export const en = {
+       discord: "Discord",
+       github: "Create GitHub issue",
+       whatsNew: "What's new",
+-      appName: "Paseo",
++      appName: "ALP",
+     },
+     sections: {
+       sessions: "History",
+@@ -1375,7 +1375,7 @@ export const en = {
+       close: "Close window",
+     },
+     quitting: {
+-      title: "Quitting Paseo...",
++      title: "Quitting ALP...",
+       detail: "Stopping the local daemon.",
+     },
+     daemon: {
+@@ -1406,20 +1406,20 @@ export const en = {
+       },
+       management: {
+         title: "Manage built-in daemon",
+-        hint: "Let Paseo start and stop the built-in daemon",
++        hint: "Let ALP start and stop the built-in daemon",
+         pauseTitle: "Pause built-in daemon",
+         pauseMessage:
+           "This will stop the built-in daemon immediately. Running agents and terminals connected to the built-in daemon will be stopped.",
+         pauseAndStop: "Pause and stop",
+         registrationFailed:
+-          "Built-in daemon started, but Paseo could not save the localhost connection. Toggle daemon management off and on again, or add localhost manually.",
++          "Built-in daemon started, but ALP could not save the localhost connection. Toggle daemon management off and on again, or add localhost manually.",
+         pausedStopFailed:
+-          "Built-in daemon management was paused, but Paseo could not stop the daemon.",
++          "Built-in daemon management was paused, but ALP could not stop the daemon.",
+         updateFailed: "Unable to update built-in daemon management.",
+       },
+       keepRunning: {
+         title: "Keep daemon running after quit",
+-        hint: "Daemon keeps running when you quit Paseo",
++        hint: "Daemon keeps running when you quit ALP",
+       },
+       logs: {
+         title: "Log file",
+@@ -1434,7 +1434,7 @@ export const en = {
+       fullStatus: {
+         title: "Full status",
+         modalTitle: "Daemon status",
+-        hint: "Runs `paseo daemon status` and shows the output",
++        hint: "Runs `alp daemon status` and shows the output",
+         view: "View status",
+         copied: "Status copied to clipboard.",
+         fetchFailed: "Failed to fetch daemon status: {{message}}",
+@@ -1486,7 +1486,7 @@ export const en = {
+     },
+     rosetta: {
+       title: "Download the Apple Silicon build",
+-      runningIntel: "You're running the Intel build of Paseo under Rosetta on Apple Silicon.",
++      runningIntel: "You're running the Intel build of ALP under Rosetta on Apple Silicon.",
+       highCpu: "This causes high CPU usage. Download the Apple Silicon build to fix it.",
+       download: "Download",
+     },
+@@ -1528,7 +1528,7 @@ export const en = {
+         microphone: "Microphone status has not been checked yet.",
+       },
+       testNotification: {
+-        title: "Paseo notification test",
++        title: "ALP notification test",
+         body: "If you can see this, desktop notifications work.",
+         notDelivered: "Notification was not delivered. Check System Settings > Notifications.",
+         failed: "Failed to send notification.",
+@@ -1537,12 +1537,12 @@ export const en = {
+     integrations: {
+       cli: {
+         statusFailed: "Unable to check CLI install status.",
+-        installFailed: "Unable to install the Paseo CLI.",
++        installFailed: "Unable to install the ALP CLI.",
+       },
+     },
+   },
+   rootError: {
+-    title: "Paseo ran into a problem.",
++    title: "ALP ran into a problem.",
+     body: "Try again to reload the app. If this keeps happening, include the details below when you report it.",
+     details: "Details",
+   },
+@@ -1639,7 +1639,7 @@ export const en = {
+     },
+   },
+   onboarding: {
+-    title: "Welcome to Paseo",
++    title: "Welcome to ALP",
+     subtitle: "Connect your computer to get started",
+     actions: {
+       settings: "Settings",
+@@ -1742,7 +1742,7 @@ export const en = {
+     },
+     direct: {
+       title: "Direct connection",
+-      helper: "Enter the address of a Paseo server.",
++      helper: "Enter the address of an ALP server.",
+       fields: {
+         host: "Host",
+         port: "Port",
+@@ -1784,7 +1784,7 @@ export const en = {
+     },
+     remoteSsh: {
+       title: "Remote SSH",
+-      helper: "Connect to a Paseo daemon running on the remote host.",
++      helper: "Connect to an ALP daemon running on the remote host.",
+       fields: {
+         target: "SSH host",
+         password: "Daemon password",
+@@ -1846,15 +1846,15 @@ export const en = {
+       enableDescription:
+         "Relay lets this device connect from anywhere. Pairing traffic is end-to-end encrypted.",
+       relayDocs: "How relay works",
+-      relayDocsAccessibility: "Read how Paseo relay works",
++      relayDocsAccessibility: "Read how ALP relay works",
+       enableRelay: "Enable relay",
+       enablingRelay: "Enabling...",
+       notNow: "Not now",
+       directConnectionHint:
+         "Without relay, connect directly over TCP, Tailscale, or another VPN. No QR code is created.",
+-      updateRequired: "Update the host to enable relay from Paseo Desktop.",
++      updateRequired: "Update the host to enable relay from ALP Desktop.",
+       unavailable: "Pairing offer unavailable.",
+-      hint: "Scan this QR code with Paseo on your phone, or copy the link below.",
++      hint: "Scan this QR code with ALP on your phone, or copy the link below.",
+       securityWarning:
+         "Treat this pairing link like a password. Anyone with it can access this daemon.",
+       qrUnavailable: "QR code unavailable.",
+@@ -1889,7 +1889,7 @@ export const en = {
+   serviceUrl: {
+     title: "Open service URL",
+     message: "Open {{url}}?",
+-    inPaseo: "In Paseo",
++    inPaseo: "In ALP",
+     externalBrowser: "External browser",
+     dontAskAgain: "Don't ask again",
+   },
+@@ -2009,8 +2009,8 @@ export const en = {
+       other: "used {{count}} other tools",
+     },
+     paseoCalls: {
+-      one: "called Paseo {{count}} time",
+-      other: "called Paseo {{count}} times",
++      one: "called ALP {{count}} time",
++      other: "called ALP {{count}} times",
+     },
+     and: "and",
+   },
+@@ -2145,7 +2145,7 @@ export const en = {
+       send: "Send",
+       sending: "Sending...",
+       sentTitle: "Test notification sent",
+-      sentDescription: "Paseo handed the notification to the operating system.",
++      sentDescription: "ALP handed the notification to the operating system.",
+       sendFailedTitle: "Unable to send test notification",
+     },
+     hostSections: {
+@@ -2226,14 +2226,14 @@ export const en = {
+     metadataGeneration: {
+       title: "Metadata generation",
+       description:
+-        "Choose the model Paseo uses for workspace titles, branch names, commit messages, and pull request drafts",
++        "Choose the model ALP uses for workspace titles, branch names, commit messages, and pull request drafts",
+       selection: "Model selection",
+       automatic: "Automatic",
+       preferred: "Manual",
+-      automaticHint: "Paseo picks a fast available model",
+-      preferredHint: "Choose the model Paseo uses",
++      automaticHint: "ALP picks a fast available model",
++      preferredHint: "Choose the model ALP uses",
+       model: "Model",
+-      fallbackHint: "If it is unavailable, Paseo falls back to another available model",
++      fallbackHint: "If it is unavailable, ALP falls back to another available model",
+       docs: "Docs",
+       saveError: "Unable to update metadata generation",
+     },
+@@ -2243,7 +2243,7 @@ export const en = {
+       browserData: {
+         title: "Browser data",
+         siteData: "Cookies and site data",
+-        description: "Browser tabs share sign-ins and site data across Paseo.",
++        description: "Browser tabs share sign-ins and site data across ALP.",
+         clear: "Clear browser data",
+         clearing: "Clearing...",
+         confirmTitle: "Clear browser data?",
+@@ -2268,7 +2268,7 @@ export const en = {
+       serviceUrls: {
+         options: {
+           ask: "Ask",
+-          inApp: "In Paseo",
++          inApp: "In ALP",
+           external: "External browser",
+         },
+       },
+@@ -2352,7 +2352,7 @@ export const en = {
+         label: "App updates",
+         readyToInstall: "Ready to install: {{version}}",
+         installTitle: "Install desktop update",
+-        installMessage: "This updates Paseo on this computer",
++        installMessage: "This updates ALP on this computer",
+         installConfirm: "Install update",
+         update: "Update",
+         updateTo: "Update to {{version}}",
+@@ -2606,11 +2606,11 @@ export const en = {
+         uninstallFailed: "Unable to uninstall orchestration skills.",
+         saveSelectionFailed: "Unable to save the orchestration skills selection.",
+         updateAvailable: "Update available",
+-        updateTitle: "Update Paseo skills?",
++        updateTitle: "Update ALP skills?",
+         updateFallback: "Sync bundled skills to this host.",
+-        uninstallTitle: "Uninstall Paseo skills?",
++        uninstallTitle: "Uninstall ALP skills?",
+         uninstallMessage:
+-          "Removes all Paseo orchestration skills from ~/.agents, ~/.claude, ~/.codex on this host.",
++          "Removes all ALP orchestration skills from ~/.agents, ~/.claude, ~/.codex on this host.",
+         choose: "Choose skills",
+         chooseAll: "All skills",
+         chooseAllHint: "Keep every bundled skill installed, including ones added later.",
+@@ -2642,9 +2642,9 @@ export const en = {
+         title: "Orchestration",
+         unavailable: "Connect to this host to manage orchestration",
+         enableTools: {
+-          title: "Enable Paseo tools",
++          title: "Enable ALP tools",
+           hint: "Agents will be able to manage worktrees, agents and schedules",
+-          accessibilityLabel: "Inject Paseo tools",
++          accessibilityLabel: "Inject ALP tools",
+         },
+         systemPrompt: {
+           title: "System prompt",
+@@ -2747,15 +2747,15 @@ export const en = {
+             "This host is not connected. Wait for it to come online before restarting.",
+           offlineTitle: "Host offline",
+           offlineMessage:
+-            "This host is offline. Paseo reconnects automatically-wait until it's back online before restarting.",
++            "This host is offline. ALP reconnects automatically-wait until it's back online before restarting.",
+           requestFailedTitle: "Error",
+           requestFailedMessage:
+-            "Failed to send the restart request. Paseo reconnects automatically-try again once the host shows as online.",
++            "Failed to send the restart request. ALP reconnects automatically-try again once the host shows as online.",
+           dialogFailedMessage: "Unable to open the restart confirmation dialog.",
+         },
+         update: {
+           desktopManagedHint:
+-            "This daemon is managed by Paseo Desktop. Update Paseo Desktop on the host.",
++            "This daemon is managed by ALP Desktop. Update ALP Desktop on the host.",
+           title: "Update daemon",
+           hint: "Update the daemon to the latest version and restart it",
+           confirm: "Update",
+@@ -2916,7 +2916,7 @@ export const en = {
+         newScript: "New script",
+         editScript: "Edit {{name}}",
+         runAsService: "Run as a service",
+-        serviceHint: "Paseo supervises the process and assigns a port via $PASEO_PORT",
++        serviceHint: "ALP supervises the process and assigns a port via $PASEO_PORT",
+         actions: {
+           add: "Add script",
+           edit: "Edit",
+@@ -2925,7 +2925,7 @@ export const en = {
+       },
+       metadata: {
+         title: "Metadata generation",
+-        info: "Project-specific instructions injected into the AI prompts Paseo uses to generate metadata - use them to enforce your team's conventions like branch naming, commit style, or PR format",
++        info: "Project-specific instructions injected into the AI prompts ALP uses to generate metadata - use them to enforce your team's conventions like branch naming, commit style, or PR format",
+         branchName: "Branch names",
+         branchNamePlaceholder: "Prefix branches with feat/ or fix/, mb/ for personal branches",
+         commitMessage: "Commit messages",
+diff --git a/packages/app/src/i18n/resources/es.ts b/packages/app/src/i18n/resources/es.ts
+index 721b56c..55ef77c 100644
+--- a/packages/app/src/i18n/resources/es.ts
++++ b/packages/app/src/i18n/resources/es.ts
+@@ -897,7 +897,7 @@ export const es: TranslationResources = {
+           mergePrNoGithub:
+             "FusionarPRno está disponible en este momento porqueGitHubno está conectado",
+           archiveNotWorktree:
+-            "El archivo no está disponible aquí porque este espacio de trabajo no se creó como un árbol de trabajoPaseo",
++            "El archivo no está disponible aquí porque este espacio de trabajo no se creó como un árbol de trabajo ALP",
+           mergePrNoForge:
+             "Fusionar {{noun}} no está disponible en este momento porque {{brand}} no está conectado",
+           mergePrMissing:
+@@ -1256,7 +1256,7 @@ export const es: TranslationResources = {
+       discord: "Discord",
+       github: "Crear incidencia en GitHub",
+       whatsNew: "Novedades",
+-      appName: "Paseo",
++      appName: "ALP",
+     },
+     sections: {
+       sessions: "Historial",
+@@ -1403,7 +1403,7 @@ export const es: TranslationResources = {
+       close: "Cerrar ventana",
+     },
+     quitting: {
+-      title: "Saliendo dePaseo...",
++      title: "Saliendo de ALP...",
+       detail: "Deteniendo el demonio local.",
+     },
+     daemon: {
+@@ -1418,20 +1418,20 @@ export const es: TranslationResources = {
+       },
+       management: {
+         title: "Administrar demonio incorporado",
+-        hint: "Deje quePaseoinicie y detenga el demonio incorporado",
++        hint: "Deje que ALP inicie y detenga el demonio incorporado",
+         pauseTitle: "Pausar el demonio incorporado",
+         pauseMessage:
+           "Esto detendrá el demonio incorporado inmediatamente. Se detendrán los agentes en ejecución y los terminales conectados al demonio integrado.",
+         pauseAndStop: "Pausa y para",
+         registrationFailed:
+-          "Built-in daemon started, but Paseo could not save the localhost connection. Toggle daemon management off and on again, or add localhost manually.",
++          "Built-in daemon started, but ALP could not save the localhost connection. Toggle daemon management off and on again, or add localhost manually.",
+         pausedStopFailed:
+-          "La gestión del demonio integrado se pausó, peroPaseono pudo detener el demonio.",
++          "La gestión del demonio integrado se pausó, pero ALP no pudo detener el demonio.",
+         updateFailed: "No se puede actualizar la gestión de demonios integrada.",
+       },
+       keepRunning: {
+         title: "Mantener el demonio en ejecución después de salir",
+-        hint: "Daemonsigue ejecutándose cuando sales dePaseo",
++        hint: "El daemon sigue ejecutándose cuando sales de ALP",
+       },
+       logs: {
+         title: "Archivo de registro",
+@@ -1446,7 +1446,7 @@ export const es: TranslationResources = {
+       fullStatus: {
+         title: "Estado completo",
+         modalTitle: "EstadoDaemon",
+-        hint: "Ejecuta`paseo daemon status`y muestra la salida.",
++        hint: "Ejecuta`alp daemon status`y muestra la salida.",
+         view: "Ver estado",
+         copied: "Estado copiado al portapapeles.",
+         fetchFailed: "No se pudo recuperar el estado del demonio:{{message}}",
+@@ -1501,7 +1501,7 @@ export const es: TranslationResources = {
+     },
+     rosetta: {
+       title: "Descargue la compilaciónApple Silicon",
+-      runningIntel: "Estás ejecutando la compilaciónInteldePaseoenRosettaenApple Silicon.",
++      runningIntel: "Estás ejecutando la compilación Intel de ALP en Rosetta en Apple Silicon.",
+       highCpu:
+         "Esto provoca un uso elevado de la CPU. Descargue la compilaciónApple Siliconpara solucionarlo.",
+       download: "Descargar",
+@@ -1548,7 +1548,7 @@ export const es: TranslationResources = {
+         microphone: "El estado del micrófono aún no se ha comprobado.",
+       },
+       testNotification: {
+-        title: "Prueba de notificaciónPaseo",
++        title: "Prueba de notificación ALP",
+         body: "Si puede ver esto, las notificaciones de escritorio funcionan.",
+         notDelivered:
+           "La notificación no fue entregada. Verifique Configuración del sistema> Notificaciones.",
+@@ -1558,12 +1558,12 @@ export const es: TranslationResources = {
+     integrations: {
+       cli: {
+         statusFailed: "No se puede verificar el estado de instalación deCLI.",
+-        installFailed: "No se puede instalar elPaseoCLI.",
++        installFailed: "No se puede instalar el ALP CLI.",
+       },
+     },
+   },
+   rootError: {
+-    title: "Paseo tuvo un problema.",
++    title: "ALP tuvo un problema.",
+     body: "Vuelve a intentarlo para recargar la app. Si sigue ocurriendo, incluye los detalles de abajo al reportarlo.",
+     details: "Detalles",
+   },
+@@ -1660,7 +1660,7 @@ export const es: TranslationResources = {
+     },
+   },
+   onboarding: {
+-    title: "Bienvenido aPaseo",
++    title: "Bienvenido an ALP",
+     subtitle: "Conecte su computadora para comenzar",
+     actions: {
+       settings: "Ajustes",
+@@ -1763,7 +1763,7 @@ export const es: TranslationResources = {
+     },
+     direct: {
+       title: "Conexión directa",
+-      helper: "Ingrese la dirección de un servidorPaseo.",
++      helper: "Ingrese la dirección de un servidor ALP.",
+       fields: {
+         host: "Host",
+         port: "Puerto",
+@@ -1806,7 +1806,7 @@ export const es: TranslationResources = {
+     },
+     remoteSsh: {
+       title: "SSH remoto",
+-      helper: "Conéctate a un daemon de Paseo en el host remoto.",
++      helper: "Conéctate a un daemon de ALP en el host remoto.",
+       fields: {
+         target: "Host SSH",
+         password: "Contraseña del daemon",
+@@ -1869,15 +1869,15 @@ export const es: TranslationResources = {
+       enableDescription:
+         "El relé permite conectar este dispositivo desde cualquier lugar. El tráfico de emparejamiento está cifrado de extremo a extremo.",
+       relayDocs: "Cómo funciona el relé",
+-      relayDocsAccessibility: "Leer cómo funciona el relé de Paseo",
++      relayDocsAccessibility: "Leer cómo funciona el relé de ALP",
+       enableRelay: "Habilitar relé",
+       enablingRelay: "Habilitando...",
+       notNow: "Ahora no",
+       directConnectionHint:
+         "Sin relé, conéctese directamente por TCP, Tailscale u otra VPN. No se crea ningún código QR.",
+-      updateRequired: "Actualice el host para habilitar el relé desde Paseo Desktop.",
++      updateRequired: "Actualice el host para habilitar el relé desde ALP Desktop.",
+       unavailable: "Oferta de maridaje no disponible.",
+-      hint: "Escanee este códigoQRconPaseoen su teléfono o copie el enlace a continuación.",
++      hint: "Escanee este código QR con ALP en su teléfono o copie el enlace a continuación.",
+       securityWarning:
+         "Trata este enlace de emparejamiento como una contraseña. Cualquiera que lo tenga puede acceder a este daemon.",
+       qrUnavailable: "CódigoQRno disponible.",
+@@ -1912,7 +1912,7 @@ export const es: TranslationResources = {
+   serviceUrl: {
+     title: "Servicio abiertoURL",
+     message: "¿Abrir{{url}}?",
+-    inPaseo: "EnPaseo",
++    inPaseo: "En ALP",
+     externalBrowser: "Navegador externo",
+     dontAskAgain: "no vuelvas a preguntar",
+   },
+@@ -2032,8 +2032,8 @@ export const es: TranslationResources = {
+       other: "usó {{count}} herramientas adicionales",
+     },
+     paseoCalls: {
+-      one: "llamó a Paseo {{count}} vez",
+-      other: "llamó a Paseo {{count}} veces",
++      one: "llamó an ALP {{count}} vez",
++      other: "llamó an ALP {{count}} veces",
+     },
+     and: "y",
+   },
+@@ -2130,7 +2130,7 @@ export const es: TranslationResources = {
+       send: "Enviar",
+       sending: "Enviando...",
+       sentTitle: "Notificación de prueba enviada",
+-      sentDescription: "Paseo entregó la notificación al sistema operativo.",
++      sentDescription: "ALP entregó la notificación al sistema operativo.",
+       sendFailedTitle: "No se pudo enviar la notificación de prueba",
+     },
+     hostSections: {
+@@ -2149,14 +2149,14 @@ export const es: TranslationResources = {
+     metadataGeneration: {
+       title: "Generación de metadatos",
+       description:
+-        "Elige el modelo que Paseo usa para títulos de espacios de trabajo, nombres de ramas, mensajes de commit y borradores de pull requests",
++        "Elige el modelo que ALP usa para títulos de espacios de trabajo, nombres de ramas, mensajes de commit y borradores de pull requests",
+       selection: "Selección de modelo",
+       automatic: "Automática",
+       preferred: "Manual",
+-      automaticHint: "Paseo elige un modelo rápido disponible",
+-      preferredHint: "Elige el modelo que usa Paseo",
++      automaticHint: "ALP elige un modelo rápido disponible",
++      preferredHint: "Elige el modelo que usa ALP",
+       model: "Modelo",
+-      fallbackHint: "Si no está disponible, Paseo usa otro modelo disponible",
++      fallbackHint: "Si no está disponible, ALP usa otro modelo disponible",
+       docs: "Documentación",
+       saveError: "No se pudo actualizar la generación de metadatos",
+     },
+@@ -2167,7 +2167,7 @@ export const es: TranslationResources = {
+         title: "Datos del navegador",
+         siteData: "Cookies y datos de sitios",
+         description:
+-          "Las pestañas del navegador comparten inicios de sesión y datos de sitios en Paseo.",
++          "Las pestañas del navegador comparten inicios de sesión y datos de sitios en ALP.",
+         clear: "Borrar datos del navegador",
+         clearing: "Borrando...",
+         confirmTitle: "¿Borrar los datos del navegador?",
+@@ -2195,7 +2195,7 @@ export const es: TranslationResources = {
+       serviceUrls: {
+         options: {
+           ask: "Preguntar",
+-          inApp: "EnPaseo",
++          inApp: "En ALP",
+           external: "Navegador externo",
+         },
+       },
+@@ -2280,7 +2280,7 @@ export const es: TranslationResources = {
+         label: "Actualizaciones de aplicaciones",
+         readyToInstall: "Listo para instalar:{{version}}",
+         installTitle: "Instalar actualización de escritorio",
+-        installMessage: "Esto actualizaPaseoen esta computadora.",
++        installMessage: "Esto actualiza ALP en esta computadora.",
+         installConfirm: "Instalar actualización",
+         update: "Actualizar",
+         updateTo: "Actualización a{{version}}",
+@@ -2530,11 +2530,11 @@ export const es: TranslationResources = {
+         title: "Habilidades de orquestación",
+         description: "Enseñe a sus agentes a orquestar a través delCLI",
+         updateAvailable: "Actualización disponible",
+-        updateTitle: "¿Actualizar las habilidades dePaseo?",
++        updateTitle: "¿Actualizar las habilidades de ALP?",
+         updateFallback: "Sincronice las habilidades incluidas con su máquina.",
+-        uninstallTitle: "¿Desinstalar las habilidadesPaseo?",
++        uninstallTitle: "¿Desinstalar las habilidades ALP?",
+         uninstallMessage:
+-          "Elimina todas las habilidades de orquestaciónPaseode ~/.agents, ~/.claude, ~/.codex.",
++          "Elimina todas las habilidades de orquestación ALP de ~/.agents, ~/.claude, ~/.codex.",
+         choose: "Elegir habilidades",
+         chooseAll: "Todas las habilidades",
+         chooseAllHint:
+@@ -2571,9 +2571,9 @@ export const es: TranslationResources = {
+         title: "Orquestación",
+         unavailable: "Conéctese a este host para administrar la orquestación",
+         enableTools: {
+-          title: "Habilitar herramientasPaseo",
++          title: "Habilitar herramientas ALP",
+           hint: "Los agentes podrán gestionar árboles de trabajo, agentes y horarios.",
+-          accessibilityLabel: "Inyectar herramientasPaseo",
++          accessibilityLabel: "Inyectar herramientas ALP",
+         },
+         systemPrompt: {
+           title: "Aviso del sistema",
+@@ -2677,16 +2677,16 @@ export const es: TranslationResources = {
+             "Este host no está conectado. Espere a que se conecte antes de reiniciar.",
+           offlineTitle: "Hostfuera de línea",
+           offlineMessage:
+-            "Este anfitrión está desconectado.Paseose vuelve a conectar automáticamente; espere hasta que vuelva a estar en línea antes de reiniciar.",
++            "Este anfitrión está desconectado. ALP se vuelve a conectar automáticamente; espere hasta que vuelva a estar en línea antes de reiniciar.",
+           requestFailedTitle: "Error",
+           requestFailedMessage:
+-            "No se pudo enviar la solicitud de reinicio.Paseose vuelve a conectar automáticamente; inténtelo nuevamente una vez que el host se muestre en línea.",
++            "No se pudo enviar la solicitud de reinicio. ALP se vuelve a conectar automáticamente; inténtelo nuevamente una vez que el host se muestre en línea.",
+           dialogFailedMessage:
+             "No se puede abrir el cuadro de diálogo de confirmación de reinicio.",
+         },
+         update: {
+           desktopManagedHint:
+-            "Este daemon está administrado por Paseo Desktop. Actualiza Paseo Desktop en el host.",
++            "Este daemon está administrado por ALP Desktop. Actualiza ALP Desktop en el host.",
+           title: "Update daemon",
+           hint: "Update the daemon to the latest version and restart it",
+           confirm: "Update",
+@@ -2847,7 +2847,7 @@ export const es: TranslationResources = {
+         newScript: "Nuevo guión",
+         editScript: "Editar{{name}}",
+         runAsService: "Ejecutar como servicio",
+-        serviceHint: "Paseosupervisa el proceso y asigna un puerto vía $PASEO_PORT",
++        serviceHint: "ALP supervisa el proceso y asigna un puerto vía $PASEO_PORT",
+         actions: {
+           add: "Agregar guión",
+           edit: "Editar",
+@@ -2856,7 +2856,7 @@ export const es: TranslationResources = {
+       },
+       metadata: {
+         title: "Generación de metadatos",
+-        info: "Instrucciones específicas del proyecto inyectadas en los mensajes de IA quePaseoutiliza para generar metadatos; úselas para hacer cumplir las convenciones de su equipo, como la denominación de ramas, el estilo de confirmación o el formatoPR.",
++        info: "Instrucciones específicas del proyecto inyectadas en los mensajes de IA que ALP utiliza para generar metadatos; úselas para hacer cumplir las convenciones de su equipo, como la denominación de ramas, el estilo de confirmación o el formato de PR.",
+         branchName: "Nombres de sucursales",
+         branchNamePlaceholder: "Prefijo ramas con feat/ o fix/, mb/ para ramas personales",
+         commitMessage: "Confirmar mensajes",
+diff --git a/packages/app/src/i18n/resources/fr.ts b/packages/app/src/i18n/resources/fr.ts
+index 0e8937d..3eb83c2 100644
+--- a/packages/app/src/i18n/resources/fr.ts
++++ b/packages/app/src/i18n/resources/fr.ts
+@@ -893,7 +893,7 @@ export const fr: TranslationResources = {
+           mergePrNoGithub:
+             "Impossible de fusionner la PR pour l’instant : GitHub n’est pas connecté",
+           archiveNotWorktree:
+-            "Archivage indisponible : cet espace de travail n’a pas été créé comme worktree Paseo",
++            "Archivage indisponible : cet espace de travail n’a pas été créé comme worktree ALP",
+           mergePrNoForge:
+             "Impossible de fusionner la {{noun}} pour l’instant : {{brand}} n’est pas connecté",
+           mergePrMissing: "Impossible de fusionner la PR : il n’y a pas encore de pull request",
+@@ -1248,7 +1248,7 @@ export const fr: TranslationResources = {
+       discord: "Discord",
+       github: "Créer un ticket GitHub",
+       whatsNew: "Nouveautés",
+-      appName: "Paseo",
++      appName: "ALP",
+     },
+     sections: {
+       sessions: "Historique",
+@@ -1395,7 +1395,7 @@ export const fr: TranslationResources = {
+       close: "Fermer la fenêtre",
+     },
+     quitting: {
+-      title: "Fermeture de Paseo…",
++      title: "Fermeture de ALP…",
+       detail: "Arrêt du daemon local.",
+     },
+     daemon: {
+@@ -1410,20 +1410,20 @@ export const fr: TranslationResources = {
+       },
+       management: {
+         title: "Gérer le daemon intégré",
+-        hint: "Laisser Paseo démarrer et arrêter le daemon intégré",
++        hint: "Laisser ALP démarrer et arrêter le daemon intégré",
+         pauseTitle: "Suspendre le daemon intégré",
+         pauseMessage:
+           "Le daemon intégré sera arrêté immédiatement. Les agents en cours et les terminaux connectés au daemon intégré seront arrêtés.",
+         pauseAndStop: "Suspendre et arrêter",
+         registrationFailed:
+-          "Le daemon intégré a démarré, mais Paseo n’a pas pu enregistrer la connexion localhost. Désactivez puis réactivez la gestion du daemon, ou ajoutez localhost manuellement.",
++          "Le daemon intégré a démarré, mais ALP n’a pas pu enregistrer la connexion localhost. Désactivez puis réactivez la gestion du daemon, ou ajoutez localhost manuellement.",
+         pausedStopFailed:
+-          "La gestion du daemon intégré a été suspendue, mais Paseo n’a pas pu arrêter le daemon.",
++          "La gestion du daemon intégré a été suspendue, mais ALP n’a pas pu arrêter le daemon.",
+         updateFailed: "Impossible de mettre à jour la gestion du daemon intégré.",
+       },
+       keepRunning: {
+         title: "Laisser le daemon tourner après la fermeture",
+-        hint: "Le daemon continue de tourner quand vous quittez Paseo",
++        hint: "Le daemon continue de tourner quand vous quittez ALP",
+       },
+       logs: {
+         title: "Fichier journal",
+@@ -1438,7 +1438,7 @@ export const fr: TranslationResources = {
+       fullStatus: {
+         title: "Statut complet",
+         modalTitle: "Statut du daemon",
+-        hint: "Exécute `paseo daemon status` et affiche la sortie",
++        hint: "Exécute `alp daemon status` et affiche la sortie",
+         view: "Afficher le statut",
+         copied: "Statut copié dans le presse-papiers.",
+         fetchFailed: "Impossible de récupérer le statut du daemon : {{message}}",
+@@ -1493,7 +1493,7 @@ export const fr: TranslationResources = {
+     },
+     rosetta: {
+       title: "Téléchargez la version Apple Silicon",
+-      runningIntel: "Vous utilisez la version Intel de Paseo via Rosetta sur Apple Silicon.",
++      runningIntel: "Vous utilisez la version Intel de ALP via Rosetta sur Apple Silicon.",
+       highCpu:
+         "Cela entraîne une forte utilisation du processeur. Téléchargez la version Apple Silicon pour corriger le problème.",
+       download: "Télécharger",
+@@ -1542,7 +1542,7 @@ export const fr: TranslationResources = {
+         microphone: "L’état du microphone n’a pas encore été vérifié.",
+       },
+       testNotification: {
+-        title: "Test de notification Paseo",
++        title: "Test de notification ALP",
+         body: "Si vous voyez ceci, les notifications de bureau fonctionnent.",
+         notDelivered:
+           "La notification n’a pas été délivrée. Vérifiez Réglages système > Notifications.",
+@@ -1552,12 +1552,12 @@ export const fr: TranslationResources = {
+     integrations: {
+       cli: {
+         statusFailed: "Impossible de vérifier l’installation de la CLI.",
+-        installFailed: "Impossible d’installer la CLI Paseo.",
++        installFailed: "Impossible d’installer la CLI ALP.",
+       },
+     },
+   },
+   rootError: {
+-    title: "Paseo a rencontré un problème.",
++    title: "ALP a rencontré un problème.",
+     body: "Réessayez pour recharger l’application. Si le problème persiste, joignez les détails ci-dessous à votre signalement.",
+     details: "Détails",
+   },
+@@ -1656,7 +1656,7 @@ export const fr: TranslationResources = {
+     },
+   },
+   onboarding: {
+-    title: "Bienvenue dans Paseo",
++    title: "Bienvenue dans ALP",
+     subtitle: "Connectez votre ordinateur pour commencer",
+     actions: {
+       settings: "Paramètres",
+@@ -1759,7 +1759,7 @@ export const fr: TranslationResources = {
+     },
+     direct: {
+       title: "Connexion directe",
+-      helper: "Saisissez l’adresse d’un serveur Paseo.",
++      helper: "Saisissez l’adresse d’un serveur ALP.",
+       fields: {
+         host: "Hôte",
+         port: "Port",
+@@ -1802,7 +1802,7 @@ export const fr: TranslationResources = {
+     },
+     remoteSsh: {
+       title: "SSH distant",
+-      helper: "Connectez-vous à un daemon Paseo qui tourne sur l’hôte distant.",
++      helper: "Connectez-vous à un daemon ALP qui tourne sur l’hôte distant.",
+       fields: {
+         target: "Hôte SSH",
+         password: "Mot de passe du daemon",
+@@ -1865,15 +1865,15 @@ export const fr: TranslationResources = {
+       enableDescription:
+         "Le relais permet à cet appareil de se connecter depuis n’importe où. Le trafic d’association est chiffré de bout en bout.",
+       relayDocs: "Fonctionnement du relais",
+-      relayDocsAccessibility: "Découvrir le fonctionnement du relais Paseo",
++      relayDocsAccessibility: "Découvrir le fonctionnement du relais ALP",
+       enableRelay: "Activer le relais",
+       enablingRelay: "Activation…",
+       notNow: "Pas maintenant",
+       directConnectionHint:
+         "Sans relais, connectez-vous directement via TCP, Tailscale ou un autre VPN. Aucun code QR n’est créé.",
+-      updateRequired: "Mettez à jour l’hôte pour activer le relais depuis Paseo Desktop.",
++      updateRequired: "Mettez à jour l’hôte pour activer le relais depuis ALP Desktop.",
+       unavailable: "Offre d’association indisponible.",
+-      hint: "Scannez ce code QR avec Paseo sur votre téléphone, ou copiez le lien ci-dessous.",
++      hint: "Scannez ce code QR avec ALP sur votre téléphone, ou copiez le lien ci-dessous.",
+       securityWarning:
+         "Traitez ce lien d’association comme un mot de passe. Toute personne qui le possède peut accéder à ce daemon.",
+       qrUnavailable: "Code QR indisponible.",
+@@ -1908,7 +1908,7 @@ export const fr: TranslationResources = {
+   serviceUrl: {
+     title: "Ouvrir l’URL du service",
+     message: "Ouvrir {{url}} ?",
+-    inPaseo: "Dans Paseo",
++    inPaseo: "Dans ALP",
+     externalBrowser: "Navigateur externe",
+     dontAskAgain: "Ne plus demander",
+   },
+@@ -2029,8 +2029,8 @@ export const fr: TranslationResources = {
+       other: "{{count}} autres outils utilisés",
+     },
+     paseoCalls: {
+-      one: "{{count}} appel à Paseo",
+-      other: "{{count}} appels à Paseo",
++      one: "{{count}} appel à ALP",
++      other: "{{count}} appels à ALP",
+     },
+     and: "et",
+   },
+@@ -2128,7 +2128,7 @@ export const fr: TranslationResources = {
+       send: "Envoyer",
+       sending: "Envoi…",
+       sentTitle: "Notification de test envoyée",
+-      sentDescription: "Paseo a transmis la notification au système d’exploitation.",
++      sentDescription: "ALP a transmis la notification au système d’exploitation.",
+       sendFailedTitle: "Impossible d’envoyer la notification de test",
+     },
+     hostSections: {
+@@ -2147,14 +2147,14 @@ export const fr: TranslationResources = {
+     metadataGeneration: {
+       title: "Génération de métadonnées",
+       description:
+-        "Choisissez le modèle utilisé par Paseo pour les titres d’espaces de travail, les noms de branches, les messages de commit et les brouillons de pull request",
++        "Choisissez le modèle utilisé par ALP pour les titres d’espaces de travail, les noms de branches, les messages de commit et les brouillons de pull request",
+       selection: "Sélection du modèle",
+       automatic: "Automatique",
+       preferred: "Manuel",
+-      automaticHint: "Paseo choisit un modèle rapide disponible",
+-      preferredHint: "Choisissez le modèle utilisé par Paseo",
++      automaticHint: "ALP choisit un modèle rapide disponible",
++      preferredHint: "Choisissez le modèle utilisé par ALP",
+       model: "Modèle",
+-      fallbackHint: "S’il est indisponible, Paseo utilise un autre modèle disponible",
++      fallbackHint: "S’il est indisponible, ALP utilise un autre modèle disponible",
+       docs: "Documentation",
+       saveError: "Impossible de mettre à jour la génération de métadonnées",
+     },
+@@ -2165,7 +2165,7 @@ export const fr: TranslationResources = {
+         title: "Données du navigateur",
+         siteData: "Cookies et données des sites",
+         description:
+-          "Les onglets du navigateur partagent les connexions et les données des sites dans Paseo.",
++          "Les onglets du navigateur partagent les connexions et les données des sites dans ALP.",
+         clear: "Effacer les données du navigateur",
+         clearing: "Effacement…",
+         confirmTitle: "Effacer les données du navigateur ?",
+@@ -2192,7 +2192,7 @@ export const fr: TranslationResources = {
+       serviceUrls: {
+         options: {
+           ask: "Demander",
+-          inApp: "Dans Paseo",
++          inApp: "Dans ALP",
+           external: "Navigateur externe",
+         },
+       },
+@@ -2278,7 +2278,7 @@ export const fr: TranslationResources = {
+         label: "Mises à jour de l’application",
+         readyToInstall: "Prête à installer : {{version}}",
+         installTitle: "Installer la mise à jour de l’app de bureau",
+-        installMessage: "Paseo sera mis à jour sur cet ordinateur",
++        installMessage: "ALP sera mis à jour sur cet ordinateur",
+         installConfirm: "Installer la mise à jour",
+         update: "Mettre à jour",
+         updateTo: "Mettre à jour vers {{version}}",
+@@ -2531,11 +2531,11 @@ export const fr: TranslationResources = {
+         title: "Skills d’orchestration",
+         description: "Apprenez à vos agents à orchestrer via la CLI",
+         updateAvailable: "Mise à jour disponible",
+-        updateTitle: "Mettre à jour les skills Paseo ?",
++        updateTitle: "Mettre à jour les skills ALP ?",
+         updateFallback: "Synchronisez les skills fournis sur cet hôte.",
+-        uninstallTitle: "Désinstaller les skills Paseo ?",
++        uninstallTitle: "Désinstaller les skills ALP ?",
+         uninstallMessage:
+-          "Supprime tous les skills d’orchestration Paseo de ~/.agents, ~/.claude et ~/.codex sur cet hôte.",
++          "Supprime tous les skills d’orchestration ALP de ~/.agents, ~/.claude et ~/.codex sur cet hôte.",
+         choose: "Choisir les skills",
+         chooseAll: "Tous les skills",
+         chooseAllHint:
+@@ -2572,9 +2572,9 @@ export const fr: TranslationResources = {
+         title: "Orchestration",
+         unavailable: "Connectez-vous à cet hôte pour gérer l’orchestration",
+         enableTools: {
+-          title: "Activer les outils Paseo",
++          title: "Activer les outils ALP",
+           hint: "Les agents pourront gérer les worktrees, les agents et les planifications",
+-          accessibilityLabel: "Injecter les outils Paseo",
++          accessibilityLabel: "Injecter les outils ALP",
+         },
+         systemPrompt: {
+           title: "Prompt système",
+@@ -2680,16 +2680,16 @@ export const fr: TranslationResources = {
+             "Cet hôte n’est pas connecté. Attendez qu’il soit en ligne avant de redémarrer.",
+           offlineTitle: "Hôte hors ligne",
+           offlineMessage:
+-            "Cet hôte est hors ligne. Paseo se reconnecte automatiquement : attendez qu’il soit de nouveau en ligne avant de redémarrer.",
++            "Cet hôte est hors ligne. ALP se reconnecte automatiquement : attendez qu’il soit de nouveau en ligne avant de redémarrer.",
+           requestFailedTitle: "Erreur",
+           requestFailedMessage:
+-            "Impossible d’envoyer la demande de redémarrage. Paseo se reconnecte automatiquement : réessayez quand l’hôte apparaît en ligne.",
++            "Impossible d’envoyer la demande de redémarrage. ALP se reconnecte automatiquement : réessayez quand l’hôte apparaît en ligne.",
+           dialogFailedMessage:
+             "Impossible d’ouvrir la boîte de dialogue de confirmation du redémarrage.",
+         },
+         update: {
+           desktopManagedHint:
+-            "Ce daemon est géré par Paseo Desktop. Mettez à jour Paseo Desktop sur l’hôte.",
++            "Ce daemon est géré par ALP Desktop. Mettez à jour ALP Desktop sur l’hôte.",
+           title: "Mettre à jour le daemon",
+           hint: "Met à jour le daemon vers la dernière version puis le redémarre",
+           confirm: "Mettre à jour",
+@@ -2853,7 +2853,7 @@ export const fr: TranslationResources = {
+         newScript: "Nouveau script",
+         editScript: "Modifier {{name}}",
+         runAsService: "Exécuter comme service",
+-        serviceHint: "Paseo supervise le processus et lui attribue un port via $PASEO_PORT",
++        serviceHint: "ALP supervise le processus et lui attribue un port via $PASEO_PORT",
+         actions: {
+           add: "Ajouter un script",
+           edit: "Modifier",
+@@ -2862,7 +2862,7 @@ export const fr: TranslationResources = {
+       },
+       metadata: {
+         title: "Génération des métadonnées",
+-        info: "Instructions propres au projet, injectées dans les prompts IA que Paseo utilise pour générer les métadonnées : servez-vous-en pour imposer les conventions de votre équipe (nommage des branches, style de commit, format des PR).",
++        info: "Instructions propres au projet, injectées dans les prompts IA que ALP utilise pour générer les métadonnées : servez-vous-en pour imposer les conventions de votre équipe (nommage des branches, style de commit, format des PR).",
+         branchName: "Noms de branches",
+         branchNamePlaceholder:
+           "Préfixez les branches par feat/ ou fix/, et par mb/ pour les branches personnelles",
+diff --git a/packages/app/src/i18n/resources/ja.ts b/packages/app/src/i18n/resources/ja.ts
+index 076ac32..15fa597 100644
+--- a/packages/app/src/i18n/resources/ja.ts
++++ b/packages/app/src/i18n/resources/ja.ts
+@@ -883,7 +883,7 @@ export const ja: TranslationResources = {
+           updateCurrent: "このブランチはすでに{{baseRef}}と最新の状態のため、更新は利用できません",
+           mergePrNoGithub: "GitHubが接続されていないため、PRのマージは現在利用できません",
+           archiveNotWorktree:
+-            "このワークスペースはPaseoワークツリーとして作成されていないため、アーカイブはここでは利用できません",
++            "このワークスペースはALPワークツリーとして作成されていないため、アーカイブはここでは利用できません",
+           mergePrNoForge: "{{brand}}が接続されていないため、{{noun}}のマージは現在利用できません",
+           mergePrMissing: "プルリクエストがまだないため、PRのマージは利用できません",
+           mergePrDraft: "プルリクエストがまだドラフトのため、PRのマージは利用できません",
+@@ -1234,7 +1234,7 @@ export const ja: TranslationResources = {
+       discord: "Discord",
+       github: "GitHub Issueを作成",
+       whatsNew: "新着情報",
+-      appName: "Paseo",
++      appName: "ALP",
+     },
+     sections: {
+       sessions: "履歴",
+@@ -1381,7 +1381,7 @@ export const ja: TranslationResources = {
+       close: "ウィンドウを閉じる",
+     },
+     quitting: {
+-      title: "Paseoを終了中...",
++      title: "ALPを終了中...",
+       detail: "ローカルデーモンを停止中。",
+     },
+     daemon: {
+@@ -1396,20 +1396,20 @@ export const ja: TranslationResources = {
+       },
+       management: {
+         title: "組み込みデーモンを管理",
+-        hint: "Paseoが組み込みデーモンを起動・停止できるようにする",
++        hint: "ALPが組み込みデーモンを起動・停止できるようにする",
+         pauseTitle: "組み込みデーモンを一時停止",
+         pauseMessage:
+           "これにより組み込みデーモンが即座に停止します。組み込みデーモンに接続されている実行中のエージェントとターミナルが停止されます。",
+         pauseAndStop: "一時停止して停止",
+         registrationFailed:
+-          "組み込みデーモンは起動しましたが、Paseoがlocalhostの接続を保存できませんでした。デーモン管理をオフにしてから再度オンにするか、localhostを手動で追加してください。",
++          "組み込みデーモンは起動しましたが、ALPがlocalhostの接続を保存できませんでした。デーモン管理をオフにしてから再度オンにするか、localhostを手動で追加してください。",
+         pausedStopFailed:
+-          "組み込みデーモン管理は一時停止されましたが、Paseoがデーモンを停止できませんでした。",
++          "組み込みデーモン管理は一時停止されましたが、ALPがデーモンを停止できませんでした。",
+         updateFailed: "組み込みデーモン管理を更新できません。",
+       },
+       keepRunning: {
+         title: "終了後もデーモンを実行し続ける",
+-        hint: "Paseoを終了してもデーモンは実行し続けます",
++        hint: "ALPを終了してもデーモンは実行し続けます",
+       },
+       logs: {
+         title: "ログファイル",
+@@ -1424,7 +1424,7 @@ export const ja: TranslationResources = {
+       fullStatus: {
+         title: "詳細ステータス",
+         modalTitle: "デーモンのステータス",
+-        hint: "`paseo daemon status`を実行して出力を表示します",
++        hint: "`alp daemon status`を実行して出力を表示します",
+         view: "ステータスを表示",
+         copied: "ステータスをクリップボードにコピーしました。",
+         fetchFailed: "デーモンのステータスの取得に失敗しました: {{message}}",
+@@ -1477,7 +1477,7 @@ export const ja: TranslationResources = {
+     },
+     rosetta: {
+       title: "Apple Siliconビルドをダウンロード",
+-      runningIntel: "Apple Silicon上のRosettaでPaseoのIntelビルドを実行しています。",
++      runningIntel: "Apple Silicon上のRosettaでALPのIntelビルドを実行しています。",
+       highCpu:
+         "これにより高いCPU使用率が発生します。修正するにはApple Siliconビルドをダウンロードしてください。",
+       download: "ダウンロード",
+@@ -1520,7 +1520,7 @@ export const ja: TranslationResources = {
+         microphone: "マイクのステータスはまだ確認されていません。",
+       },
+       testNotification: {
+-        title: "Paseo通知テスト",
++        title: "ALP通知テスト",
+         body: "これが見えれば、デスクトップ通知は機能しています。",
+         notDelivered: "通知が届きませんでした。システム設定 > 通知を確認してください。",
+         failed: "通知の送信に失敗しました。",
+@@ -1529,12 +1529,12 @@ export const ja: TranslationResources = {
+     integrations: {
+       cli: {
+         statusFailed: "CLIのインストール状態を確認できません。",
+-        installFailed: "Paseo CLIをインストールできません。",
++        installFailed: "ALP CLIをインストールできません。",
+       },
+     },
+   },
+   rootError: {
+-    title: "Paseo で問題が発生しました。",
++    title: "ALP で問題が発生しました。",
+     body: "アプリを再読み込みするにはもう一度お試しください。繰り返し発生する場合は、以下の詳細を添えて報告してください。",
+     details: "詳細",
+   },
+@@ -1631,7 +1631,7 @@ export const ja: TranslationResources = {
+     },
+   },
+   onboarding: {
+-    title: "Paseoへようこそ",
++    title: "ALPへようこそ",
+     subtitle: "始めるにはコンピューターに接続してください",
+     actions: {
+       settings: "設定",
+@@ -1734,7 +1734,7 @@ export const ja: TranslationResources = {
+     },
+     direct: {
+       title: "直接接続",
+-      helper: "Paseoサーバーのアドレスを入力してください。",
++      helper: "ALPサーバーのアドレスを入力してください。",
+       fields: {
+         host: "ホスト",
+         port: "ポート",
+@@ -1776,7 +1776,7 @@ export const ja: TranslationResources = {
+     },
+     remoteSsh: {
+       title: "リモート SSH",
+-      helper: "リモートホストで動作する Paseo デーモンに接続します。",
++      helper: "リモートホストで動作する ALP デーモンに接続します。",
+       fields: {
+         target: "SSH ホスト",
+         password: "デーモンのパスワード",
+@@ -1840,15 +1840,15 @@ export const ja: TranslationResources = {
+       enableDescription:
+         "リレーを使うと、このデバイスからどこでも接続できます。ペアリング通信はエンドツーエンドで暗号化されます。",
+       relayDocs: "リレーの仕組み",
+-      relayDocsAccessibility: "Paseo リレーの仕組みを読む",
++      relayDocsAccessibility: "ALP リレーの仕組みを読む",
+       enableRelay: "リレーを有効にする",
+       enablingRelay: "有効化中...",
+       notNow: "今はしない",
+       directConnectionHint:
+         "リレーを使わない場合は、TCP、Tailscale、または別の VPN で直接接続してください。QR コードは作成されません。",
+-      updateRequired: "Paseo Desktop からリレーを有効にするにはホストを更新してください。",
++      updateRequired: "ALP Desktop からリレーを有効にするにはホストを更新してください。",
+       unavailable: "ペアリングオファーが利用できません。",
+-      hint: "スマートフォンのPaseoでこのQRコードをスキャンするか、以下のリンクをコピーしてください。",
++      hint: "スマートフォンのALPでこのQRコードをスキャンするか、以下のリンクをコピーしてください。",
+       securityWarning:
+         "このペアリングリンクはパスワードと同様に扱ってください。リンクを知っている人は誰でもこのデーモンにアクセスできます。",
+       qrUnavailable: "QRコードが利用できません。",
+@@ -1883,7 +1883,7 @@ export const ja: TranslationResources = {
+   serviceUrl: {
+     title: "サービスURLを開く",
+     message: "{{url}}を開きますか？",
+-    inPaseo: "Paseoで",
++    inPaseo: "ALPで",
+     externalBrowser: "外部ブラウザ",
+     dontAskAgain: "次回から確認しない",
+   },
+@@ -2004,8 +2004,8 @@ export const ja: TranslationResources = {
+       other: "その他のツールを{{count}}回使用",
+     },
+     paseoCalls: {
+-      one: "Paseoを{{count}}回呼び出し",
+-      other: "Paseoを{{count}}回呼び出し",
++      one: "ALPを{{count}}回呼び出し",
++      other: "ALPを{{count}}回呼び出し",
+     },
+     and: "および",
+   },
+@@ -2103,7 +2103,7 @@ export const ja: TranslationResources = {
+       send: "送信",
+       sending: "送信中...",
+       sentTitle: "テスト通知を送信しました",
+-      sentDescription: "Paseo が通知をオペレーティングシステムに渡しました。",
++      sentDescription: "ALP が通知をオペレーティングシステムに渡しました。",
+       sendFailedTitle: "テスト通知を送信できません",
+     },
+     hostSections: {
+@@ -2126,10 +2126,10 @@ export const ja: TranslationResources = {
+       selection: "モデル選択",
+       automatic: "自動",
+       preferred: "手動",
+-      automaticHint: "Paseo が利用可能な高速モデルを選択します",
+-      preferredHint: "Paseo が使用するモデルを選択します",
++      automaticHint: "ALP が利用可能な高速モデルを選択します",
++      preferredHint: "ALP が使用するモデルを選択します",
+       model: "モデル",
+-      fallbackHint: "利用できない場合、Paseo は別の利用可能なモデルを使用します",
++      fallbackHint: "利用できない場合、ALP は別の利用可能なモデルを使用します",
+       docs: "ドキュメント",
+       saveError: "メタデータ生成を更新できません",
+     },
+@@ -2164,7 +2164,7 @@ export const ja: TranslationResources = {
+       serviceUrls: {
+         options: {
+           ask: "確認する",
+-          inApp: "Paseoで",
++          inApp: "ALPで",
+           external: "外部ブラウザ",
+         },
+       },
+@@ -2248,7 +2248,7 @@ export const ja: TranslationResources = {
+         label: "アプリの更新",
+         readyToInstall: "インストール準備完了: {{version}}",
+         installTitle: "デスクトップの更新をインストール",
+-        installMessage: "このコンピューターのPaseoを更新します",
++        installMessage: "このコンピューターのALPを更新します",
+         installConfirm: "更新をインストール",
+         update: "更新",
+         updateTo: "{{version}}に更新",
+@@ -2499,11 +2499,11 @@ export const ja: TranslationResources = {
+         title: "オーケストレーションスキル",
+         description: "エージェントがCLI経由でオーケストレーションできるようにします。",
+         updateAvailable: "更新が利用可能",
+-        updateTitle: "Paseoスキルを更新しますか？",
++        updateTitle: "ALPスキルを更新しますか？",
+         updateFallback: "バンドルされたスキルをマシンに同期します。",
+-        uninstallTitle: "Paseoスキルをアンインストールしますか？",
++        uninstallTitle: "ALPスキルをアンインストールしますか？",
+         uninstallMessage:
+-          "~/.agents、~/.claude、~/.codexからすべてのPaseoオーケストレーションスキルを削除します。",
++          "~/.agents、~/.claude、~/.codexからすべてのALPオーケストレーションスキルを削除します。",
+         choose: "スキルを選択",
+         chooseAll: "すべてのスキル",
+         chooseAllHint:
+@@ -2540,9 +2540,9 @@ export const ja: TranslationResources = {
+         title: "オーケストレーション",
+         unavailable: "オーケストレーションを管理するにはこのホストに接続してください",
+         enableTools: {
+-          title: "Paseoツールを有効にする",
++          title: "ALPツールを有効にする",
+           hint: "エージェントがワークツリー、エージェント、スケジュールを管理できるようになります",
+-          accessibilityLabel: "Paseoツールを有効にする",
++          accessibilityLabel: "ALPツールを有効にする",
+         },
+         systemPrompt: {
+           title: "システムプロンプト",
+@@ -2647,15 +2647,15 @@ export const ja: TranslationResources = {
+             "このホストは接続されていません。再起動する前にオンラインになるまでお待ちください。",
+           offlineTitle: "ホストオフライン",
+           offlineMessage:
+-            "このホストはオフラインです。Paseoが自動再接続します。再起動は、ホストがオンラインに戻ってから行ってください。",
++            "このホストはオフラインです。ALPが自動再接続します。再起動は、ホストがオンラインに戻ってから行ってください。",
+           requestFailedTitle: "エラー",
+           requestFailedMessage:
+-            "再起動リクエストの送信に失敗しました。Paseoは自動的に再接続します。ホストがオンラインになったら再試行してください。",
++            "再起動リクエストの送信に失敗しました。ALPは自動的に再接続します。ホストがオンラインになったら再試行してください。",
+           dialogFailedMessage: "再起動確認ダイアログを開けませんでした。",
+         },
+         update: {
+           desktopManagedHint:
+-            "このデーモンはPaseo Desktopによって管理されています。ホスト上のPaseo Desktopを更新してください。",
++            "このデーモンはALP Desktopによって管理されています。ホスト上のALP Desktopを更新してください。",
+           title: "デーモンを更新",
+           hint: "デーモンを最新バージョンに更新して再起動します",
+           confirm: "更新",
+@@ -2817,7 +2817,7 @@ export const ja: TranslationResources = {
+         newScript: "新しいスクリプト",
+         editScript: "{{name}}を編集",
+         runAsService: "サービスとして実行",
+-        serviceHint: "Paseoがプロセスを監督し、$PASEO_PORTを通じてポートを割り当てます",
++        serviceHint: "ALPがプロセスを監督し、$PASEO_PORTを通じてポートを割り当てます",
+         actions: {
+           add: "スクリプトを追加",
+           edit: "編集",
+@@ -2826,7 +2826,7 @@ export const ja: TranslationResources = {
+       },
+       metadata: {
+         title: "メタデータ生成",
+-        info: "Paseoがメタデータ生成に使うAIプロンプトへ追加する、プロジェクト固有の指示です。ブランチ名、コミット形式、PR形式など、チームの規約を反映するために使います。",
++        info: "ALPがメタデータ生成に使うAIプロンプトへ追加する、プロジェクト固有の指示です。ブランチ名、コミット形式、PR形式など、チームの規約を反映するために使います。",
+         branchName: "ブランチ名",
+         branchNamePlaceholder: "ブランチ名は feat/ または fix/ で始め、個人ブランチは mb/ にする",
+         commitMessage: "コミットメッセージ",
+diff --git a/packages/app/src/i18n/resources/ko.ts b/packages/app/src/i18n/resources/ko.ts
+index 8b832de..df0fa94 100644
+--- a/packages/app/src/i18n/resources/ko.ts
++++ b/packages/app/src/i18n/resources/ko.ts
+@@ -878,7 +878,7 @@ export const ko: TranslationResources = {
+             "이 브랜치가 이미 {{baseRef}}와 최신 상태이므로 업데이트를 사용할 수 없습니다",
+           mergePrNoGithub: "GitHub가 연결되어 있지 않아 지금은 PR 병합을 사용할 수 없습니다",
+           archiveNotWorktree:
+-            "이 워크스페이스가 Paseo 워크트리로 생성되지 않아 여기서 보관을 사용할 수 없습니다",
++            "이 워크스페이스가 ALP 워크트리로 생성되지 않아 여기서 보관을 사용할 수 없습니다",
+           mergePrNoForge:
+             "{{brand}}가 연결되어 있지 않기 때문에 지금은 {{noun}} 병합을 사용할 수 없습니다.",
+           mergePrMissing: "아직 풀 리퀘스트가 없어 PR 병합을 사용할 수 없습니다",
+@@ -1227,7 +1227,7 @@ export const ko: TranslationResources = {
+       discord: "Discord",
+       github: "GitHub 이슈 만들기",
+       whatsNew: "새로운 소식",
+-      appName: "Paseo",
++      appName: "ALP",
+     },
+     sections: {
+       sessions: "기록",
+@@ -1374,7 +1374,7 @@ export const ko: TranslationResources = {
+       close: "창 닫기",
+     },
+     quitting: {
+-      title: "Paseo 종료 중...",
++      title: "ALP 종료 중...",
+       detail: "로컬 데몬을 중지하는 중입니다.",
+     },
+     daemon: {
+@@ -1389,19 +1389,19 @@ export const ko: TranslationResources = {
+       },
+       management: {
+         title: "내장 데몬 관리",
+-        hint: "Paseo가 내장 데몬을 시작하고 중지하도록 허용합니다",
++        hint: "ALP가 내장 데몬을 시작하고 중지하도록 허용합니다",
+         pauseTitle: "내장 데몬 일시 중지",
+         pauseMessage:
+           "내장 데몬이 즉시 중지됩니다. 내장 데몬에 연결된 실행 중인 에이전트와 터미널이 중지됩니다.",
+         pauseAndStop: "일시 중지 후 중지",
+         registrationFailed:
+-          "내장 데몬이 시작되었지만 Paseo가 localhost 연결을 저장하지 못했습니다. 데몬 관리를 껐다가 다시 켜거나 localhost를 수동으로 추가하세요.",
+-        pausedStopFailed: "내장 데몬 관리가 일시 중지되었지만 Paseo가 데몬을 중지하지 못했습니다.",
++          "내장 데몬이 시작되었지만 ALP가 localhost 연결을 저장하지 못했습니다. 데몬 관리를 껐다가 다시 켜거나 localhost를 수동으로 추가하세요.",
++        pausedStopFailed: "내장 데몬 관리가 일시 중지되었지만 ALP가 데몬을 중지하지 못했습니다.",
+         updateFailed: "내장 데몬 관리를 업데이트할 수 없습니다.",
+       },
+       keepRunning: {
+         title: "종료 후에도 데몬 계속 실행",
+-        hint: "Paseo를 종료해도 데몬이 계속 실행됩니다",
++        hint: "ALP를 종료해도 데몬이 계속 실행됩니다",
+       },
+       logs: {
+         title: "로그 파일",
+@@ -1416,7 +1416,7 @@ export const ko: TranslationResources = {
+       fullStatus: {
+         title: "전체 상태",
+         modalTitle: "데몬 상태",
+-        hint: "`paseo daemon status`를 실행하고 출력을 표시합니다",
++        hint: "`alp daemon status`를 실행하고 출력을 표시합니다",
+         view: "상태 보기",
+         copied: "상태가 클립보드에 복사되었습니다.",
+         fetchFailed: "데몬 상태를 가져오지 못했습니다: {{message}}",
+@@ -1470,7 +1470,7 @@ export const ko: TranslationResources = {
+     },
+     rosetta: {
+       title: "Apple Silicon 빌드 다운로드",
+-      runningIntel: "Apple Silicon에서 Rosetta로 Paseo의 Intel 빌드를 실행하고 있습니다.",
++      runningIntel: "Apple Silicon에서 Rosetta로 ALP의 Intel 빌드를 실행하고 있습니다.",
+       highCpu:
+         "이로 인해 CPU 사용량이 높아집니다. 이를 해결하려면 Apple Silicon 빌드를 다운로드하세요.",
+       download: "다운로드",
+@@ -1513,7 +1513,7 @@ export const ko: TranslationResources = {
+         microphone: "마이크 상태를 아직 확인하지 않았습니다.",
+       },
+       testNotification: {
+-        title: "Paseo 알림 테스트",
++        title: "ALP 알림 테스트",
+         body: "이 메시지가 보이면 데스크톱 알림이 작동하는 것입니다.",
+         notDelivered: "알림이 전달되지 않았습니다. 시스템 설정 > 알림을 확인하세요.",
+         failed: "알림을 보내지 못했습니다.",
+@@ -1522,12 +1522,12 @@ export const ko: TranslationResources = {
+     integrations: {
+       cli: {
+         statusFailed: "CLI 설치 상태를 확인할 수 없습니다.",
+-        installFailed: "Paseo CLI를 설치할 수 없습니다.",
++        installFailed: "ALP CLI를 설치할 수 없습니다.",
+       },
+     },
+   },
+   rootError: {
+-    title: "Paseo에 문제가 발생했습니다.",
++    title: "ALP에 문제가 발생했습니다.",
+     body: "앱을 다시 로드해 보세요. 이런 일이 계속 발생하면 신고할 때 아래 세부정보를 포함하세요.",
+     details: "세부",
+   },
+@@ -1624,7 +1624,7 @@ export const ko: TranslationResources = {
+     },
+   },
+   onboarding: {
+-    title: "Paseo에 오신 것을 환영합니다",
++    title: "ALP에 오신 것을 환영합니다",
+     subtitle: "시작하려면 컴퓨터를 연결하세요",
+     actions: {
+       settings: "설정",
+@@ -1727,7 +1727,7 @@ export const ko: TranslationResources = {
+     },
+     direct: {
+       title: "직접 연결",
+-      helper: "Paseo 서버의 주소를 입력하세요.",
++      helper: "ALP 서버의 주소를 입력하세요.",
+       fields: {
+         host: "호스트",
+         port: "포트",
+@@ -1768,7 +1768,7 @@ export const ko: TranslationResources = {
+     },
+     remoteSsh: {
+       title: "원격 SSH",
+-      helper: "원격 호스트에서 실행 중인 Paseo 데몬에 연결합니다.",
++      helper: "원격 호스트에서 실행 중인 ALP 데몬에 연결합니다.",
+       fields: {
+         target: "SSH 호스트",
+         password: "데몬 비밀번호",
+@@ -1831,15 +1831,15 @@ export const ko: TranslationResources = {
+       enableDescription:
+         "릴레이를 사용하면 이 장치를 어디에서나 연결할 수 있습니다. 페어링 트래픽은 종단 간 암호화됩니다.",
+       relayDocs: "릴레이 작동 방식",
+-      relayDocsAccessibility: "Paseo 릴레이 작동 방식 읽기",
++      relayDocsAccessibility: "ALP 릴레이 작동 방식 읽기",
+       enableRelay: "릴레이 활성화",
+       enablingRelay: "활성화 중...",
+       notNow: "지금은 아님",
+       directConnectionHint:
+         "릴레이 없이 TCP, Tailscale 또는 다른 VPN을 통해 직접 연결하세요. QR 코드가 생성되지 않습니다.",
+-      updateRequired: "Paseo 데스크톱에서 릴레이를 활성화하려면 호스트를 업데이트하세요.",
++      updateRequired: "ALP 데스크톱에서 릴레이를 활성화하려면 호스트를 업데이트하세요.",
+       unavailable: "페어링 정보를 사용할 수 없습니다.",
+-      hint: "휴대폰의 Paseo로 이 QR 코드를 스캔하거나 아래 링크를 복사하세요.",
++      hint: "휴대폰의 ALP로 이 QR 코드를 스캔하거나 아래 링크를 복사하세요.",
+       securityWarning:
+         "이 페어링 링크는 비밀번호처럼 취급하세요. 링크를 가진 사람은 누구나 이 데몬에 접근할 수 있습니다.",
+       qrUnavailable: "QR 코드를 사용할 수 없습니다.",
+@@ -1874,7 +1874,7 @@ export const ko: TranslationResources = {
+   serviceUrl: {
+     title: "서비스 URL 열기",
+     message: "{{url}}을(를) 열까요?",
+-    inPaseo: "Paseo에서",
++    inPaseo: "ALP에서",
+     externalBrowser: "외부 브라우저",
+     dontAskAgain: "다시 묻지 않기",
+   },
+@@ -1994,8 +1994,8 @@ export const ko: TranslationResources = {
+       other: "기타 도구 {{count}}개 사용함",
+     },
+     paseoCalls: {
+-      one: "Paseo를 {{count}}회 호출함",
+-      other: "Paseo를 {{count}}회 호출함",
++      one: "ALP를 {{count}}회 호출함",
++      other: "ALP를 {{count}}회 호출함",
+     },
+     and: "그리고",
+   },
+@@ -2092,7 +2092,7 @@ export const ko: TranslationResources = {
+       send: "보내기",
+       sending: "보내는 중...",
+       sentTitle: "테스트 알림을 보냈습니다",
+-      sentDescription: "Paseo가 알림을 운영 체제에 전달했습니다.",
++      sentDescription: "ALP가 알림을 운영 체제에 전달했습니다.",
+       sendFailedTitle: "테스트 알림을 보낼 수 없음",
+     },
+     hostSections: {
+@@ -2115,10 +2115,10 @@ export const ko: TranslationResources = {
+       selection: "모델 선택",
+       automatic: "자동",
+       preferred: "수동",
+-      automaticHint: "Paseo가 사용 가능한 빠른 모델을 선택합니다",
+-      preferredHint: "Paseo에서 사용할 모델을 선택하세요",
++      automaticHint: "ALP가 사용 가능한 빠른 모델을 선택합니다",
++      preferredHint: "ALP에서 사용할 모델을 선택하세요",
+       model: "모델",
+-      fallbackHint: "사용할 수 없으면 Paseo가 다른 사용 가능한 모델을 사용합니다",
++      fallbackHint: "사용할 수 없으면 ALP가 다른 사용 가능한 모델을 사용합니다",
+       docs: "문서",
+       saveError: "메타데이터 생성을 업데이트할 수 없습니다",
+     },
+@@ -2128,7 +2128,7 @@ export const ko: TranslationResources = {
+       browserData: {
+         title: "브라우저 데이터",
+         siteData: "쿠키 및 사이트 데이터",
+-        description: "브라우저 탭은 Paseo 전체에서 로그인 및 사이트 데이터를 공유합니다.",
++        description: "브라우저 탭은 ALP 전체에서 로그인 및 사이트 데이터를 공유합니다.",
+         clear: "브라우저 데이터 지우기",
+         clearing: "삭제 중...",
+         confirmTitle: "브라우저 데이터를 삭제하시겠습니까?",
+@@ -2155,7 +2155,7 @@ export const ko: TranslationResources = {
+       serviceUrls: {
+         options: {
+           ask: "물어보기",
+-          inApp: "Paseo에서",
++          inApp: "ALP에서",
+           external: "외부 브라우저",
+         },
+       },
+@@ -2239,7 +2239,7 @@ export const ko: TranslationResources = {
+         label: "앱 업데이트",
+         readyToInstall: "설치 준비됨: {{version}}",
+         installTitle: "데스크톱 업데이트 설치",
+-        installMessage: "이 컴퓨터의 Paseo를 업데이트합니다",
++        installMessage: "이 컴퓨터의 ALP를 업데이트합니다",
+         installConfirm: "업데이트 설치",
+         update: "업데이트",
+         updateTo: "{{version}}(으)로 업데이트",
+@@ -2486,11 +2486,11 @@ export const ko: TranslationResources = {
+         title: "오케스트레이션 스킬",
+         description: "CLI를 통해 에이전트가 오케스트레이션하도록 가르칩니다",
+         updateAvailable: "업데이트 사용 가능",
+-        updateTitle: "Paseo 스킬을 업데이트할까요?",
++        updateTitle: "ALP 스킬을 업데이트할까요?",
+         updateFallback: "번들된 스킬을 내 컴퓨터에 동기화합니다.",
+-        uninstallTitle: "Paseo 스킬을 제거할까요?",
++        uninstallTitle: "ALP 스킬을 제거할까요?",
+         uninstallMessage:
+-          "~/.agents, ~/.claude, ~/.codex에서 모든 Paseo 오케스트레이션 스킬을 제거합니다.",
++          "~/.agents, ~/.claude, ~/.codex에서 모든 ALP 오케스트레이션 스킬을 제거합니다.",
+         choose: "스킬 선택",
+         chooseAll: "모든 스킬",
+         chooseAllHint: "나중에 추가되는 항목을 포함하여 모든 번들 스킬을 설치된 상태로 유지합니다.",
+@@ -2526,9 +2526,9 @@ export const ko: TranslationResources = {
+         title: "오케스트레이션",
+         unavailable: "오케스트레이션을 관리하려면 이 호스트에 연결하세요",
+         enableTools: {
+-          title: "Paseo 도구 활성화",
++          title: "ALP 도구 활성화",
+           hint: "에이전트가 워크트리, 에이전트, 일정을 관리할 수 있습니다",
+-          accessibilityLabel: "Paseo 도구 주입",
++          accessibilityLabel: "ALP 도구 주입",
+         },
+         systemPrompt: {
+           title: "시스템 프롬프트",
+@@ -2632,15 +2632,15 @@ export const ko: TranslationResources = {
+             "이 호스트는 연결되어 있지 않습니다. 재시작하기 전에 온라인 상태가 될 때까지 기다리세요.",
+           offlineTitle: "호스트 오프라인",
+           offlineMessage:
+-            "이 호스트는 오프라인입니다. Paseo가 자동으로 다시 연결하므로 다시 온라인이 될 때까지 기다린 후 재시작하세요.",
++            "이 호스트는 오프라인입니다. ALP가 자동으로 다시 연결하므로 다시 온라인이 될 때까지 기다린 후 재시작하세요.",
+           requestFailedTitle: "오류",
+           requestFailedMessage:
+-            "재시작 요청을 보내지 못했습니다. Paseo가 자동으로 다시 연결하므로 호스트가 온라인으로 표시되면 다시 시도하세요.",
++            "재시작 요청을 보내지 못했습니다. ALP가 자동으로 다시 연결하므로 호스트가 온라인으로 표시되면 다시 시도하세요.",
+           dialogFailedMessage: "재시작 확인 대화 상자를 열 수 없습니다.",
+         },
+         update: {
+           desktopManagedHint:
+-            "이 데몬은 Paseo Desktop에서 관리됩니다. 호스트에서 Paseo 데스크톱을 업데이트합니다.",
++            "이 데몬은 ALP Desktop에서 관리됩니다. 호스트에서 ALP 데스크톱을 업데이트합니다.",
+           title: "데몬 업데이트",
+           hint: "데몬을 최신 버전으로 업데이트하고 다시 시작하세요.",
+           confirm: "업데이트",
+@@ -2801,7 +2801,7 @@ export const ko: TranslationResources = {
+         newScript: "새 스크립트",
+         editScript: "{{name}} 편집",
+         runAsService: "서비스로 실행",
+-        serviceHint: "Paseo가 프로세스를 감독하고 $PASEO_PORT를 통해 포트를 할당합니다",
++        serviceHint: "ALP가 프로세스를 감독하고 $PASEO_PORT를 통해 포트를 할당합니다",
+         actions: {
+           add: "스크립트 추가",
+           edit: "편집",
+@@ -2810,7 +2810,7 @@ export const ko: TranslationResources = {
+       },
+       metadata: {
+         title: "메타데이터 생성",
+-        info: "Paseo가 메타데이터를 생성하는 데 사용하는 AI 프롬프트에 주입되는 프로젝트별 지침 - 브랜치 이름, 커밋 스타일, PR 형식 같은 팀 규칙을 적용하는 데 사용하세요",
++        info: "ALP가 메타데이터를 생성하는 데 사용하는 AI 프롬프트에 주입되는 프로젝트별 지침 - 브랜치 이름, 커밋 스타일, PR 형식 같은 팀 규칙을 적용하는 데 사용하세요",
+         branchName: "브랜치 이름",
+         branchNamePlaceholder:
+           "브랜치에 feat/ 또는 fix/를 접두사로, 개인 브랜치에는 mb/를 붙이세요",
+diff --git a/packages/app/src/i18n/resources/pt-BR.ts b/packages/app/src/i18n/resources/pt-BR.ts
+index 0bc2968..b4f11a8 100644
+--- a/packages/app/src/i18n/resources/pt-BR.ts
++++ b/packages/app/src/i18n/resources/pt-BR.ts
+@@ -892,7 +892,7 @@ export const ptBR: TranslationResources = {
+           mergePrNoGithub:
+             "Merge da PR não está disponível agora porque o GitHub não está conectado",
+           archiveNotWorktree:
+-            "Arquivar não está disponível aqui porque este workspace não foi criado como um worktree do Paseo",
++            "Arquivar não está disponível aqui porque este workspace não foi criado como um worktree do ALP",
+           mergePrNoForge:
+             "Merge da {{noun}} não está disponível agora porque o {{brand}} não está conectado",
+           mergePrMissing: "Merge da PR não está disponível porque ainda não há uma pull request",
+@@ -1246,7 +1246,7 @@ export const ptBR: TranslationResources = {
+       discord: "Discord",
+       github: "Criar issue no GitHub",
+       whatsNew: "Novidades",
+-      appName: "Paseo",
++      appName: "ALP",
+     },
+     sections: {
+       sessions: "Histórico",
+@@ -1393,7 +1393,7 @@ export const ptBR: TranslationResources = {
+       close: "Fechar janela",
+     },
+     quitting: {
+-      title: "Saindo do Paseo...",
++      title: "Saindo do ALP...",
+       detail: "Parando o daemon local.",
+     },
+     daemon: {
+@@ -1408,20 +1408,20 @@ export const ptBR: TranslationResources = {
+       },
+       management: {
+         title: "Gerenciar daemon integrado",
+-        hint: "Permitir que o Paseo inicie e pare o daemon integrado",
++        hint: "Permitir que o ALP inicie e pare o daemon integrado",
+         pauseTitle: "Pausar daemon integrado",
+         pauseMessage:
+           "Isso vai parar o daemon integrado imediatamente. Agentes e terminais em execução conectados ao daemon integrado serão interrompidos.",
+         pauseAndStop: "Pausar e parar",
+         registrationFailed:
+-          "O daemon integrado foi iniciado, mas o Paseo não conseguiu salvar a conexão localhost. Desative e reative o gerenciamento do daemon ou adicione localhost manualmente.",
++          "O daemon integrado foi iniciado, mas o ALP não conseguiu salvar a conexão localhost. Desative e reative o gerenciamento do daemon ou adicione localhost manualmente.",
+         pausedStopFailed:
+-          "O gerenciamento do daemon integrado foi pausado, mas o Paseo não conseguiu parar o daemon.",
++          "O gerenciamento do daemon integrado foi pausado, mas o ALP não conseguiu parar o daemon.",
+         updateFailed: "Não foi possível atualizar o gerenciamento do daemon integrado.",
+       },
+       keepRunning: {
+         title: "Manter daemon em execução ao sair",
+-        hint: "O daemon continua em execução quando você sai do Paseo",
++        hint: "O daemon continua em execução quando você sai do ALP",
+       },
+       logs: {
+         title: "Arquivo de log",
+@@ -1436,7 +1436,7 @@ export const ptBR: TranslationResources = {
+       fullStatus: {
+         title: "Status completo",
+         modalTitle: "Status do daemon",
+-        hint: "Executa `paseo daemon status` e mostra a saída",
++        hint: "Executa `alp daemon status` e mostra a saída",
+         view: "Ver status",
+         copied: "Status copiado para a área de transferência.",
+         fetchFailed: "Falha ao buscar status do daemon: {{message}}",
+@@ -1491,7 +1491,7 @@ export const ptBR: TranslationResources = {
+     },
+     rosetta: {
+       title: "Baixar a build para Apple Silicon",
+-      runningIntel: "Você está executando a build Intel do Paseo pelo Rosetta no Apple Silicon.",
++      runningIntel: "Você está executando a build Intel do ALP pelo Rosetta no Apple Silicon.",
+       highCpu: "Isso causa alto uso de CPU. Baixe a build para Apple Silicon para corrigir.",
+       download: "Baixar",
+     },
+@@ -1533,7 +1533,7 @@ export const ptBR: TranslationResources = {
+         microphone: "O status do microfone ainda não foi verificado.",
+       },
+       testNotification: {
+-        title: "Teste de notificação do Paseo",
++        title: "Teste de notificação do ALP",
+         body: "Se você consegue ver isto, as notificações desktop funcionam.",
+         notDelivered:
+           "A notificação não foi entregue. Verifique Ajustes do Sistema > Notificações.",
+@@ -1543,12 +1543,12 @@ export const ptBR: TranslationResources = {
+     integrations: {
+       cli: {
+         statusFailed: "Não foi possível verificar o status de instalação da CLI.",
+-        installFailed: "Não foi possível instalar a CLI do Paseo.",
++        installFailed: "Não foi possível instalar a CLI do ALP.",
+       },
+     },
+   },
+   rootError: {
+-    title: "O Paseo encontrou um problema.",
++    title: "O ALP encontrou um problema.",
+     body: "Tente novamente para recarregar o app. Se isso continuar acontecendo, inclua os detalhes abaixo ao relatar o problema.",
+     details: "Detalhes",
+   },
+@@ -1645,7 +1645,7 @@ export const ptBR: TranslationResources = {
+     },
+   },
+   onboarding: {
+-    title: "Bem-vindo ao Paseo",
++    title: "Bem-vindo ao ALP",
+     subtitle: "Conecte seu computador para começar",
+     actions: {
+       settings: "Configurações",
+@@ -1748,7 +1748,7 @@ export const ptBR: TranslationResources = {
+     },
+     direct: {
+       title: "Conexão direta",
+-      helper: "Informe o endereço de um servidor Paseo.",
++      helper: "Informe o endereço de um servidor ALP.",
+       fields: {
+         host: "Host",
+         port: "Porta",
+@@ -1791,7 +1791,7 @@ export const ptBR: TranslationResources = {
+     },
+     remoteSsh: {
+       title: "SSH remoto",
+-      helper: "Conecte-se a um daemon Paseo no host remoto.",
++      helper: "Conecte-se a um daemon ALP no host remoto.",
+       fields: {
+         target: "Host SSH",
+         password: "Senha do daemon",
+@@ -1854,15 +1854,15 @@ export const ptBR: TranslationResources = {
+       enableDescription:
+         "O relay permite conectar este dispositivo de qualquer lugar. O tráfego de pareamento é criptografado de ponta a ponta.",
+       relayDocs: "Como o relay funciona",
+-      relayDocsAccessibility: "Leia como o relay do Paseo funciona",
++      relayDocsAccessibility: "Leia como o relay do ALP funciona",
+       enableRelay: "Ativar relay",
+       enablingRelay: "Ativando...",
+       notNow: "Agora não",
+       directConnectionHint:
+         "Sem relay, conecte diretamente por TCP, Tailscale ou outra VPN. Nenhum código QR é criado.",
+-      updateRequired: "Atualize o host para ativar o relay pelo Paseo Desktop.",
++      updateRequired: "Atualize o host para ativar o relay pelo ALP Desktop.",
+       unavailable: "Oferta de pareamento indisponível.",
+-      hint: "Escaneie este QR code com o Paseo no seu celular ou copie o link abaixo.",
++      hint: "Escaneie este QR code com o ALP no seu celular ou copie o link abaixo.",
+       securityWarning:
+         "Trate este link de pareamento como uma senha. Qualquer pessoa com o link pode acessar este daemon.",
+       qrUnavailable: "QR code indisponível.",
+@@ -1897,7 +1897,7 @@ export const ptBR: TranslationResources = {
+   serviceUrl: {
+     title: "Abrir URL do serviço",
+     message: "Abrir {{url}}?",
+-    inPaseo: "No Paseo",
++    inPaseo: "No ALP",
+     externalBrowser: "Navegador externo",
+     dontAskAgain: "Não perguntar novamente",
+   },
+@@ -2017,8 +2017,8 @@ export const ptBR: TranslationResources = {
+       other: "usou {{count}} outras ferramentas",
+     },
+     paseoCalls: {
+-      one: "chamou o Paseo {{count}} vez",
+-      other: "chamou o Paseo {{count}} vezes",
++      one: "chamou o ALP {{count}} vez",
++      other: "chamou o ALP {{count}} vezes",
+     },
+     and: "e",
+   },
+@@ -2115,7 +2115,7 @@ export const ptBR: TranslationResources = {
+       send: "Enviar",
+       sending: "Enviando...",
+       sentTitle: "Notificação de teste enviada",
+-      sentDescription: "O Paseo entregou a notificação ao sistema operacional.",
++      sentDescription: "O ALP entregou a notificação ao sistema operacional.",
+       sendFailedTitle: "Não foi possível enviar a notificação de teste",
+     },
+     hostSections: {
+@@ -2134,14 +2134,14 @@ export const ptBR: TranslationResources = {
+     metadataGeneration: {
+       title: "Geração de metadados",
+       description:
+-        "Escolha o modelo usado pelo Paseo para títulos de espaços de trabalho, nomes de branches, mensagens de commit e rascunhos de pull request",
++        "Escolha o modelo usado pelo ALP para títulos de espaços de trabalho, nomes de branches, mensagens de commit e rascunhos de pull request",
+       selection: "Seleção de modelo",
+       automatic: "Automática",
+       preferred: "Manual",
+-      automaticHint: "O Paseo escolhe um modelo rápido disponível",
+-      preferredHint: "Escolha o modelo que o Paseo usa",
++      automaticHint: "O ALP escolhe um modelo rápido disponível",
++      preferredHint: "Escolha o modelo que o ALP usa",
+       model: "Modelo",
+-      fallbackHint: "Se ele não estiver disponível, o Paseo usa outro modelo disponível",
++      fallbackHint: "Se ele não estiver disponível, o ALP usa outro modelo disponível",
+       docs: "Documentação",
+       saveError: "Não foi possível atualizar a geração de metadados",
+     },
+@@ -2151,7 +2151,7 @@ export const ptBR: TranslationResources = {
+       browserData: {
+         title: "Dados do navegador",
+         siteData: "Cookies e dados de sites",
+-        description: "As abas do navegador compartilham logins e dados de sites no Paseo.",
++        description: "As abas do navegador compartilham logins e dados de sites no ALP.",
+         clear: "Limpar dados do navegador",
+         clearing: "Limpando...",
+         confirmTitle: "Limpar dados do navegador?",
+@@ -2178,7 +2178,7 @@ export const ptBR: TranslationResources = {
+       serviceUrls: {
+         options: {
+           ask: "Perguntar",
+-          inApp: "No Paseo",
++          inApp: "No ALP",
+           external: "Navegador externo",
+         },
+       },
+@@ -2263,7 +2263,7 @@ export const ptBR: TranslationResources = {
+         label: "Atualizações do app",
+         readyToInstall: "Pronta para instalar: {{version}}",
+         installTitle: "Instalar atualização desktop",
+-        installMessage: "Isso atualiza o Paseo neste computador",
++        installMessage: "Isso atualiza o ALP neste computador",
+         installConfirm: "Instalar atualização",
+         update: "Atualizar",
+         updateTo: "Atualizar para {{version}}",
+@@ -2512,11 +2512,11 @@ export const ptBR: TranslationResources = {
+         title: "Skills de orquestração",
+         description: "Ensine seus agentes a orquestrar pela CLI",
+         updateAvailable: "Atualização disponível",
+-        updateTitle: "Atualizar Paseo skills?",
++        updateTitle: "Atualizar ALP skills?",
+         updateFallback: "Sincronize as skills incluídas com sua máquina.",
+-        uninstallTitle: "Desinstalar Paseo skills?",
++        uninstallTitle: "Desinstalar ALP skills?",
+         uninstallMessage:
+-          "Remove todas as skills de orquestração do Paseo de ~/.agents, ~/.claude e ~/.codex.",
++          "Remove todas as skills de orquestração do ALP de ~/.agents, ~/.claude e ~/.codex.",
+         choose: "Escolher skills",
+         chooseAll: "Todas as skills",
+         chooseAllHint:
+@@ -2553,9 +2553,9 @@ export const ptBR: TranslationResources = {
+         title: "Orquestração",
+         unavailable: "Conecte-se a este host para gerenciar a orquestração",
+         enableTools: {
+-          title: "Ativar ferramentas do Paseo",
++          title: "Ativar ferramentas do ALP",
+           hint: "Agentes poderão gerenciar worktrees, agentes e agendamentos",
+-          accessibilityLabel: "Injetar ferramentas do Paseo",
++          accessibilityLabel: "Injetar ferramentas do ALP",
+         },
+         systemPrompt: {
+           title: "Prompt do sistema",
+@@ -2660,15 +2660,15 @@ export const ptBR: TranslationResources = {
+             "Este host não está conectado. Aguarde até ele ficar online antes de reiniciar.",
+           offlineTitle: "Host offline",
+           offlineMessage:
+-            "Este host está offline. O Paseo reconecta automaticamente. Aguarde ele voltar a ficar online antes de reiniciar.",
++            "Este host está offline. O ALP reconecta automaticamente. Aguarde ele voltar a ficar online antes de reiniciar.",
+           requestFailedTitle: "Erro",
+           requestFailedMessage:
+-            "Falha ao enviar a solicitação de reinício. O Paseo reconecta automaticamente. Tente novamente quando o host aparecer como online.",
++            "Falha ao enviar a solicitação de reinício. O ALP reconecta automaticamente. Tente novamente quando o host aparecer como online.",
+           dialogFailedMessage: "Não foi possível abrir o diálogo de confirmação de reinício.",
+         },
+         update: {
+           desktopManagedHint:
+-            "Este daemon é gerenciado pelo Paseo Desktop. Atualize o Paseo Desktop no host.",
++            "Este daemon é gerenciado pelo ALP Desktop. Atualize o ALP Desktop no host.",
+           title: "Atualizar daemon",
+           hint: "Atualiza o daemon para a versão mais recente e o reinicia",
+           confirm: "Atualizar",
+@@ -2830,7 +2830,7 @@ export const ptBR: TranslationResources = {
+         newScript: "Novo script",
+         editScript: "Editar {{name}}",
+         runAsService: "Executar como serviço",
+-        serviceHint: "O Paseo supervisiona o processo e atribui uma porta via $PASEO_PORT",
++        serviceHint: "O ALP supervisiona o processo e atribui uma porta via $PASEO_PORT",
+         actions: {
+           add: "Adicionar script",
+           edit: "Editar",
+@@ -2839,7 +2839,7 @@ export const ptBR: TranslationResources = {
+       },
+       metadata: {
+         title: "Geração de metadados",
+-        info: "Instruções específicas do projeto injetadas nos prompts de IA que o Paseo usa para gerar metadados. Use-as para aplicar convenções da sua equipe, como nomes de branch, estilo de commit ou formato de PR",
++        info: "Instruções específicas do projeto injetadas nos prompts de IA que o ALP usa para gerar metadados. Use-as para aplicar convenções da sua equipe, como nomes de branch, estilo de commit ou formato de PR",
+         branchName: "Nomes de branch",
+         branchNamePlaceholder: "Prefixe branches com feat/ ou fix/, mb/ para branches pessoais",
+         commitMessage: "Mensagens de commit",
+diff --git a/packages/app/src/i18n/resources/ru.ts b/packages/app/src/i18n/resources/ru.ts
+index afd0ffa..4c0f9ac 100644
+--- a/packages/app/src/i18n/resources/ru.ts
++++ b/packages/app/src/i18n/resources/ru.ts
+@@ -888,7 +888,7 @@ export const ru: TranslationResources = {
+           updateCurrent: "Обновление недоступно: эта ветка уже синхронизирована с {{baseRef}}.",
+           mergePrNoGithub: "Слияние PR сейчас недоступно: GitHub не подключён.",
+           archiveNotWorktree:
+-            "Архивирование недоступно: это рабочее пространство не было создано как worktree Paseo.",
++            "Архивирование недоступно: это рабочее пространство не было создано как worktree ALP.",
+           mergePrNoForge: "Слияние {{noun}} сейчас недоступно: {{brand}} не подключён.",
+           mergePrMissing: "Слияние PR недоступно: PR ещё не создан.",
+           mergePrDraft: "Слияние PR недоступно: PR всё ещё является черновиком.",
+@@ -1238,7 +1238,7 @@ export const ru: TranslationResources = {
+       discord: "Discord",
+       github: "Создать issue на GitHub",
+       whatsNew: "Что нового",
+-      appName: "Paseo",
++      appName: "ALP",
+     },
+     sections: {
+       sessions: "История",
+@@ -1386,7 +1386,7 @@ export const ru: TranslationResources = {
+       close: "Закрыть окно",
+     },
+     quitting: {
+-      title: "Завершение работы Paseo...",
++      title: "Завершение работы ALP...",
+       detail: "Остановка локального демона.",
+     },
+     daemon: {
+@@ -1401,20 +1401,20 @@ export const ru: TranslationResources = {
+       },
+       management: {
+         title: "Управление встроенным демоном",
+-        hint: "Разрешить Paseo запускать и останавливать встроенный демон",
++        hint: "Разрешить ALP запускать и останавливать встроенный демон",
+         pauseTitle: "Приостановить встроенный демон",
+         pauseMessage:
+           "Это немедленно остановит встроенный демон. Запущенные агенты и терминалы, подключенные к встроенному демону, будут остановлены.",
+         pauseAndStop: "Приостановить управление и остановить демон",
+         registrationFailed:
+-          "Встроенный демон запущен, но Paseo не удалось сохранить подключение к localhost. Выключите и снова включите управление демоном или добавьте localhost вручную.",
++          "Встроенный демон запущен, но ALP не удалось сохранить подключение к localhost. Выключите и снова включите управление демоном или добавьте localhost вручную.",
+         pausedStopFailed:
+-          "Встроенное управление демоном было приостановлено, но Paseo не смог остановить демон.",
++          "Встроенное управление демоном было приостановлено, но ALP не смог остановить демон.",
+         updateFailed: "Не удалось изменить настройки управления встроенным демоном.",
+       },
+       keepRunning: {
+         title: "Продолжать работу демона после выхода",
+-        hint: "Демон продолжит работать после выхода из Paseo",
++        hint: "Демон продолжит работать после выхода из ALP",
+       },
+       logs: {
+         title: "Файл журнала",
+@@ -1429,7 +1429,7 @@ export const ru: TranslationResources = {
+       fullStatus: {
+         title: "Полный статус",
+         modalTitle: "Статус демона",
+-        hint: "Выполняет команду `paseo daemon status` и показывает результат",
++        hint: "Выполняет команду `alp daemon status` и показывает результат",
+         view: "Посмотреть статус",
+         copied: "Статус скопирован в буфер обмена.",
+         fetchFailed: "Не удалось получить статус демона: {{message}}",
+@@ -1485,7 +1485,7 @@ export const ru: TranslationResources = {
+     },
+     rosetta: {
+       title: "Загрузите сборку Apple Silicon",
+-      runningIntel: "Вы используете сборку Paseo для Intel через Rosetta на Apple Silicon.",
++      runningIntel: "Вы используете сборку ALP для Intel через Rosetta на Apple Silicon.",
+       highCpu:
+         "Из-за этого процессор сильно загружен. Чтобы устранить проблему, скачайте сборку для Apple Silicon.",
+       download: "Скачать",
+@@ -1530,7 +1530,7 @@ export const ru: TranslationResources = {
+         microphone: "Состояние микрофона ещё не проверялось.",
+       },
+       testNotification: {
+-        title: "Тест уведомлений Paseo",
++        title: "Тест уведомлений ALP",
+         body: "Если вы это видите, уведомления на рабочем столе работают.",
+         notDelivered:
+           "Уведомление не доставлено. Проверьте раздел «Уведомления» в системных настройках.",
+@@ -1540,12 +1540,12 @@ export const ru: TranslationResources = {
+     integrations: {
+       cli: {
+         statusFailed: "Не удалось проверить состояние установки CLI.",
+-        installFailed: "Не удалось установить Paseo CLI.",
++        installFailed: "Не удалось установить ALP CLI.",
+       },
+     },
+   },
+   rootError: {
+-    title: "В Paseo возникла проблема.",
++    title: "В ALP возникла проблема.",
+     body: "Попробуйте перезагрузить приложение. Если ошибка повторится, приложите приведённые ниже сведения к отчёту.",
+     details: "Подробности",
+   },
+@@ -1643,7 +1643,7 @@ export const ru: TranslationResources = {
+     },
+   },
+   onboarding: {
+-    title: "Добро пожаловать в Paseo",
++    title: "Добро пожаловать в ALP",
+     subtitle: "Подключите компьютер, чтобы начать",
+     actions: {
+       settings: "Настройки",
+@@ -1746,7 +1746,7 @@ export const ru: TranslationResources = {
+     },
+     direct: {
+       title: "Прямое подключение",
+-      helper: "Введите адрес сервера Paseo.",
++      helper: "Введите адрес сервера ALP.",
+       fields: {
+         host: "Хост",
+         port: "Порт",
+@@ -1789,7 +1789,7 @@ export const ru: TranslationResources = {
+     },
+     remoteSsh: {
+       title: "Удалённый SSH",
+-      helper: "Подключитесь к демону Paseo на удалённом хосте.",
++      helper: "Подключитесь к демону ALP на удалённом хосте.",
+       fields: {
+         target: "Хост SSH",
+         password: "Пароль демона",
+@@ -1853,15 +1853,15 @@ export const ru: TranslationResources = {
+       enableDescription:
+         "Ретранслятор позволяет этому устройству подключаться откуда угодно. Трафик сопряжения защищён сквозным шифрованием.",
+       relayDocs: "Как работает ретранслятор",
+-      relayDocsAccessibility: "Узнать, как работает ретранслятор Paseo",
++      relayDocsAccessibility: "Узнать, как работает ретранслятор ALP",
+       enableRelay: "Включить ретранслятор",
+       enablingRelay: "Включение ретранслятора...",
+       notNow: "Не сейчас",
+       directConnectionHint:
+         "Без ретранслятора подключайтесь напрямую через TCP, Tailscale или другую VPN. QR-код создаваться не будет.",
+-      updateRequired: "Обновите хост, чтобы включить ретранслятор из Paseo Desktop.",
++      updateRequired: "Обновите хост, чтобы включить ретранслятор из ALP Desktop.",
+       unavailable: "Данные для сопряжения недоступны.",
+-      hint: "Отсканируйте этот QR-код с помощью Paseo на телефоне или скопируйте ссылку ниже.",
++      hint: "Отсканируйте этот QR-код с помощью ALP на телефоне или скопируйте ссылку ниже.",
+       securityWarning:
+         "Обращайтесь с этой ссылкой для сопряжения как с паролем. Любой, у кого она есть, может получить доступ к этому демону.",
+       qrUnavailable: "QR-код недоступен.",
+@@ -1896,7 +1896,7 @@ export const ru: TranslationResources = {
+   serviceUrl: {
+     title: "Открыть URL сервиса",
+     message: "Открыть {{url}}?",
+-    inPaseo: "В Paseo",
++    inPaseo: "В ALP",
+     externalBrowser: "Внешний браузер",
+     dontAskAgain: "Больше не спрашивать",
+   },
+@@ -2017,8 +2017,8 @@ export const ru: TranslationResources = {
+       other: "использованы другие инструменты ({{count}})",
+     },
+     paseoCalls: {
+-      one: "выполнен {{count}} вызов Paseo",
+-      other: "выполнены вызовы Paseo ({{count}})",
++      one: "выполнен {{count}} вызов ALP",
++      other: "выполнены вызовы ALP ({{count}})",
+     },
+     and: "и",
+   },
+@@ -2115,7 +2115,7 @@ export const ru: TranslationResources = {
+       send: "Отправить",
+       sending: "Отправка...",
+       sentTitle: "Тестовое уведомление отправлено",
+-      sentDescription: "Paseo передал уведомление операционной системе.",
++      sentDescription: "ALP передал уведомление операционной системе.",
+       sendFailedTitle: "Не удалось отправить тестовое уведомление",
+     },
+     hostSections: {
+@@ -2134,14 +2134,14 @@ export const ru: TranslationResources = {
+     metadataGeneration: {
+       title: "Генерация метаданных",
+       description:
+-        "Выберите модель, которую Paseo будет использовать для названий рабочих пространств и веток, сообщений коммитов и черновиков PR",
++        "Выберите модель, которую ALP будет использовать для названий рабочих пространств и веток, сообщений коммитов и черновиков PR",
+       selection: "Выбор модели",
+       automatic: "Автоматически",
+       preferred: "Вручную",
+-      automaticHint: "Paseo выбирает быструю доступную модель",
+-      preferredHint: "Выберите модель, которую использует Paseo",
++      automaticHint: "ALP выбирает быструю доступную модель",
++      preferredHint: "Выберите модель, которую использует ALP",
+       model: "Модель",
+-      fallbackHint: "Если она недоступна, Paseo использует другую доступную модель",
++      fallbackHint: "Если она недоступна, ALP использует другую доступную модель",
+       docs: "Документация",
+       saveError: "Не удалось обновить настройки генерации метаданных",
+     },
+@@ -2151,7 +2151,7 @@ export const ru: TranslationResources = {
+       browserData: {
+         title: "Данные браузера",
+         siteData: "Файлы cookie и данные сайтов",
+-        description: "Вкладки браузера в Paseo используют общие данные входа и данные сайтов.",
++        description: "Вкладки браузера в ALP используют общие данные входа и данные сайтов.",
+         clear: "Очистить данные браузера",
+         clearing: "Очистка...",
+         confirmTitle: "Очистить данные браузера?",
+@@ -2179,7 +2179,7 @@ export const ru: TranslationResources = {
+       serviceUrls: {
+         options: {
+           ask: "Спрашивать",
+-          inApp: "В Paseo",
++          inApp: "В ALP",
+           external: "Внешний браузер",
+         },
+       },
+@@ -2258,7 +2258,7 @@ export const ru: TranslationResources = {
+       releaseChannel: {
+         label: "Канал выпуска",
+         description:
+-          "Переключитесь на бета-канал, чтобы раньше получать обновления и помогать развивать Paseo.",
++          "Переключитесь на бета-канал, чтобы раньше получать обновления и помогать развивать ALP.",
+         stable: "Стабильный",
+         beta: "Бета",
+       },
+@@ -2266,7 +2266,7 @@ export const ru: TranslationResources = {
+         label: "Обновления приложения",
+         readyToInstall: "Версия {{version}} готова к установке",
+         installTitle: "Установить обновление настольного приложения",
+-        installMessage: "Это обновит Paseo на этом компьютере.",
++        installMessage: "Это обновит ALP на этом компьютере.",
+         installConfirm: "Установить обновление",
+         update: "Обновить",
+         updateTo: "Обновить до {{version}}",
+@@ -2521,11 +2521,11 @@ export const ru: TranslationResources = {
+         unavailable: "Подключитесь к этому хосту, чтобы управлять навыками оркестрации",
+         unsupported: "Обновите этот хост, чтобы управлять навыками оркестрации",
+         updateAvailable: "Доступно обновление",
+-        updateTitle: "Обновить навыки Paseo?",
++        updateTitle: "Обновить навыки ALP?",
+         updateFallback: "Встроенные навыки будут синхронизированы с этим хостом.",
+-        uninstallTitle: "Удалить навыки Paseo?",
++        uninstallTitle: "Удалить навыки ALP?",
+         uninstallMessage:
+-          "Удаляет все навыки оркестрации Paseo из ~/.agents, ~/.claude и ~/.codex на этом хосте.",
++          "Удаляет все навыки оркестрации ALP из ~/.agents, ~/.claude и ~/.codex на этом хосте.",
+         choose: "Выбрать навыки",
+         chooseAll: "Все навыки",
+         chooseAllHint: "Устанавливать все встроенные навыки, включая добавленные позже.",
+@@ -2561,9 +2561,9 @@ export const ru: TranslationResources = {
+         title: "Оркестрация",
+         unavailable: "Подключитесь к этому хосту, чтобы управлять оркестрацией.",
+         enableTools: {
+-          title: "Включить инструменты Paseo",
++          title: "Включить инструменты ALP",
+           hint: "Агенты смогут управлять worktree, агентами и расписаниями.",
+-          accessibilityLabel: "Добавить инструменты Paseo",
++          accessibilityLabel: "Добавить инструменты ALP",
+         },
+         systemPrompt: {
+           title: "Системный промпт",
+@@ -2668,15 +2668,15 @@ export const ru: TranslationResources = {
+             "Этот хост не подключён. Дождитесь его появления в сети перед перезапуском.",
+           offlineTitle: "Хост не в сети",
+           offlineMessage:
+-            "Этот хост не в сети. Paseo переподключится автоматически. Дождитесь подключения перед перезапуском.",
++            "Этот хост не в сети. ALP переподключится автоматически. Дождитесь подключения перед перезапуском.",
+           requestFailedTitle: "Ошибка",
+           requestFailedMessage:
+-            "Не удалось отправить запрос на перезапуск. Paseo переподключается автоматически. Повторите попытку, когда хост появится в сети.",
++            "Не удалось отправить запрос на перезапуск. ALP переподключается автоматически. Повторите попытку, когда хост появится в сети.",
+           dialogFailedMessage: "Не удалось открыть диалог подтверждения перезапуска.",
+         },
+         update: {
+           desktopManagedHint:
+-            "Этот демон управляется Paseo Desktop. Обновите Paseo Desktop на хосте.",
++            "Этот демон управляется ALP Desktop. Обновите ALP Desktop на хосте.",
+           title: "Обновить демон",
+           hint: "Обновить демон до последней версии и перезапустить его",
+           confirm: "Обновить",
+@@ -2839,7 +2839,7 @@ export const ru: TranslationResources = {
+         newScript: "Новый скрипт",
+         editScript: "Изменить {{name}}",
+         runAsService: "Запускать как сервис",
+-        serviceHint: "Paseo управляет процессом и назначает порт через переменную $PASEO_PORT.",
++        serviceHint: "ALP управляет процессом и назначает порт через переменную $PASEO_PORT.",
+         actions: {
+           add: "Добавить скрипт",
+           edit: "Редактировать",
+@@ -2848,7 +2848,7 @@ export const ru: TranslationResources = {
+       },
+       metadata: {
+         title: "Генерация метаданных",
+-        info: "Инструкции для этого проекта, добавляемые в промпты ИИ, с помощью которых Paseo генерирует метаданные. Используйте их, чтобы соблюдать принятые в команде правила именования веток, оформления коммитов и формата PR.",
++        info: "Инструкции для этого проекта, добавляемые в промпты ИИ, с помощью которых ALP генерирует метаданные. Используйте их, чтобы соблюдать принятые в команде правила именования веток, оформления коммитов и формата PR.",
+         branchName: "Названия веток",
+         branchNamePlaceholder:
+           "Добавляйте к веткам префиксы feat/ или fix/, а к личным веткам — mb/",
+diff --git a/packages/app/src/i18n/resources/zh-CN.ts b/packages/app/src/i18n/resources/zh-CN.ts
+index 9398e60..ad9feb9 100644
+--- a/packages/app/src/i18n/resources/zh-CN.ts
++++ b/packages/app/src/i18n/resources/zh-CN.ts
+@@ -865,7 +865,7 @@ export const zhCN: TranslationResources = {
+           updateDirty: "有本地变更时无法更新，请先 commit 或 stash",
+           updateCurrent: "无法更新，因为此分支已与 {{baseRef}} 保持最新",
+           mergePrNoGithub: "当前无法 merge PR，因为 GitHub 未连接",
+-          archiveNotWorktree: "此处无法归档，因为此 workspace 不是作为 Paseo worktree 创建的",
++          archiveNotWorktree: "此处无法归档，因为此 workspace 不是作为 ALP worktree 创建的",
+           mergePrNoForge: "当前无法 merge {{noun}}，因为 {{brand}} 未连接",
+           mergePrMissing: "无法 merge PR，因为还没有 pull request",
+           mergePrDraft: "无法 merge PR，因为 pull request 仍是 draft",
+@@ -1212,7 +1212,7 @@ export const zhCN: TranslationResources = {
+       discord: "Discord",
+       github: "创建 GitHub Issue",
+       whatsNew: "新功能",
+-      appName: "Paseo",
++      appName: "ALP",
+     },
+     sections: {
+       sessions: "历史",
+@@ -1356,7 +1356,7 @@ export const zhCN: TranslationResources = {
+       close: "关闭窗口",
+     },
+     quitting: {
+-      title: "正在退出 Paseo...",
++      title: "正在退出 ALP...",
+       detail: "正在停止本地 daemon。",
+     },
+     daemon: {
+@@ -1371,19 +1371,19 @@ export const zhCN: TranslationResources = {
+       },
+       management: {
+         title: "管理内置 daemon",
+-        hint: "让 Paseo 启动和停止内置 daemon",
++        hint: "让 ALP 启动和停止内置 daemon",
+         pauseTitle: "暂停内置 daemon",
+         pauseMessage:
+           "这会立即停止内置 daemon。连接到内置 daemon 的运行中 agents 和 terminals 会被停止。",
+         pauseAndStop: "暂停并停止",
+         registrationFailed:
+-          "内置 daemon 已启动，但 Paseo 无法保存 localhost 连接。请关闭后重新开启 daemon 管理，或手动添加 localhost。",
+-        pausedStopFailed: "内置 daemon 管理已暂停，但 Paseo 无法停止 daemon。",
++          "内置 daemon 已启动，但 ALP 无法保存 localhost 连接。请关闭后重新开启 daemon 管理，或手动添加 localhost。",
++        pausedStopFailed: "内置 daemon 管理已暂停，但 ALP 无法停止 daemon。",
+         updateFailed: "无法更新内置 daemon 管理设置。",
+       },
+       keepRunning: {
+         title: "退出后保持 daemon 运行",
+-        hint: "退出 Paseo 后 daemon 会继续运行",
++        hint: "退出 ALP 后 daemon 会继续运行",
+       },
+       logs: {
+         title: "日志文件",
+@@ -1398,7 +1398,7 @@ export const zhCN: TranslationResources = {
+       fullStatus: {
+         title: "完整状态",
+         modalTitle: "Daemon 状态",
+-        hint: "运行 `paseo daemon status` 并显示输出",
++        hint: "运行 `alp daemon status` 并显示输出",
+         view: "查看状态",
+         copied: "状态已复制到剪贴板。",
+         fetchFailed: "获取 daemon 状态失败：{{message}}",
+@@ -1448,7 +1448,7 @@ export const zhCN: TranslationResources = {
+     },
+     rosetta: {
+       title: "下载 Apple Silicon 构建",
+-      runningIntel: "你正在 Apple Silicon 上通过 Rosetta 运行 Paseo 的 Intel 构建。",
++      runningIntel: "你正在 Apple Silicon 上通过 Rosetta 运行 ALP 的 Intel 构建。",
+       highCpu: "这会导致较高 CPU 使用率。下载 Apple Silicon 构建即可修复。",
+       download: "下载",
+     },
+@@ -1488,7 +1488,7 @@ export const zhCN: TranslationResources = {
+         microphone: "尚未检查麦克风状态。",
+       },
+       testNotification: {
+-        title: "Paseo 通知测试",
++        title: "ALP 通知测试",
+         body: "如果你能看到这条通知，说明桌面通知可用。",
+         notDelivered: "通知未送达。请检查 System Settings > Notifications。",
+         failed: "发送通知失败。",
+@@ -1497,12 +1497,12 @@ export const zhCN: TranslationResources = {
+     integrations: {
+       cli: {
+         statusFailed: "无法检查 CLI 安装状态。",
+-        installFailed: "无法安装 Paseo CLI。",
++        installFailed: "无法安装 ALP CLI。",
+       },
+     },
+   },
+   rootError: {
+-    title: "Paseo 遇到了问题。",
++    title: "ALP 遇到了问题。",
+     body: "请重试以重新加载应用。如果问题持续发生，请在报告时附上下面的详细信息。",
+     details: "详情",
+   },
+@@ -1597,7 +1597,7 @@ export const zhCN: TranslationResources = {
+     },
+   },
+   onboarding: {
+-    title: "欢迎使用 Paseo",
++    title: "欢迎使用 ALP",
+     subtitle: "连接你的电脑即可开始",
+     actions: {
+       settings: "设置",
+@@ -1699,7 +1699,7 @@ export const zhCN: TranslationResources = {
+     },
+     direct: {
+       title: "直接连接",
+-      helper: "输入 Paseo server 的地址。",
++      helper: "输入 ALP server 的地址。",
+       fields: {
+         host: "Host",
+         port: "端口",
+@@ -1740,7 +1740,7 @@ export const zhCN: TranslationResources = {
+     },
+     remoteSsh: {
+       title: "远程 SSH",
+-      helper: "连接到远程主机上运行的 Paseo 守护进程。",
++      helper: "连接到远程主机上运行的 ALP 守护进程。",
+       fields: {
+         target: "SSH 主机",
+         password: "守护进程密码",
+@@ -1800,15 +1800,15 @@ export const zhCN: TranslationResources = {
+       enableTitle: "启用中继？",
+       enableDescription: "中继让此设备可以从任何地方连接。配对流量采用端到端加密。",
+       relayDocs: "中继如何工作",
+-      relayDocsAccessibility: "阅读 Paseo 中继的工作原理",
++      relayDocsAccessibility: "阅读 ALP 中继的工作原理",
+       enableRelay: "启用中继",
+       enablingRelay: "正在启用...",
+       notNow: "暂不",
+       directConnectionHint:
+         "不使用中继时，请通过 TCP、Tailscale 或其他 VPN 直接连接。不会生成二维码。",
+-      updateRequired: "请更新主机，以便从 Paseo Desktop 启用中继。",
++      updateRequired: "请更新主机，以便从 ALP Desktop 启用中继。",
+       unavailable: "配对 offer 不可用。",
+-      hint: "用手机上的 Paseo 扫描此二维码，或复制下方链接。",
++      hint: "用手机上的 ALP 扫描此二维码，或复制下方链接。",
+       securityWarning: "请像保管密码一样保管此配对链接。任何获得此链接的人都可以访问此守护进程。",
+       qrUnavailable: "二维码不可用。",
+       qrAccessibility: "配对二维码",
+@@ -1842,7 +1842,7 @@ export const zhCN: TranslationResources = {
+   serviceUrl: {
+     title: "打开服务 URL",
+     message: "打开 {{url}}？",
+-    inPaseo: "在 Paseo 中",
++    inPaseo: "在 ALP 中",
+     externalBrowser: "外部浏览器",
+     dontAskAgain: "不再询问",
+   },
+@@ -1962,8 +1962,8 @@ export const zhCN: TranslationResources = {
+       other: "使用了 {{count}} 个其他工具",
+     },
+     paseoCalls: {
+-      one: "调用了 Paseo {{count}} 次",
+-      other: "调用了 Paseo {{count}} 次",
++      one: "调用了 ALP {{count}} 次",
++      other: "调用了 ALP {{count}} 次",
+     },
+     and: "并",
+   },
+@@ -2060,7 +2060,7 @@ export const zhCN: TranslationResources = {
+       send: "发送",
+       sending: "正在发送...",
+       sentTitle: "测试通知已发送",
+-      sentDescription: "Paseo 已将通知交给操作系统。",
++      sentDescription: "ALP 已将通知交给操作系统。",
+       sendFailedTitle: "无法发送测试通知",
+     },
+     hostSections: {
+@@ -2078,14 +2078,14 @@ export const zhCN: TranslationResources = {
+     plugins: pluginSettings["zh-CN"],
+     metadataGeneration: {
+       title: "元数据生成",
+-      description: "选择 Paseo 用于工作区标题、分支名称、提交消息和拉取请求草稿的模型",
++      description: "选择 ALP 用于工作区标题、分支名称、提交消息和拉取请求草稿的模型",
+       selection: "模型选择",
+       automatic: "自动",
+       preferred: "手动",
+-      automaticHint: "Paseo 会选择一个可用的快速模型",
+-      preferredHint: "选择 Paseo 使用的模型",
++      automaticHint: "ALP 会选择一个可用的快速模型",
++      preferredHint: "选择 ALP 使用的模型",
+       model: "模型",
+-      fallbackHint: "如果不可用，Paseo 会改用其他可用模型",
++      fallbackHint: "如果不可用，ALP 会改用其他可用模型",
+       docs: "文档",
+       saveError: "无法更新元数据生成设置",
+     },
+@@ -2095,7 +2095,7 @@ export const zhCN: TranslationResources = {
+       browserData: {
+         title: "浏览器数据",
+         siteData: "Cookie 和网站数据",
+-        description: "浏览器标签页在 Paseo 中共享登录状态和网站数据。",
++        description: "浏览器标签页在 ALP 中共享登录状态和网站数据。",
+         clear: "清除浏览器数据",
+         clearing: "正在清除...",
+         confirmTitle: "清除浏览器数据？",
+@@ -2119,7 +2119,7 @@ export const zhCN: TranslationResources = {
+       serviceUrls: {
+         options: {
+           ask: "询问",
+-          inApp: "在 Paseo 中",
++          inApp: "在 ALP 中",
+           external: "外部浏览器",
+         },
+       },
+@@ -2203,7 +2203,7 @@ export const zhCN: TranslationResources = {
+         label: "应用更新",
+         readyToInstall: "可安装：{{version}}",
+         installTitle: "安装桌面版更新",
+-        installMessage: "这会更新此电脑上的 Paseo",
++        installMessage: "这会更新此电脑上的 ALP",
+         installConfirm: "安装更新",
+         update: "更新",
+         updateTo: "更新到 {{version}}",
+@@ -2448,10 +2448,10 @@ export const zhCN: TranslationResources = {
+         title: "编排 skills",
+         description: "教会 Agent 通过 CLI 编排任务",
+         updateAvailable: "有更新可用",
+-        updateTitle: "更新 Paseo skills？",
++        updateTitle: "更新 ALP skills？",
+         updateFallback: "将内置 skills 同步到你的机器。",
+-        uninstallTitle: "卸载 Paseo skills？",
+-        uninstallMessage: "会从 ~/.agents、~/.claude、~/.codex 移除所有 Paseo 编排 skills。",
++        uninstallTitle: "卸载 ALP skills？",
++        uninstallMessage: "会从 ~/.agents、~/.claude、~/.codex 移除所有 ALP 编排 skills。",
+         choose: "选择 skills",
+         chooseAll: "全部 skills",
+         chooseAllHint: "保持安装所有内置 skills，包括以后新增的。",
+@@ -2487,9 +2487,9 @@ export const zhCN: TranslationResources = {
+         title: "编排",
+         unavailable: "连接到这个 Host 以管理编排",
+         enableTools: {
+-          title: "启用 Paseo tools",
++          title: "启用 ALP tools",
+           hint: "Agent 将能够管理 worktree、Agent 和计划",
+-          accessibilityLabel: "注入 Paseo tools",
++          accessibilityLabel: "注入 ALP tools",
+         },
+         systemPrompt: {
+           title: "System prompt",
+@@ -2588,13 +2588,13 @@ export const zhCN: TranslationResources = {
+           unavailableTitle: "Host 不可用",
+           unavailableMessage: "这个 Host 尚未连接。请等待它上线后再重启。",
+           offlineTitle: "Host 离线",
+-          offlineMessage: "这个 Host 已离线。Paseo 会自动重连，请等它恢复在线后再重启。",
++          offlineMessage: "这个 Host 已离线。ALP 会自动重连，请等它恢复在线后再重启。",
+           requestFailedTitle: "错误",
+-          requestFailedMessage: "发送重启请求失败。Paseo 会自动重连，请在 Host 显示在线后重试。",
++          requestFailedMessage: "发送重启请求失败。ALP 会自动重连，请在 Host 显示在线后重试。",
+           dialogFailedMessage: "无法打开重启确认对话框。",
+         },
+         update: {
+-          desktopManagedHint: "此 Daemon 由 Paseo Desktop 管理。请在 Host 上更新 Paseo Desktop。",
++          desktopManagedHint: "此 Daemon 由 ALP Desktop 管理。请在 Host 上更新 ALP Desktop。",
+           title: "Update daemon",
+           hint: "Update the daemon to the latest version and restart it",
+           confirm: "Update",
+@@ -2753,7 +2753,7 @@ export const zhCN: TranslationResources = {
+         newScript: "新建 script",
+         editScript: "编辑 {{name}}",
+         runAsService: "作为服务运行",
+-        serviceHint: "Paseo 会监管该进程，并通过 $PASEO_PORT 分配端口",
++        serviceHint: "ALP 会监管该进程，并通过 $PASEO_PORT 分配端口",
+         actions: {
+           add: "添加 script",
+           edit: "编辑",
+@@ -2762,7 +2762,7 @@ export const zhCN: TranslationResources = {
+       },
+       metadata: {
+         title: "元数据生成",
+-        info: "注入到 Paseo 用来生成元数据的 AI prompts 中的 Project 专属指令，可用于强制执行团队约定，例如分支命名、提交风格或 PR 格式",
++        info: "注入到 ALP 用来生成元数据的 AI prompts 中的 Project 专属指令，可用于强制执行团队约定，例如分支命名、提交风格或 PR 格式",
+         branchName: "分支名称",
+         branchNamePlaceholder: "分支以 feat/ 或 fix/ 开头，个人分支使用 mb/",
+         commitMessage: "提交消息",
+diff --git a/packages/app/src/screens/settings/browser-tools-config.ts b/packages/app/src/screens/settings/browser-tools-config.ts
+index ab009eb..e050f6a 100644
+--- a/packages/app/src/screens/settings/browser-tools-config.ts
++++ b/packages/app/src/screens/settings/browser-tools-config.ts
+@@ -2,7 +2,7 @@ import type { MutableDaemonConfig } from "@getpaseo/protocol/messages";
+ 
+ export const BROWSER_TOOLS_TITLE = "Browser tools";
+ export const BROWSER_TOOLS_WARNING =
+-  "Allow agents to access and control Paseo browser tabs, including logged-in browser state. Only enable this for agents you trust.";
++  "Allow agents to access and control ALP browser tabs, including logged-in browser state. Only enable this for agents you trust.";
+ 
+ export interface BrowserToolsCardState {
+   isVisible: boolean;
+diff --git a/packages/app/src/screens/startup-splash-screen.tsx b/packages/app/src/screens/startup-splash-screen.tsx
+index 1f12d90..f97f918 100644
+--- a/packages/app/src/screens/startup-splash-screen.tsx
++++ b/packages/app/src/screens/startup-splash-screen.tsx
+@@ -29,8 +29,8 @@ interface StartupSplashScreenProps {
+   };
+ }
+ 
+-const GITHUB_ISSUE_URL = "https://github.com/getpaseo/paseo/issues/new";
+-const DOCS_URL = "https://paseo.sh/docs";
++const GITHUB_ISSUE_URL = "https://github.com/phucanh08/alp-paseo/issues/new";
++const DOCS_URL = "https://github.com/phucanh08/alp-paseo#readme";
+ 
+ const LOGO_SIZE = 96;
+ const SHIMMER_PEAK_WIDTH = 120;
+diff --git a/packages/app/src/screens/workspace/workspace-route-state.ts b/packages/app/src/screens/workspace/workspace-route-state.ts
+index 7f8137a..b9c8e79 100644
+--- a/packages/app/src/screens/workspace/workspace-route-state.ts
++++ b/packages/app/src/screens/workspace/workspace-route-state.ts
+@@ -84,7 +84,7 @@ export function resolveWorkspaceRouteState(input: {
+       return {
+         kind: "recoveryUnavailable",
+         hostName: input.hostName,
+-        message: "Update Paseo to recover this workspace.",
++        message: "Update ALP to recover this workspace.",
+       };
+     case "inspectionFailed":
+       return {
+-- 
+2.54.0 (Apple Git-157)
+

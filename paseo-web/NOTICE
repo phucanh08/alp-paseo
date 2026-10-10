@@ -8,4 +8,5 @@ ALP builds it from the commit named in upstream.json with the changes in
 patches/ applied, and serves it from alpd. Each patch says what it changes;
 in short: the app connects to the alpd that serves it, with the token that
 `alp web` gives it, is named ALP, and shows ALP's logo in place of Paseo's
-mark, favicons and icons.
+mark, favicons and icons, and says ALP where it said Paseo, linking to ALP's
+repository instead of Paseo's GitHub, sponsor page and Discord.
