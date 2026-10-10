@@ -60,25 +60,150 @@ function load(code, modules = hostModules()) {
 
 const theme = { colors: { surface0: '#fff', surface1: '#eee', surface2: '#ddd', border: '#ccc', foreground: '#000', foregroundMuted: '#666', accent: '#06c', accentForeground: '#fff', statusSuccess: '#0a0', statusWarning: '#a60', statusDanger: '#c00' } };
 
-test('the client entry bundles with only the modules Paseo supplies and registers the Tasks panel', async () => {
+const settle = async () => { for (let i = 0; i < 10; i += 1) await new Promise(resolve => setImmediate(resolve)); };
+
+/**
+ * A client context with a host of agents: what the pills see of Paseo's agents.list,
+ * workspaces and plugin RPC. Test code drives the subscription through `host`.
+ */
+function fakeClient(boards) {
+  const host = { observers: [], released: false, pills: [], screens: [], opened: [], panels: [], commands: [], slash: [], reads: [] };
+  const page = entries => ({ entries: entries.map(agent => ({ agent })), pageInfo: { hasMore: false, nextCursor: null, prevCursor: null } });
+  host.snapshot = agents => host.observers.forEach(observer => observer.snapshot({ ...page(agents), subscriptionId: 's1' }));
+  host.update = payload => host.observers.forEach(observer => observer.update({ type: 'agent_update', payload }));
+  const client = {
+    paseo: {
+      agents: {
+        list: async options => ({
+          ...page([]),
+          subscription: options.subscribe ? { release: async () => { host.released = true; }, subscribe: observer => { host.observers.push(observer); return () => {}; } } : undefined,
+        }),
+      },
+      workspaces: { ref: id => ({ refresh: async () => ({ id, workspaceDirectory: `/w/${id}`, projectRootPath: '/w' }) }) },
+    },
+    rpc: async (contract, input) => { host.reads.push([contract.name, input.directory]); return boards[input.directory] ?? { projectRoot: null, tasks: [], unreadable: [] }; },
+    openScreen: input => host.opened.push(input),
+    addScreen: screen => { host.screens.push(screen); return () => {}; },
+    addComposerPill: contribution => {
+      const pill = { ...contribution, removed: false, updates: 0 };
+      host.pills.push(pill);
+      return { update: patch => { pill.button = { ...pill.button, ...patch }; pill.updates += 1; }, remove: () => { pill.removed = true; } };
+    },
+    addWorkspacePanel: panel => { host.panels.push(panel); return () => {}; },
+    addCommandCenterItem: item => { host.commands.push(item); return () => {}; },
+    addSlashCommand: command => { host.slash.push(command); return () => {}; },
+    addSettingsScreen: () => () => {},
+  };
+  return { client, host };
+}
+
+const row = (id, title, extra = {}) => ({ id, title, type: 'task', priority: 2, status: 'open', ready: false, updatedAt: '2026-10-09T00:00:00Z', ...extra });
+
+test('the client entry bundles with only the modules Paseo supplies and registers the Tasks panel, screen, commands and pills', async () => {
   const { code, externals, inputs } = await compileClient('index.client.tsx');
   assert.deepEqual(externals.filter(id => !HOST.includes(id)), []);
   // Paseo refuses client code outside client/, shared/ and the entry.
   assert.deepEqual(inputs.filter(input => !/^(index\.client\.tsx|client\/|shared\/)/.test(path.relative(plugin, path.resolve(input)).split(path.sep).join('/'))), []);
-  const panels = [];
-  const commands = [];
-  const cleanup = load(code).default({ addWorkspacePanel: panel => { panels.push(panel); return () => {}; }, addCommandCenterItem: item => { commands.push(item); return () => {}; }, addSettingsScreen: () => () => {} });
+  const { client, host } = fakeClient({});
+  const cleanup = load(code).default(client);
   assert.equal(typeof cleanup, 'function');
-  assert.deepEqual(panels.filter(panel => panel.id === 'alp-tasks').map(panel => [panel.id, panel.title, panel.icon, panel.context, typeof panel.Component]), [['alp-tasks', 'Tasks', 'ListTodo', 'workspace', 'function']]);
+  assert.deepEqual(host.panels.filter(panel => panel.id === 'alp-tasks').map(panel => [panel.id, panel.title, panel.icon, panel.context, typeof panel.Component]), [['alp-tasks', 'Tasks', 'ListTodo', 'workspace', 'function']]);
+  assert.deepEqual(host.screens.map(screen => [screen.id, screen.title({}), screen.title({ taskId: 't-0003' }), typeof screen.Component]), [['alp-tasks', 'ALP tasks', 'ALP task t-0003', 'function']]);
+
+  // The desktop opens the panel; the full-screen item and /tasks open the screen, which phones reach.
+  const workspace = { id: 'ws1', directory: '/w/ws1', projectRootPath: '/w' };
   const opened = [];
-  commands[0].onSelect({ openPanel: id => opened.push(id) });
-  assert.deepEqual([commands[0].context, opened], ['workspace', ['alp-tasks']]);
+  host.commands.find(item => item.id === 'alp-open-tasks').onSelect({ openPanel: id => opened.push(id) });
+  host.commands.find(item => item.id === 'alp-open-tasks-screen').onSelect({ workspace, openScreen: input => opened.push(input) });
+  const [slash] = host.slash;
+  assert.deepEqual([slash.name, slash.context, slash.argumentHint], ['tasks', 'agent', '[task id]']);
+  slash.onSubmit({ workspace, agent: { id: 'a1' }, args: '', openScreen: input => opened.push(input) });
+  slash.onSubmit({ workspace: { ...workspace, directory: '' }, agent: { id: 'a1' }, args: ' t-0003 ', openScreen: input => opened.push(input) });
+  assert.deepEqual(opened, [
+    'alp-tasks',
+    { screenId: 'alp-tasks', params: { workspaceId: 'ws1', directory: '/w/ws1' } },
+    { screenId: 'alp-tasks', params: { workspaceId: 'ws1', directory: '/w/ws1' } },
+    { screenId: 'alp-tasks', params: { workspaceId: 'ws1', directory: '/w', taskId: 't-0003' } },
+  ]);
+  await settle();
+  assert.equal(host.observers.length, 1, 'the pills follow the host\'s agents');
+  await cleanup();
+  assert.equal(host.released, true);
+});
+
+test('each ALP agent\'s composer gets a Tasks pill whose menu opens the screen on a task', async () => {
+  const { code } = await compileClient('client/task-pills.ts');
+  const { addTaskPills, taskButton, menuTasks } = load(code);
+  const tasks = [
+    row('t-0001', 'Ship the release', { approvals: [{ gate: 'g1', note: 'Approve?' }] }),
+    row('t-0002', 'Add --json', { status: 'review' }),
+    row('t-0003', 'Normalize', { status: 'in_progress', priority: 1 }),
+    row('t-0004', 'Fix colors', { ready: true, priority: 3 }),
+    row('t-0004.1', 'Docs', { blockedBy: ['t-0002'] }),
+    row('t-0006', 'Old', { status: 'closed', closed: { reason: 'done', at: '2026-10-08T00:00:00Z' } }),
+    row('t-0007', 'CLI polish', { type: 'epic', progress: { done: 0, total: 2 } }),
+  ];
+  const { client, host } = fakeClient({ '/w/ws1': { projectRoot: '/w', tasks, unreadable: [] } });
+  const stop = addTaskPills(client);
+  await settle();
+  // ALP agents with a workspace, not archived; other providers get none.
+  host.snapshot([
+    { id: 'a1', provider: 'alp', workspaceId: 'ws1', cwd: '/w/ws1/sub' },
+    { id: 'a2', provider: 'codex', workspaceId: 'ws1', cwd: '/w/ws1' },
+    { id: 'a3', provider: 'alp', cwd: '/w' },
+    { id: 'a4', provider: 'alp', workspaceId: 'ws1', cwd: '/w', archivedAt: '2026-10-09T00:00:00Z' },
+  ]);
+  await settle();
+  assert.deepEqual(host.pills.map(pill => [pill.id, pill.workspaceId, pill.agentId]), [['alp-tasks', 'ws1', 'a1']]);
+  const [pill] = host.pills;
+  // The tasks of the workspace's directory, as the panel reads them.
+  assert.deepEqual(host.reads, [['alp.tasks.list', '/w/ws1']]);
+  assert.deepEqual([pill.button.label, pill.button.title, pill.button.visible], ['Tasks · 5', 'ALP tasks: 5 open', true]);
+  const items = pill.button.behavior.items;
+  assert.deepEqual(items.map(item => item.kind === 'item' ? item.title : '---'), [
+    'Approve · Ship the release', 'Review · Add --json', 'In progress · Normalize', 'Ready · Fix colors', 'Blocked · Docs', '---', 'All tasks',
+  ]);
+  assert.ok(items.every(item => /^[a-z][a-z0-9-]*$/.test(item.id)), 'menu ids are what the host accepts');
+  items[4].behavior.onPress();
+  items.at(-1).behavior.onPress();
+  assert.deepEqual(host.opened, [
+    { screenId: 'alp-tasks', params: { workspaceId: 'ws1', directory: '/w/ws1', taskId: 't-0004.1' } },
+    { screenId: 'alp-tasks', params: { workspaceId: 'ws1', directory: '/w/ws1' } },
+  ]);
+
+  // An unchanged board leaves the pill alone, so an open menu stays open.
+  const updates = pill.updates;
+  host.update({ kind: 'upsert', agent: { id: 'a5', provider: 'alp', workspaceId: 'ws2', cwd: '/elsewhere' } });
+  await settle();
+  assert.equal(pill.updates, updates);
+  // Outside an ALP project the pill hides; a removed agent loses it.
+  const other = host.pills.find(entry => entry.agentId === 'a5');
+  assert.equal(other.button.visible, false);
+  host.update({ kind: 'remove', agentId: 'a1' });
+  assert.equal(pill.removed, true);
+  await stop();
+  assert.deepEqual([other.removed, host.released], [true, true]);
+
+  // The menu keeps eight tasks, what waits for the user first; epics and closed tasks stay on the board.
+  assert.deepEqual(menuTasks(tasks).map(entry => entry.task.id), ['t-0001', 't-0002', 't-0003', 't-0004', 't-0004.1']);
+  const many = Array.from({ length: 11 }, (_, index) => row(`t-${100 + index}`, `Task ${index}`, { ready: true }));
+  const full = taskButton({ projectRoot: '/w', tasks: many }, () => {});
+  assert.deepEqual([full.label, full.behavior.items.length, full.behavior.items.at(-1).title], ['Tasks · 11', 10, 'All tasks (3 more)']);
+  const unread = taskButton(null, () => {});
+  assert.deepEqual([unread.label, unread.visible, unread.behavior.items.map(item => item.title)], ['Tasks', true, ['All tasks']]);
+});
+
+test('the Tasks screen shows the board of the directory it was opened with', async () => {
+  const { code } = await compileClient('client/tasks-panel.tsx');
+  const { TasksScreen } = load(code);
+  const render = params => renderToStaticMarkup(createElement(TasksScreen, { theme, layout: { compact: true, platform: 'ios' }, host: { id: 'h', label: 'h' }, params }));
+  assert.match(render({ workspaceId: 'ws1', directory: '/w/ws1', taskId: 't-0003' }), /Loading tasks…/);
+  assert.match(render({ workspaceId: 'ws1' }), /needs a workspace/);
 });
 
 test('the panel lists tasks the way beads views them: grouped list, detail, board and epics', async () => {
   const { code } = await compileClient('client/tasks-panel.tsx');
   const { TaskBoard, filterTasks, age } = load(code);
-  const row = (id, title, extra = {}) => ({ id, title, type: 'task', priority: 2, status: 'open', ready: false, updatedAt: '2026-10-09T00:00:00Z', ...extra });
   const tasks = [
     row('t-0001', 'Ship the release', { approvals: [{ gate: 'g1', note: 'Approve the changelog?' }], waits: ['g1 human: Approve the changelog?'] }),
     row('t-0002', 'Add --json', { status: 'review', assignee: 'peer', parent: 't-0007', handoff: { outcome: 'complete', summary: 'Added it; npm test passed', agent: 'peer' } }),

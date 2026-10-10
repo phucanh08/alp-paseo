@@ -28,6 +28,12 @@ tasks") showing the tasks of its ALP project, in `.alp/tasks`:
 The panel reads and writes the task files through the plugin's server, so it
 works without alpd, and it refreshes every five seconds while open.
 
+On a phone, where the workspace's panels are out of reach, the same board opens
+as a full screen from the chat:
+- the **Tasks** pill in the composer of each ALP agent (for example "Tasks · 3")
+  lists the open tasks. Tapping one opens it; **All tasks** opens the board.
+- `/tasks` opens the board, and `/tasks <id>` opens that task.
+
 ## Install
 
 Requires Paseo 0.11.1 or a later 0.11 release, Node.js 20+, and an authenticated native Codex or
