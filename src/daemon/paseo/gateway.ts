@@ -99,6 +99,7 @@ export function createPaseoGateway(options: GatewayOptions) {
 
     async function session(message: SessionMessage) {
       if (!client || !message || typeof message.type !== 'string') return;
+      if (process.env.ALP_PASEO_DEBUG) log(`paseo <- ${message.type}${message.requestId ? ` ${message.requestId}` : ''}`);
       if (message.type === 'ping' && typeof message.requestId === 'string') {
         const now = Date.now();
         client.emit({ type: 'pong', payload: { requestId: message.requestId, ...(typeof message.clientSentAt === 'number' ? { clientSentAt: message.clientSentAt } : {}), serverReceivedAt: now, serverSentAt: Date.now() } });
@@ -124,10 +125,12 @@ export function createPaseoGateway(options: GatewayOptions) {
       if (binary) return;
       let frame: any;
       try { frame = JSON.parse(String(data)); } catch { return; }
+      if (process.env.ALP_PASEO_DEBUG && frame?.type !== 'session') log(`paseo <= ${frame?.type}`);
       if (frame?.type === 'ping') send({ type: 'pong' });
       else if (frame?.type === 'hello') hello(frame);
       else if (frame?.type === 'session') void session(frame.message);
     });
+    if (process.env.ALP_PASEO_DEBUG) ws.on('close', (code, reason) => log(`paseo socket closed ${code} ${String(reason)} (client ${client?.clientId ?? 'none'})`));
     const end = () => {
       clearTimeout(timer);
       if (client) clients.delete(client);

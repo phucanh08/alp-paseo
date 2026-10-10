@@ -24,7 +24,7 @@ Build a small provider-neutral ALP core, integrate it with Paseo first, then sta
 | 13 | D23, building: ALP settings in Paseo — teams (Phở and Cafe become teams), agents, skills, MCP, ALP-run hooks, ACP providers | `phases/13-settings-teams-acp.md` |
 | 14 | Noted for later: mains of different teams working together | `phases/14-team-of-teams.md` |
 | 15 | D30: ALP as an ACP agent (step 1), then a local web app served by alpd (steps 2–3) | `reference/DECISIONS.md` D30, `reference/ALPD.md` §60–§61 |
-| 16 | D31: the web app becomes Paseo's app over alpd: build pipeline and protocol core (steps 1–2), then agents, questions, workspaces, ALP panels, git and packaging | `reference/DECISIONS.md` D31, `reference/ALPD.md` §62 |
+| 16 | D31: the web app becomes Paseo's app over alpd: build pipeline and protocol core (steps 1–2), agents and timelines (step 3), then questions, workspaces, ALP panels, git and packaging | `reference/DECISIONS.md` D31, `reference/ALPD.md` §62 |
 
 ## Non-goals for early phases
 

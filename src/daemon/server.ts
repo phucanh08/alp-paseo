@@ -71,6 +71,7 @@ export type SessionSummary = SessionSnapshot & {
   title?: string;
   archived?: boolean;
   lastError?: SessionRecord['lastError'];
+  createdAt?: string;
   updatedAt?: string;
 };
 
@@ -293,7 +294,7 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
     const session = live ?? record?.session;
     if (!session) return undefined;
     const status: SessionStatus = live ? (live.activeTurnId ? 'running' : 'idle') : record?.status === 'error' ? 'error' : 'closed';
-    return { ...session, ...(live ? {} : { busy: false, activeTurnId: undefined }), status, title: record?.title, ...(record?.archived ? { archived: true } : {}), lastError: record?.lastError, updatedAt: record?.updatedAt };
+    return { ...session, ...(live ? {} : { busy: false, activeTurnId: undefined }), status, title: record?.title, ...(record?.archived ? { archived: true } : {}), lastError: record?.lastError, createdAt: record?.createdAt, updatedAt: record?.updatedAt };
   }
 
   /** The record of a root the user acts on. */
