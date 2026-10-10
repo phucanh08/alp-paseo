@@ -150,7 +150,7 @@ test('every ALP tool the runtime offers has a Claude tool schema with the same p
   for (const harness of runtimes) {
     for (const tool of harness.calls.find(call => call.method === 'thread/start').params.dynamicTools) offered.set(tool.name, Object.keys(tool.inputSchema.properties).sort());
   }
-  assert.deepEqual([...offered.keys()].sort(), ['alp_ask', 'alp_board', 'alp_delegate', 'alp_discard', 'alp_handoff', 'alp_issue', 'alp_merge', 'alp_pin', 'alp_recall', 'alp_send', 'alp_task', 'alp_unpin', 'alp_verify', 'alp_wait']);
+  assert.deepEqual([...offered.keys()].sort(), ['alp_ask', 'alp_board', 'alp_cancel', 'alp_delegate', 'alp_discard', 'alp_handoff', 'alp_issue', 'alp_merge', 'alp_pin', 'alp_recall', 'alp_send', 'alp_task', 'alp_unpin', 'alp_verify', 'alp_wait']);
   for (const [name, properties] of offered) {
     assert.ok(claudeToolShapes[name], `${name} has no Claude schema`);
     const shape = Object.keys(claudeToolShapes[name]).sort();

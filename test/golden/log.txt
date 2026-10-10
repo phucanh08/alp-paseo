@@ -22,5 +22,5 @@
 10:00:22  main → peer (full-access, codex:gpt-5.6-sol, async): Document the parser
 10:00:23  # peer instructions peer-sha (ALP.md alp-md, AGENT.md peer-md, 1000 chars)
 10:00:24  ⏸ peer a4 parked: the Codex usage limit was reached
-10:00:25  ✉ note peer → main: Parked: the Codex usage limit was reached. ALP continues this assignment where it stopped when Codex is resumed (the use
+10:00:25  ✉ stalled peer → main: Parked: the Codex usage limit was reached. ALP continues this assignment where it stopped when Codex is resumed (the use
 10:00:26  ‼ Codex usage limit reached; it resets 2100-01-01T00:00:00.000Z. ALP paused delegation to Codex agents and parked their assignments; Claude agents keep working. Run alp resume codex when it has reset.

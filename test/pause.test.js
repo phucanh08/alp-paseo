@@ -84,8 +84,10 @@ test('a usage limit pauses its runtime and parks the assignment it stopped, unti
   assert.deepEqual(JSON.parse(await readFile(path.join(path.dirname(root), 'home', 'state', 'pause.json'), 'utf8')).runtimes.codex.by, 'alpd');
 
   // The requester learns why, the task stays with the assignment, and the watchdog leaves it alone.
-  const { events: mail } = await main.call('alp_wait', { timeoutMs: 1000 });
-  assert.match(mail[0].body, /^Parked: the Codex usage limit was reached\. ALP continues this assignment where it stopped when Codex is resumed/);
+  // It is steered into main's running turn: main must decide, so it is not left for a later wait.
+  const steered = () => main.calls.filter(call => call.method === 'turn/steer').map(call => call.params.input.at(-1).text).join('\n');
+  await until(() => /Parked:/.test(steered()));
+  assert.match(steered(), /stalled from peer[\s\S]*Parked: the Codex usage limit was reached\. ALP continues this assignment where it stopped when Codex is resumed/);
   await new Promise(resolve => setTimeout(resolve, 150));
   assert.equal((await getTask(root, task.id)).status, 'in_progress');
   assert.equal(runtime.status('root').assignments.length, 1);
@@ -212,4 +214,33 @@ test('a limit pause survives a restart, and autoResume lifts it after the reset'
   t.after(() => lifted.shutdown());
   await until(() => !lifted.pauses().runtimes.codex);
   await until(async () => JSON.parse(await readFile(file, 'utf8')).runtimes.codex === undefined);
+});
+
+test('a requester stops a parked assignment with alp_cancel and hands the rest to Claude, while a reviewer may run beside', async t => {
+  const { root, runtime, runtimes, main } = await setup(t, directory => ({ silentForMs: 3_600_000, pauseFile: path.join(directory, 'home', 'state', 'pause.json') }));
+  const task = await createTask(root, { title: 'Restyle the nav' }, 'user');
+  const { assignmentId } = await main.call('alp_delegate', { agent: 'peer', task: 'Restyle the nav', taskId: task.id, mode: 'workspace-write' });
+  await until(() => runtimes[1]?.started.length === 1);
+  runtimes[1].limit();
+  await until(() => runtime.pauses().parked.length === 1);
+  // The requester is told what it can do, not only that it waits.
+  const steered = () => main.calls.filter(call => call.method === 'turn/steer').map(call => call.params.input.at(-1).text).join('\n');
+  await until(() => /Parked:/.test(steered()));
+  assert.match(steered(), /stalled from peer[\s\S]*stop it with alp_cancel and give the rest to an agent on another runtime/);
+
+  // A second writer waits for the parked one; a read-only reviewer runs beside it.
+  const blocked = await main.call('alp_delegate', { agent: 'peer', task: 'Finish it', mode: 'workspace-write', model: 'claude:claude-opus-5-5' });
+  assert.match(blocked.error, /already running/);
+  assert.match(blocked.next, new RegExp(`peer ${assignmentId} is parked; to go on without it, stop it with alp_cancel`));
+  const review = await main.call('alp_delegate', { agent: 'reviewer', task: 'Review the diff', mode: 'read-only', model: 'claude:claude-fable-5-1' });
+  assert.equal(review.status, 'running', JSON.stringify(review));
+
+  assert.match((await main.call('alp_cancel', { assignmentId: 'alp-child-unknown' })).error, /Not one of your running assignments/);
+  const canceled = await main.call('alp_cancel', { assignmentId, reason: 'Codex hit its usage limit; Claude takes over' });
+  assert.deepEqual([canceled.status, canceled.agent], ['canceled', 'peer']);
+  assert.equal(runtimes[1].closed, true);
+  assert.equal((await getTask(root, task.id)).status, 'open');
+  assert.equal(runtime.pauses().parked.length, 0);
+  const takeover = await main.call('alp_delegate', { agent: 'peer', task: 'Finish the restyle', taskId: task.id, mode: 'workspace-write', model: 'claude:claude-opus-5-5' });
+  assert.equal(takeover.status, 'running', JSON.stringify(takeover));
 });

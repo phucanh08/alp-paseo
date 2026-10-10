@@ -1730,3 +1730,26 @@ Goal: a review of the user's `tools` session showed the supervisor missing the t
   - Sonnet 5;
   - a new test for "got no reply in this turn".
 - `test/paseo.test.js`: the supervisor child on Sonnet 5.
+
+## 53. Taking over from a limited runtime, and answering the user (2026-10-10)
+
+Goal: in the user's `tools` session on 2026-10-10, Codex hit its usage limit and the Codex peer was parked. The user asked main to switch to Claude, and the tree deadlocked until the reset:
+- lead could start no other child, not even a read-only reviewer or oracle ("A child assignment is already running");
+- main could not start a reviewer while lead, a shared writer, was open;
+- lead's handoff failed (its tool input reached ALP unparsed), and its turn ended waiting on the parked peer.
+
+Throughout, main answered the user's two messages only with tool calls.
+
+- **`alp_cancel { assignmentId, reason? }`** (requester tool, Codex and Claude schemas) ends a running or parked assignment as `canceled` through `finishAssignment`, quietly, with its own assignments. Its changes stay where it made them. Its task goes back to open, it leaves the parked list, and the run log records `assignment.canceled`. An agent name works when it names one live assignment.
+- **Parking a held assignment wakes the requester.** A park that ends only when the user resumes (usage limit, `alp pause --now`) posts `stalled`, not a passive note. It says the requester can wait, start other work, or `alp_cancel` it and delegate the rest on another runtime. A park that continues by itself (a restarted process) stays a passive note.
+- **Read-only beside writers.** Read-only peers, advisors and reviewers start beside any running assignment. A writer is refused only beside another writer, unless both have their own worktree; a parked writer still counts. The refusal names a parked assignment and suggests `alp_cancel`.
+- **Answer the user.**
+  - Every root records `userWaiting` when the user asks or steers, and clears it at main's first non-empty message.
+  - From a minute on, every ALP tool result of that root (except `alp_ask`) carries `userWaiting`: the user wrote at HH:MM:SS, has had no reply for N, and tool calls alone show them nothing.
+  - `USER_WROTE` says the same.
+
+**Evidence.**
+- `test/pause.test.js`: a parked Codex writer wakes main with the `alp_cancel` advice; a second writer is refused with a `next` naming the parked one; a Fable reviewer starts beside it; `alp_cancel` closes it, reopens its task and empties the parked list; a Claude peer takes the task.
+- `test/reachable.test.js`: the reminder appears after a minute and stops after main's message.
+- `test/runtime.test.js`: `alp_cancel` has a Claude schema.
+- `test/golden/log.txt`: the usage-limit park is mail of kind `stalled`.

@@ -890,6 +890,7 @@ the requester relays. The host binds the sender to the calling session.
 | --- | --- | --- |
 | `alp_delegate {…, wait?, etaMinutes?}` | requester | Start an assignment in the background and return its `assignmentId` at once (`wait: true` waits for its result instead); `etaMinutes` asks for a check-in when it runs past that |
 | `alp_wait {assignments?, timeoutMs?}` | requester | Return as soon as mail arrives (result, question, note, stall report, check-in) or, for main, the user writes; on timeout, an empty list and a snapshot of running work. Default 5 minutes, maximum 15 |
+| `alp_cancel {assignmentId, reason?}` | requester | Stop a running or parked assignment and its own assignments; its changes stay where it made them and its task goes back to open. Use it to hand the rest to another agent or runtime |
 | `alp_send {to, kind, body, replyTo?}` | both | `to` is an assignment id or `"parent"`. Requesters send `answer` (with `replyTo`), `steer`, or `note`; children send `note` only |
 | `alp_ask {question}` | child | Ask the requester and wait for the answer; after 15 minutes it returns `unanswered` |
 
@@ -932,6 +933,12 @@ work runs, so you can keep talking with it.
   note. A check-in ends a wait, steers a running turn, or wakes an idle main;
   these wakes do not count toward the limit of 8. Main tells you in a line or two
   how the work is going and acts on work that is late or silent.
+- **A usage limit does not stall the tree.** When an assignment is parked
+  until a runtime is resumed, its requester is woken with what it can do: wait,
+  or stop it with `alp_cancel` and give the rest to an agent on another runtime.
+  Read-only peers, reviewers and oracles run beside a writer, so a review
+  never waits for one. While you wait over a minute for main's first words,
+  every ALP tool result reminds main to answer you before more tool calls.
 - **ETA.** `alp_delegate {…, etaMinutes}` records when the requester expects the
   work done. When it runs past that, the requester gets one check-in about it.
 - **Unclear requests.** When a request leaves open what to build, how far to go

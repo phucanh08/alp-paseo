@@ -105,6 +105,10 @@ export const toolShapes: Record<string, Record<string, z.ZodType>> = {
   alp_discard: {
     assignmentId: z.string().min(1),
   },
+  alp_cancel: {
+    assignmentId: z.string().min(1),
+    reason: z.string().optional(),
+  },
   alp_pin: {
     kind: z.enum(PIN_KINDS),
     body: z.string().min(1),
