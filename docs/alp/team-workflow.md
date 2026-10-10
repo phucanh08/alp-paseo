@@ -588,8 +588,8 @@ whose assignment belongs to another alpd that is still running, such as one with
 a different `ALP_HOME`. It also leaves tasks that main took for itself.
 
 When a root's turn ends, its timeline shows the tasks the tree created or worked
-on as a todo list, if the list changed. Paseo renders it as a task list, and
-`alp run` prints it.
+on as a todo list, if the list changed. `alp run` prints it; in Paseo the Tasks pill
+lists those tasks first and counts how many are done.
 
 The user works with tasks from the CLI, which writes the files directly and
 needs no running daemon:

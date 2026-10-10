@@ -19,6 +19,7 @@ import { createDaemonServer, type DaemonConnection } from '../../../src/daemon/s
 import { alpHome, connect, lockAlive, readLock } from '../../../src/client/index.js';
 import { daemonHeld, startDaemon } from '../../../src/client/supervise.js';
 import { alpdSessionOf, configModels, DEFAULT_TEAM, handleFor, modes, teamModels, templates, toSessionSpec } from './mapping.js';
+import { sessionTasks } from './session-tasks.js';
 
 /**
  * Paseo is a viewer of alpd: this provider translates Paseo inputs into daemon
@@ -223,6 +224,8 @@ export function createProvider(options: Options = {}): ProviderRegistration {
             emit({ type: 'session.turn', sessionId, turnId: event.turnId, state: event.state, ...(event.error ? { error: event.error } : {}) });
             return;
           case 'item':
+            // A todo list of tasks becomes the Tasks pill's, not Paseo's own pill (ALPD §55).
+            if (event.item.kind === 'todo') { sessionTasks.set(sessionId, event.item.items.map(entry => entry.id)); return; }
             emit({ type: 'timeline.item', sessionId, item: timelineItem(event.item) });
             return;
           case 'question': {

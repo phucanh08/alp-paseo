@@ -3,6 +3,7 @@ import path from 'node:path';
 import { closeTask, createTask, epicReport, gatesOf, loadTasks, readyTasks, reopenTask, resolveGate, summarize } from '../../../src/core/tasks.js';
 import type { PluginServerContext } from './compat.js';
 import { tasksAdd, tasksChange, tasksList, type TaskRow } from '../shared/tasks.js';
+import { sessionTasks } from './session-tasks.js';
 
 /** The nearest directory at or above `directory` that holds an ALP project. */
 export async function projectOf(directory: string) {
@@ -57,7 +58,10 @@ export function registerTaskRpc(server: PluginServerContext) {
         updatedAt: task.updatedAt,
       };
     });
-    return { projectRoot, tasks: rows, unreadable: errors };
+    // The tasks each session worked on, of this project only.
+    const known = new Set(tasks.map(task => task.id));
+    const sessions = Object.fromEntries([...sessionTasks].map(([id, worked]) => [id, worked.filter(task => known.has(task))]).filter(([, worked]) => worked.length));
+    return { projectRoot, tasks: rows, unreadable: errors, sessions };
   });
 
   server.handle(tasksAdd, async ({ directory, title, priority }) => {

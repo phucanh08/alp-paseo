@@ -44,6 +44,8 @@ export const tasksList = defineRpc({
     projectRoot: z.string().nullable(),
     tasks: z.array(TaskRowSchema),
     unreadable: z.array(z.object({ file: z.string(), error: z.string() })),
+    /** By provider session id: the tasks that session's tree worked on (ALPD §55). */
+    sessions: z.record(z.string(), z.array(z.string())).optional(),
   }),
 });
 
