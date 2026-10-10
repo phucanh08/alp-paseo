@@ -22,6 +22,8 @@ export type SessionRecord = {
   status: SessionStatus;
   lastError?: { code?: string; message: string };
   title?: string;
+  /** Set aside by the user: closed, and listed only when asked (ALPD §61). */
+  archived?: boolean;
   createdAt: string;
   updatedAt: string;
 };

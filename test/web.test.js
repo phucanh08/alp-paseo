@@ -94,6 +94,34 @@ test('the page reads and changes tasks, browses folders and sees the checkout\'s
   assert.ok(changes.files.some(file => file.path === 'ALP.md' && file.status === '??'));
 });
 
+test('the page renames and archives a root, and reads the checkout\'s branch', async t => {
+  const { socket, root, directory } = await setup(t);
+  const request = await socket();
+  await request('daemon.hello', { protocolVersion: 1, client: { name: 'test', version: '1' } });
+  const { result: { session } } = await request('session.create', { spec: { cwd: root, persist: true } });
+  const listed = async params => (await request('session.list', { rootsOnly: true, includeClosed: true, ...params })).result.sessions.map(row => [row.id, row.title, !!row.archived]);
+
+  const { result: renamed } = await request('session.rename', { sessionId: session.id, title: '  Fix   the login  ' });
+  assert.equal(renamed.session.title, 'Fix the login');
+  assert.match((await request('session.rename', { sessionId: session.id, title: ' ' })).error.message, /1 to 200 characters/);
+  assert.match((await request('session.rename', { sessionId: 'missing', title: 'x' })).error.message, /No session missing/);
+
+  const { result: archived } = await request('session.archive', { sessionId: session.id });
+  assert.equal(archived.session.archived, true);
+  assert.equal(archived.session.status, 'closed');
+  assert.deepEqual(await listed(), []);
+  assert.deepEqual(await listed({ includeArchived: true }), [[session.id, 'Fix the login', true]]);
+  await request('session.archive', { sessionId: session.id, archived: false });
+  assert.deepEqual(await listed(), [[session.id, 'Fix the login', false]]);
+
+  assert.deepEqual((await request('project.info', { projectRoot: root })).result, { projectRoot: root, git: false });
+  await run('git', ['init', '-q', '-b', 'feat/login'], { cwd: root });
+  assert.deepEqual((await request('project.info', { projectRoot: root })).result, { projectRoot: root, git: true, branch: 'feat/login' });
+  // Only a directory that exists, by its absolute path, is shown in the file manager.
+  assert.match((await request('project.reveal', { path: 'relative' })).error.message, /absolute/);
+  assert.ok((await request('project.reveal', { path: path.join(directory, 'missing') })).error);
+});
+
 test('settings may turn the web app off or move its port', () => {
   assert.doesNotThrow(() => validateUserSettings({ web: { enabled: false, port: 8000 } }, 'settings.json'));
   assert.throws(() => validateUserSettings({ web: { port: 80 } }, 'settings.json'), /web.port must be a port from 1024/);

@@ -35,6 +35,7 @@ export type SessionSummary = SessionSnapshot & {
   title?: string;
   updatedAt?: string;
   lastError?: { message: string };
+  archived?: boolean;
 };
 
 export type UserQuestion = { id: string; sessionId: string; rootId: string; agent: string; body: string; options?: string[]; askedAt: string };
