@@ -4,8 +4,7 @@ import type { Handler } from './gateway.js';
 /**
  * What the app reads by itself, all the time, for features ALP has not got yet: project icons,
  * the checkout's git and pull request state, terminals, workspace setup, the daemon's config, a
- * draft agent's provider features, and the path suggestions it prefetches when the pointer rests
- * on a file link.
+ * draft agent's provider features.
  * A refusal there would make the app retry and log errors without the user doing anything, so
  * these get the empty answer a daemon without that feature would give (ALPD §62). What the user
  * asks for by hand still answers "in development".
@@ -52,9 +51,6 @@ export const quietHandlers: Record<string, Handler> = {
 
   list_provider_features_request: (message: Inbound<'list_provider_features_request'>) =>
     ({ type: 'list_provider_features_response', payload: { requestId: message.requestId, provider: message.draftConfig.provider, features: [], error: null, fetchedAt: new Date().toISOString() } }) satisfies Outbound,
-
-  directory_suggestions_request: (message: Inbound<'directory_suggestions_request'>) =>
-    ({ type: 'directory_suggestions_response', payload: { requestId: message.requestId, directories: [], entries: [], error: null } }) satisfies Outbound,
 
   // One-way: ALP keeps no terminal subscriptions.
   unsubscribe_terminals_request: () => undefined,
