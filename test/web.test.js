@@ -126,4 +126,6 @@ test('settings may turn the web app off or move its port', () => {
   assert.doesNotThrow(() => validateUserSettings({ web: { enabled: false, port: 8000 } }, 'settings.json'));
   assert.throws(() => validateUserSettings({ web: { port: 80 } }, 'settings.json'), /web.port must be a port from 1024/);
   assert.throws(() => validateUserSettings({ web: { host: '0.0.0.0' } }, 'settings.json'), /unsupported web field 'host'/);
+  assert.doesNotThrow(() => validateUserSettings({ web: { app: 'classic' } }, 'settings.json'));
+  assert.throws(() => validateUserSettings({ web: { app: 'vue' } }, 'settings.json'), /web.app must be 'paseo' or 'classic'/);
 });

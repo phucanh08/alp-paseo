@@ -4,3 +4,4 @@ node_modules/
 plugins/paseo/dist/
 plugins/paseo/server/dist/
 dist/
+.cache/

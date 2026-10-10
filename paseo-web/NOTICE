@@ -1,0 +1,10 @@
+ALP web app
+
+The ALP web app is Paseo's web app (https://github.com/getpaseo/paseo,
+packages/app), Copyright (c) 2025-present Mohamed Boudra, licensed under the
+Apache License, Version 2.0 (see LICENSE in this directory).
+
+ALP builds it from the commit named in upstream.json with the changes in
+patches/ applied, and serves it from alpd. Each patch says what it changes;
+in short: the app connects to the alpd that serves it, with the token that
+`alp web` gives it, and is named ALP.
