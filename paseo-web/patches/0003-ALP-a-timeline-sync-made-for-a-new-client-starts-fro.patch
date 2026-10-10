@@ -1,0 +1,35 @@
+From f729c6d74846fbd053b4a2fb4b556e42b86663aa Mon Sep 17 00:00:00 2001
+From: anhlp <phucanhdn08@gmail.com>
+Date: Sat, 10 Oct 2026 21:03:35 +0700
+Subject: [PATCH 3/3] ALP: a timeline sync made for a new client starts from
+ its connection
+
+---
+ packages/app/src/contexts/session-context.tsx | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/packages/app/src/contexts/session-context.tsx b/packages/app/src/contexts/session-context.tsx
+index 430e4ad..bd7a988 100644
+--- a/packages/app/src/contexts/session-context.tsx
++++ b/packages/app/src/contexts/session-context.tsx
+@@ -212,6 +212,9 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
+   const voiceAudioEngine = useVoiceAudioEngineOptional();
+   const queryClient = useQueryClient();
+   const isConnected = useHostRuntimeIsConnected(serverId);
++  // ALP: a timeline sync made for a new client starts from the connection it already has.
++  const isConnectedRef = useRef(isConnected);
++  isConnectedRef.current = isConnected;
+   const toast = useToast();
+ 
+   // Zustand store actions
+@@ -480,6 +483,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
+     viewedTimelineSyncRef.current = sync;
+     setViewedTimelineSync(serverId, sync);
+     sync.setActive(getIsAppVisible(appStateRef.current));
++    sync.setConnected(isConnectedRef.current);
+     const stopObservingOpenChats = observeOpenWorkspaceAgentIds(serverId, (agentIds) =>
+       sync.replaceOpenTabAgentIds(agentIds),
+     );
+-- 
+2.54.0 (Apple Git-157)
+

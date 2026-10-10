@@ -25,7 +25,7 @@ export type WebAssets = Record<string, { type: string; body: string }>;
 export type WebInfo = { port: number; token: string; url: string; pid: number; serverId: string };
 
 /** The built ALP web app (Paseo's app, D31): served from a directory, its socket speaks Paseo's protocol. */
-export type WebApp = { dir: string; gateway: PaseoGateway };
+export type WebApp = { dir: string; gateway: PaseoGateway & { close?(): void } };
 
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -178,6 +178,7 @@ export function createWebServer({ daemon, assets, app, home, port = DEFAULT_WEB_
 
     async close() {
       for (const client of sockets.clients) client.terminate();
+      app?.gateway.close?.();
       await new Promise<void>(resolve => server.close(() => resolve()));
     },
   };

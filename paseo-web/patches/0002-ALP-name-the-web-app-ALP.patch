@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From f96c94d4e1971b71bb367e4019e9be5aa3a1f91e Mon Sep 17 00:00:00 2001
 From: anhlp <phucanhdn08@gmail.com>
-Date: Sat, 10 Oct 2026 19:56:18 +0700
-Subject: [PATCH 2/2] ALP: name the web app ALP
+Date: Sat, 10 Oct 2026 21:03:35 +0700
+Subject: [PATCH 2/3] ALP: name the web app ALP
 
 ---
  packages/app/app.config.js        |  3 ++-
@@ -24,7 +24,7 @@ index e09a06f..7dbe492 100644
      googleServicesFile: resolveSecretFile({
        envKey: "GOOGLE_SERVICES_FILE_PROD",
 diff --git a/packages/app/public/index.html b/packages/app/public/index.html
-index a95e7b8..4e375f1 100644
+index 18c3c59..f0ee838 100644
 --- a/packages/app/public/index.html
 +++ b/packages/app/public/index.html
 @@ -6,7 +6,7 @@
@@ -64,3 +64,6 @@ index 05b5778..1eb71bc 100644
    "icons": [
      {
        "src": "/pwa-icon-192.png",
+-- 
+2.54.0 (Apple Git-157)
+
