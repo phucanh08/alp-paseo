@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
+import type { AgentPermissionRequest, AgentPermissionResponse } from '@getpaseo/protocol/agent-types';
 import type { AgentSnapshotPayload, SessionInboundMessage, SessionOutboundMessage } from '@getpaseo/protocol/messages';
 import { modes } from '../../runtime/index.js';
-import type { Envelope } from '../../runtime/index.js';
+import type { Envelope, UserQuestion } from '../../runtime/index.js';
 import type { DaemonServer, SessionSummary } from '../server.js';
 import { connectInProcess, type AlpClient } from './alp-client.js';
 import type { ClientContext, Handler } from './gateway.js';
@@ -15,7 +16,8 @@ import { InMemoryAgentTimelineStore } from './timeline-store.js';
  * provider "alp"; its team is the agent's model and its permission mode the agent's mode. The
  * timeline is the root's own events, kept in Paseo's timeline store; live changes go to every
  * client as agent_update and agent_stream, as a Paseo daemon does for clients without owned
- * subscriptions.
+ * subscriptions. What ALP asks the user (alp_ask, a permission, a trust or approval prompt) is
+ * a question card on the root it belongs to (step 4).
  */
 
 export const PROVIDER = 'alp';
@@ -54,6 +56,9 @@ export function createAgents({ daemon, broadcast, log = () => {} }: {
   const turns = new Map<string, string>();
   /** Paseo's attention: a finished turn the user has not looked at yet. */
   const attention = new Map<string, { reason: 'finished' | 'error' | 'permission'; at: string }>();
+  /** Questions waiting for the user, and the answers the app gave, until alpd says they are resolved. */
+  const questions = new Map<string, UserQuestion>();
+  const answered = new Map<string, AgentPermissionResponse>();
   let started: Promise<void> | undefined;
 
   function agentOf(session: SessionSummary): AgentSnapshotPayload {
@@ -78,7 +83,7 @@ export function createAgents({ daemon, broadcast, log = () => {} }: {
       capabilities,
       currentModeId: session.mode,
       availableModes,
-      pendingPermissions: [],
+      pendingPermissions: [...questions.values()].filter(question => question.rootId === session.id).map(permissionOf),
       persistence: session.persistent ? { provider: PROVIDER, sessionId: session.id } : null,
       runtimeInfo: { provider: PROVIDER, sessionId: session.id, model: `${session.runtime}:${session.model}`, modeId: session.mode },
       ...(session.lastError ? { lastError: session.lastError.message } : {}),
@@ -99,6 +104,50 @@ export function createAgents({ daemon, broadcast, log = () => {} }: {
     };
   }
 
+  /**
+   * An ALP question as Paseo's question card: its text, its choices, and a field for any other
+   * answer, headed by the agent that asks. ALP takes the answer as text (the choice's label).
+   */
+  function permissionOf(question: UserQuestion): AgentPermissionRequest {
+    return {
+      id: question.id,
+      provider: PROVIDER,
+      name: 'alp_ask',
+      kind: 'question',
+      title: question.agent,
+      input: { questions: [{ question: question.body, header: question.agent, options: (question.options ?? []).map(label => ({ label })), multiSelect: false, allowOther: true }] },
+      metadata: { sessionId: question.sessionId, askedAt: question.askedAt },
+    };
+  }
+
+  function asked(question: UserQuestion) {
+    if (questions.has(question.id)) return;
+    questions.set(question.id, question);
+    broadcast({ type: 'agent_permission_request', payload: { agentId: question.rootId, request: permissionOf(question) } });
+    attention.set(question.rootId, { reason: 'permission', at: question.askedAt });
+    stream(question.rootId, { type: 'attention_required', provider: PROVIDER, reason: 'permission', timestamp: question.askedAt, shouldNotify: true }, question.askedAt);
+    const root = roots.get(question.rootId);
+    if (root) upsert(root);
+  }
+
+  function resolved(questionId: string, resolution: AgentPermissionResponse) {
+    const question = questions.get(questionId);
+    if (!question) return;
+    questions.delete(questionId);
+    answered.delete(questionId);
+    broadcast({ type: 'agent_permission_resolved', payload: { agentId: question.rootId, requestId: questionId, resolution } });
+    const waiting = [...questions.values()].some(other => other.rootId === question.rootId);
+    if (!waiting && attention.get(question.rootId)?.reason === 'permission') attention.delete(question.rootId);
+    const root = roots.get(question.rootId);
+    if (root) upsert(root);
+  }
+
+  /** What the app shows for a question resolved in alpd: the app's own answer, or why it ended. */
+  function resolutionOf(questionId: string, outcome: 'answered' | 'dismissed' | 'timeout' | 'canceled'): AgentPermissionResponse {
+    if (outcome === 'answered') return answered.get(questionId) ?? { behavior: 'allow' };
+    return answered.get(questionId) ?? { behavior: 'deny', message: outcome === 'dismissed' ? 'Dismissed' : outcome === 'timeout' ? 'No answer in time' : 'Canceled' };
+  }
+
   const upsert = (session: SessionSummary) => broadcast({ type: 'agent_update', payload: { kind: 'upsert', agent: agentOf(session), project: placement(session) } });
 
   /** Reads alpd's roots again and tells clients what changed. */
@@ -115,6 +164,11 @@ export function createAgents({ daemon, broadcast, log = () => {} }: {
       if ((session.status === 'idle' || session.status === 'running') && !timelines.has(session.id)) void ensureTimeline(session.id).catch(() => {});
     }
     for (const id of [...roots.keys()]) if (!seen.has(id)) { roots.delete(id); broadcast({ type: 'agent_update', payload: { kind: 'remove', agentId: id } }); }
+    // Questions come as events from attached trees; the list catches any other and any missed end.
+    const { questions: waiting } = await alp.request<{ questions: UserQuestion[] }>('question.list', {});
+    for (const question of waiting) asked(question);
+    const open = new Set(waiting.map(question => question.id));
+    for (const id of [...questions.keys()]) if (!open.has(id)) resolved(id, resolutionOf(id, 'canceled'));
   }
 
   function append(root: string, item: ReturnType<TimelineDeltas['next']>, timestamp: string) {
@@ -131,6 +185,9 @@ export function createAgents({ daemon, broadcast, log = () => {} }: {
   }
 
   function onEvent(envelope: Envelope) {
+    // A question may come from any session of a tree; it belongs to the tree's root.
+    if (envelope.event.type === 'question') { asked(envelope.event.question); return; }
+    if (envelope.event.type === 'question.resolved') { resolved(envelope.event.questionId, resolutionOf(envelope.event.questionId, envelope.event.outcome)); return; }
     const root = envelope.sessionId;
     // Team members' events reach the app with the subagents (step 7); here only roots.
     const session = roots.get(root);
@@ -358,6 +415,28 @@ export function createAgents({ daemon, broadcast, log = () => {} }: {
         return reply(null);
       } catch (error: any) {
         return reply(error?.message ?? String(error));
+      }
+    },
+
+    /** The user's answer on a question card: a choice or other text, or dismissing it. */
+    async agent_permission_response(message: Inbound<'agent_permission_response'>) {
+      const question = questions.get(message.requestId);
+      // Answered elsewhere already: its resolution has gone to every client.
+      if (!question) return;
+      const { response } = message;
+      const answers = response.behavior === 'allow' ? response.updatedInput?.answers : undefined;
+      const text = answers && typeof answers === 'object'
+        ? Object.values(answers as Record<string, unknown>).find((value): value is string => typeof value === 'string' && !!value.trim())?.trim()
+        : undefined;
+      answered.set(question.id, response);
+      try {
+        await alp!.request('question.answer', text
+          ? { questionId: question.id, text }
+          : { questionId: question.id, dismiss: true, ...(response.behavior === 'deny' && response.message ? { reason: response.message } : {}) });
+      } catch (error: any) {
+        log(`paseo answer to ${question.id} failed: ${error?.message ?? error}`);
+        answered.delete(question.id);
+        resolved(question.id, { behavior: 'deny', message: error?.message ?? String(error) });
       }
     },
 

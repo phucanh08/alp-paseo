@@ -177,3 +177,39 @@ test('the app starts an ALP session as an agent, sees it stream, reads its timel
   assert.equal(archived.type, 'agent_archived');
   assert.deepEqual((await ask(client, { type: 'fetch_agents_request', requestId: 'f3' })).payload.entries, []);
 });
+
+test('what an agent asks the user is a question card on its root, answered from the app or dismissed', async t => {
+  const { connected, ask, session, root, agents } = await setup(t);
+  const client = await connected();
+  const created = await ask(client, { type: 'create_agent_request', requestId: 'a1', config: { provider: 'alp', cwd: root }, initialPrompt: 'Pick a colour', labels: {} });
+  const agentId = created.payload.agentId;
+  await until(() => agents[0]?.started.length === 1, 'the first turn');
+
+  const answer = agents[0].call('alp_ask', { to: 'user', question: 'Which colour?', options: ['Red', 'Blue'] });
+  const asked = (await client.next(frame => frame.message?.type === 'agent_permission_request')).message.payload;
+  assert.equal(asked.agentId, agentId);
+  assert.equal(asked.request.kind, 'question');
+  const [question] = asked.request.input.questions;
+  assert.equal(question.question, 'Which colour?');
+  assert.deepEqual(question.options, [{ label: 'Red' }, { label: 'Blue' }]);
+  assert.equal(question.allowOther, true);
+  await client.next(frame => frame.message?.type === 'agent_stream' && frame.message.payload.event.type === 'attention_required' && frame.message.payload.event.reason === 'permission');
+  const waiting = (await ask(client, { type: 'fetch_agent_request', requestId: 'g1', agentId })).payload.agent;
+  assert.deepEqual(waiting.pendingPermissions.map(request => request.id), [asked.request.id]);
+  assert.equal(waiting.attentionReason, 'permission');
+
+  // The card answers as Paseo's does: the input back, with the answers by header.
+  const response = { behavior: 'allow', updatedInput: { ...asked.request.input, answers: { [question.header]: 'Blue' } } };
+  session(client, { type: 'agent_permission_response', agentId, requestId: asked.request.id, response });
+  assert.equal((await answer).answer, 'Blue');
+  const resolvedFrame = (await client.next(frame => frame.message?.type === 'agent_permission_resolved')).message.payload;
+  assert.deepEqual(resolvedFrame, { agentId, requestId: asked.request.id, resolution: response });
+  assert.deepEqual((await ask(client, { type: 'fetch_agent_request', requestId: 'g2', agentId })).payload.agent.pendingPermissions, []);
+
+  const dismissed = agents[0].call('alp_ask', { to: 'user', question: 'Anything else?' });
+  const second = (await client.next(frame => frame.message?.type === 'agent_permission_request' && frame.message.payload.request.id !== asked.request.id)).message.payload;
+  assert.deepEqual(second.request.input.questions[0].options, []);
+  session(client, { type: 'agent_permission_response', agentId, requestId: second.request.id, response: { behavior: 'deny', message: 'Dismissed by user' } });
+  assert.equal((await dismissed).status, 'dismissed');
+  await client.next(frame => frame.message?.type === 'agent_permission_resolved' && frame.message.payload.requestId === second.request.id);
+});
