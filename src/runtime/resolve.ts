@@ -10,6 +10,7 @@ import type { AcpProvider } from './acp-transport.js';
 import { ensureLibrary } from '../core/library.js';
 import { compileAgent } from '../core/adapter.js';
 import { capMode, profileFor } from '../core/permissions.js';
+import { userLanguage } from '../core/user-settings.js';
 import { claudeSandboxAvailable } from './claude-transport.js';
 import type { ResolvedAgent } from '../core/types.js';
 import type { AlpRuntimeAdapter } from '../core/adapter.js';
@@ -87,7 +88,7 @@ async function lessons(file: string) {
 /** Agents that advise, review, or watch: they never write, and take no tasks. */
 export const READ_ONLY_AGENTS = ['oracle', 'reviewer', 'supervisor'];
 
-export async function resolveSession(spec: SessionSpec, options: { templates?: Record<string, string>; library?: string } = {}) {
+export async function resolveSession(spec: SessionSpec, options: { templates?: Record<string, string>; library?: string; language?: string } = {}) {
   if (!path.isAbsolute(spec.cwd) || !(await stat(spec.cwd)).isDirectory()) throw new Error('Session cwd must be an existing absolute directory');
   if (spec.workdir !== undefined && (!path.isAbsolute(spec.workdir) || !(await stat(spec.workdir)).isDirectory())) throw new Error('Session workdir must be an existing absolute directory');
   const starter = options.templates ? { templates: options.templates } : {};
@@ -172,5 +173,7 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
     ...(spec.copy && spec.copyOf ? { copyOf: spec.copyOf } : {}),
     instructions: [compiled.material.instructions, learned, spec.systemPrompt].filter(Boolean).join('\n\n'),
     mcp, env: { ...spec.env }, persist: spec.persist ?? false, keepThread: spec.keepThread ?? false,
+    // ALPD §54: the language everything the user reads is written in.
+    language: options.language ?? await userLanguage(options.library),
   };
 }

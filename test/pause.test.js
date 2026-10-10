@@ -52,7 +52,7 @@ async function setup(t, options = {}) {
   await initProject(root);
   await writeFile(path.join(root, '.alp', 'settings.json'), JSON.stringify({ defaultAgent: 'main', workflow: { mode: 'pho', maxPeers: 2, supervisor: false } }));
   const runtimes = [];
-  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), supervisor: false, libraryDir: path.join(directory, 'home'), runLogDir: path.join(directory, 'runs'), boardDir: path.join(directory, 'boards'), ...options(directory) });
+  const runtime = createAlpRuntime({ language: 'English', transport: fakeTransport(runtimes), supervisor: false, libraryDir: path.join(directory, 'home'), runLogDir: path.join(directory, 'runs'), boardDir: path.join(directory, 'boards'), ...options(directory) });
   t.after(async () => { await runtime.shutdown(); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
   const events = [];
   runtime.onEvent(envelope => events.push(envelope));
@@ -210,10 +210,10 @@ test('a limit pause survives a restart, and autoResume lifts it after the reset'
   const file = path.join(directory, 'pause.json');
   const past = new Date(Date.now() - 120_000).toISOString();
   await writeFile(file, JSON.stringify({ runtimes: { codex: { since: past, by: 'alpd', reason: 'Codex usage limit reached', resetsAt: past } } }));
-  const kept = createAlpRuntime({ transport: fakeTransport([]), supervisor: false, pauseFile: file });
+  const kept = createAlpRuntime({ language: 'English', transport: fakeTransport([]), supervisor: false, pauseFile: file });
   assert.equal(kept.pauses().runtimes.codex.reason, 'Codex usage limit reached');
   await kept.shutdown();
-  const lifted = createAlpRuntime({ transport: fakeTransport([]), supervisor: false, pauseFile: file, autoResume: true });
+  const lifted = createAlpRuntime({ language: 'English', transport: fakeTransport([]), supervisor: false, pauseFile: file, autoResume: true });
   t.after(() => lifted.shutdown());
   await until(() => !lifted.pauses().runtimes.codex);
   await until(async () => JSON.parse(await readFile(file, 'utf8')).runtimes.codex === undefined);

@@ -106,3 +106,19 @@ export const libraryTest = defineRpc({
     authMethods: z.array(z.string()).optional(),
   }),
 });
+
+/** The language the user reads (ALPD §54): language null means unset, so the default applies. */
+const LanguageSettingSchema = z.object({ language: z.string().nullable(), applies: z.string(), default: z.string() });
+
+export const languageGet = defineRpc({
+  name: 'alp.settings.language.get',
+  input: z.object({}),
+  output: LanguageSettingSchema,
+});
+
+/** Sets the user's language, or clears it with null. */
+export const languageSet = defineRpc({
+  name: 'alp.settings.language.set',
+  input: z.object({ language: z.string().trim().min(1).max(40).nullable() }),
+  output: LanguageSettingSchema,
+});

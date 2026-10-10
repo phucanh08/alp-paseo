@@ -4,7 +4,7 @@ import { useToast } from '@getpaseo/plugin/client/react-native';
 import { SettingsAction, SettingsInput, SettingsRow, SettingsSection, SettingsSelect, SettingsSwitch } from '@getpaseo/plugin/client/ui';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
-import { libraryDelete, libraryDuplicate, libraryGet, libraryList, librarySave, librarySkills, libraryTest, type EntryRow } from '../shared/library';
+import { languageGet, languageSet, libraryDelete, libraryDuplicate, libraryGet, libraryList, librarySave, librarySkills, libraryTest, type EntryRow } from '../shared/library';
 import { Button, Pill, SideNavLayout, type NavGroup, type Tab } from './side-nav';
 
 /**
@@ -43,8 +43,16 @@ const sourceTone = (source: string) => source === 'project' ? 'warning' as const
 
 type Lists = Partial<Record<Kind, EntryRow[]>>;
 type Content = Record<string, any>;
-/** What the working area shows: a kind's entries, one entry, or a new entry. */
-export type Selection = { kind: Kind; name?: string; creating?: boolean };
+/** What the working area shows: a kind's entries, one entry, a new entry, or the user's language. */
+export type Selection = { kind: Kind; name?: string; creating?: boolean } | { kind: 'language'; name?: undefined; creating?: undefined };
+/** The language the user reads (ALPD §54): language null means unset, so the default applies. */
+export type LanguageState = { language: string | null; applies: string; default: string };
+/** Languages offered by name; any other is typed in. The value is what agents are told. */
+export const LANGUAGES = [
+  { label: 'Tiếng Việt', value: 'Vietnamese' }, { label: 'English', value: 'English' }, { label: '日本語', value: 'Japanese' },
+  { label: '한국어', value: 'Korean' }, { label: '中文', value: 'Chinese' }, { label: 'Français', value: 'French' },
+  { label: 'Deutsch', value: 'German' }, { label: 'Español', value: 'Spanish' },
+];
 /** librarySkills: for agents, the skills the library gives it by name (role-skills.json). */
 type Entry = { kind: Kind; name: string; source: string; overrides?: string; content: Content; revision: string | null; usedBy: string[]; librarySkills?: string[] };
 type Where = { projectRoot: string | null; library: string } | null;
@@ -69,7 +77,10 @@ function LibraryManager({ theme, compact, scope, directory }: { theme: PluginThe
   const duplicate = useRpc(libraryDuplicate);
   const probe = useRpc(libraryTest);
   const give = useRpc(librarySkills);
+  const readLanguage = useRpc(languageGet);
+  const writeLanguage = useRpc(languageSet);
   const toast = useToast();
+  const [language, setLanguageState] = useState<LanguageState | null>(null);
   const [lists, setLists] = useState<Lists>({});
   const [where, setWhere] = useState<Where>(null);
   const [error, setError] = useState<string | null>(null);
@@ -91,6 +102,14 @@ function LibraryManager({ theme, compact, scope, directory }: { theme: PluginThe
       .catch(cause => { if (live) setError(message(cause)); });
     return () => { live = false; };
   }, [list, directory, tick]);
+
+  // The language is the user's own setting: the library screen shows it, the project panel does not.
+  useEffect(() => {
+    if (scope !== 'library') return;
+    let live = true;
+    readLanguage({}).then(result => { if (live) setLanguageState(result); }).catch(cause => { if (live) setError(message(cause)); });
+    return () => { live = false; };
+  }, [readLanguage, scope, tick]);
 
   useEffect(() => {
     if (!selection.name || selection.creating) { setEntry(null); return; }
@@ -119,6 +138,7 @@ function LibraryManager({ theme, compact, scope, directory }: { theme: PluginThe
       return saved;
     },
     giveSkills: (agent, skills) => run(() => give({ agent, skills }), `Saved the skills of ${agent}`),
+    setLanguage: next => run(() => writeLanguage({ language: next }), next ? `Agents now write to you in ${next}` : 'Agents write to you in the default language again'),
     remove: async (kind, name, revision) => {
       const removed = await run(() => remove({ ...base, kind, name, scope, ...(revision ? { revision } : {}) }), `Removed ${name}`);
       if (removed) setSelection({ kind });
@@ -131,7 +151,7 @@ function LibraryManager({ theme, compact, scope, directory }: { theme: PluginThe
   };
   // An entry is shown once it is read; until then the kind's list stays.
   const shown = selection.name && !selection.creating && entry?.name !== selection.name ? { kind: selection.kind } : selection;
-  return <LibraryWorkspace theme={theme} compact={compact} scope={scope} where={where} lists={lists} error={error} selection={shown} entry={shown.name ? entry : null} actions={actions} />;
+  return <LibraryWorkspace theme={theme} compact={compact} scope={scope} where={where} lists={lists} error={error} selection={shown} entry={shown.name ? entry : null} actions={actions} language={language} />;
 }
 
 export type Actions = {
@@ -142,18 +162,20 @@ export type Actions = {
   save(kind: Kind, name: string, content: Content, revision: string | null, creating: boolean): Promise<boolean>;
   /** Sets the skills the library gives an agent by name. */
   giveSkills(agent: string, skills: string[]): Promise<boolean>;
+  /** Sets the language the user reads, or clears it with null. */
+  setLanguage(language: string | null): Promise<boolean>;
   remove(kind: Kind, name: string, revision?: string | null): Promise<boolean>;
   test(kind: Kind, name: string): Promise<Record<string, any> | null>;
 };
 
 type WorkspaceProps = {
   theme: PluginTheme; compact: boolean; scope: Scope; where: Where; lists: Lists; error: string | null;
-  selection: Selection; entry: Entry | null; actions: Actions; initialCollapsed?: boolean;
+  selection: Selection; entry: Entry | null; actions: Actions; initialCollapsed?: boolean; language?: LanguageState | null;
 };
 
-/** The aside's groups: Organisation, Capabilities and Runtimes, each kind with its entries. */
+/** The aside's groups: General (the library only), Organisation, Capabilities and Runtimes, each kind with its entries. */
 export function navGroups(scope: Scope, lists: Lists): NavGroup[] {
-  const groups: NavGroup[] = [];
+  const groups: NavGroup[] = scope === 'library' ? [{ key: 'General', label: 'General', items: [{ key: 'language', label: 'Language', icon: 'Languages' }] }] : [];
   for (const item of shownIn(scope)) {
     let group = groups.find(candidate => candidate.label === item.group);
     if (!group) groups.push(group = { key: item.group, label: item.group, items: [] });
@@ -167,14 +189,17 @@ export function navGroups(scope: Scope, lists: Lists): NavGroup[] {
 }
 
 /** The whole screen from data alone: aside, header with the secondary menu, and the working area. */
-export function LibraryWorkspace({ theme, compact, scope, where, lists, error, selection, entry, actions, initialCollapsed }: WorkspaceProps) {
+export function LibraryWorkspace({ theme, compact, scope, where, lists, error, selection, entry, actions, initialCollapsed, language }: WorkspaceProps) {
   const styles = useMemo(() => makeStyles(theme, compact), [theme, compact]);
   const title = scope === 'library' ? 'ALP library' : 'ALP project';
   const subtitle = scope === 'library' ? where?.library : where?.projectRoot ?? undefined;
   const groups = navGroups(scope, lists);
-  const onSelect = (kind: string, name?: string) => actions.select({ kind: kind as Kind, ...(name ? { name } : {}) });
+  const onSelect = (kind: string, name?: string) => actions.select(kind === 'language' ? { kind } : { kind: kind as Kind, ...(name ? { name } : {}) });
   if (scope === 'project' && where && !where.projectRoot) {
     return <View style={styles.screen}><Text style={styles.muted}>This workspace is not an ALP project. Run alp init to start one.</Text></View>;
+  }
+  if (selection.kind === 'language') {
+    return <LanguageSettings theme={theme} compact={compact} language={language ?? null} error={error} actions={actions} layout={{ title, subtitle, groups, onSelect, initialCollapsed }} styles={styles} />;
   }
   const kind = kindOf(selection.kind);
   if (selection.name || selection.creating) {
@@ -185,6 +210,46 @@ export function LibraryWorkspace({ theme, compact, scope, where, lists, error, s
 }
 
 type Frame = { title: string; subtitle?: string; groups: NavGroup[]; onSelect(item: string, child?: string): void; initialCollapsed?: boolean };
+
+const OTHER = 'other';
+
+/**
+ * The language the user reads (ALPD §54): agents write their replies, questions and
+ * approval requests in it, and ALP its own approvals and notices. Unset, Vietnamese applies.
+ */
+export function LanguageSettings({ theme, compact, language, error, actions, layout, styles }: { theme: PluginTheme; compact: boolean; language: LanguageState | null; error: string | null; actions: Actions; layout: Frame; styles: Styles }) {
+  const named = language && LANGUAGES.some(option => option.value === language.applies);
+  const [choice, setChoice] = useState<string | null>(null);
+  const [typed, setTyped] = useState('');
+  const shown = choice ?? (language ? (named ? language.applies : OTHER) : '');
+  const typedValid = typed.trim().length > 0 && typed.trim().length <= 40;
+  return (
+    <SideNavLayout theme={theme} compact={compact} title={layout.title} subtitle={layout.subtitle} groups={layout.groups} active={{ item: 'language' }} onSelect={layout.onSelect} initialCollapsed={layout.initialCollapsed}
+      breadcrumb={['Library', 'Language']}>
+      <Text style={styles.muted}>The language you read. Main writes its replies, questions, approval requests and task titles in it, other agents put their questions to you in it, and ALP asks for approvals and writes its notices in it. Agents may talk among themselves in any language.</Text>
+      {error ? <Text style={styles.danger}>{error}</Text> : null}
+      {!language ? <Text style={styles.muted}>Loading…</Text> : (
+        <SettingsSection title="Language">
+          <SettingsSelect label="Language" hint={language.language ? `Set in your settings.json` : `Not set: ${language.default} applies`} value={shown}
+            options={[...LANGUAGES, { label: named || !language.language ? 'Other…' : `${language.applies} (other)`, value: OTHER }]}
+            onValueChange={async value => {
+              setChoice(value);
+              if (value !== OTHER && await actions.setLanguage(value)) setChoice(null);
+            }} />
+          {shown === OTHER ? (
+            <SettingsInput label="Other language" hint="Its name in English, such as Thai or Indonesian" initialValue={named ? '' : language.language ?? ''} placeholder="Thai" onChangeText={setTyped} />
+          ) : null}
+          {shown === OTHER ? (
+            <SettingsAction label="Use this language" actionLabel="Save" disabled={!typedValid} onPress={async () => { if (typedValid && await actions.setLanguage(typed.trim())) setChoice(null); }} />
+          ) : null}
+          {language.language ? (
+            <SettingsAction label={`Use the default (${language.default})`} hint="Removes the setting" actionLabel="Reset" onPress={async () => { if (await actions.setLanguage(null)) setChoice(null); }} />
+          ) : null}
+        </SettingsSection>
+      )}
+    </SideNavLayout>
+  );
+}
 
 const SOURCES = [{ key: 'all', label: 'All' }, { key: 'builtin', label: 'Built-in' }, { key: 'library', label: 'Library' }, { key: 'project', label: 'Project' }];
 

@@ -66,7 +66,7 @@ async function setup(t, { git: repository = false } = {}) {
   const runtimes = [];
   const runLogDir = path.join(dir, 'runs');
   const start = () => {
-    const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), supervisor: false, worktreeDir: path.join(dir, 'worktrees'), libraryDir: home, runLogDir, boardDir: path.join(dir, 'boards') });
+    const runtime = createAlpRuntime({ language: 'English', transport: fakeTransport(runtimes), supervisor: false, worktreeDir: path.join(dir, 'worktrees'), libraryDir: home, runLogDir, boardDir: path.join(dir, 'boards') });
     t.after(() => runtime.shutdown());
     return runtime;
   };

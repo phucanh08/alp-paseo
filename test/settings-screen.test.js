@@ -53,7 +53,7 @@ function load(code, overrides = {}) {
 }
 
 const theme = { colors: { surface0: '#fff', surface1: '#eee', surface2: '#ddd', border: '#ccc', foreground: '#000', foregroundMuted: '#666', accent: '#06c', accentForeground: '#fff', statusSuccess: '#0a0', statusWarning: '#a60', statusDanger: '#c00' } };
-const actions = { select() {}, giveSkills: async () => true, duplicate: async () => true, override: async () => true, useLibrary: async () => true, save: async () => true, remove: async () => true, test: async () => null };
+const actions = { select() {}, giveSkills: async () => true, setLanguage: async () => true, duplicate: async () => true, override: async () => true, useLibrary: async () => true, save: async () => true, remove: async () => true, test: async () => null };
 const lists = {
   teams: [{ name: 'pho', source: 'builtin' }, { name: 'cafe', source: 'builtin' }, { name: 'docs', source: 'library', usedBy: ['project settings'] }],
   agents: [{ name: 'main', source: 'library', overrides: 'builtin', description: 'My main' }, { name: 'peer', source: 'builtin' }, { name: 'writer', source: 'library' }, { name: 'supervisor', source: 'builtin' }],
@@ -91,10 +91,10 @@ test('the settings screen has an aside of kinds and entries, and lists a kind wi
   const { code } = await compileClient('client/library.tsx');
   const { LibraryWorkspace, navGroups } = load(code);
   assert.deepEqual(navGroups('library', lists).map(group => [group.label, group.items.map(item => `${item.label} ${item.count}`)]), [
-    ['Organisation', ['Teams 3', 'Agents 4']], ['Capabilities', ['Skills 1', 'MCP servers 0', 'Hooks 1']], ['Runtimes', ['Providers 1']],
+    ['General', ['Language undefined']], ['Organisation', ['Teams 3', 'Agents 4']], ['Capabilities', ['Skills 1', 'MCP servers 0', 'Hooks 1']], ['Runtimes', ['Providers 1']],
   ]);
-  // Providers live in the library only.
-  assert.ok(!navGroups('project', lists).some(group => group.items.some(item => item.key === 'providers')));
+  // Providers and the user's language live in the library only.
+  assert.ok(!navGroups('project', lists).some(group => group.items.some(item => item.key === 'providers' || item.key === 'language')));
   const render = (kind, extra = {}) => renderToStaticMarkup(createElement(LibraryWorkspace, { theme, compact: false, scope: 'library', where, lists, error: null, selection: { kind }, entry: null, actions, ...extra }));
   const html = render('agents');
   const order = ['Teams', 'Agents', 'Skills', 'MCP servers', 'Hooks', 'Providers'].map(title => html.indexOf(`data-label="${title}"`));
@@ -112,6 +112,25 @@ test('the settings screen has an aside of kinds and entries, and lists a kind wi
   assert.match(render('skills'), /<text>Used by agent writer<\/text>/);
   assert.match(render('mcp'), /No mcp servers yet\./);
   assert.match(render('agents', { compact: true }), /data-label="Open navigation"/, 'a narrow screen opens the aside from a menu button');
+});
+
+test('the library screen sets the language the user reads; unset, Vietnamese applies (ALPD §54)', async () => {
+  const { code } = await compileClient('client/library.tsx');
+  const { LibraryWorkspace } = load(code);
+  const render = language => renderToStaticMarkup(createElement(LibraryWorkspace, { theme, compact: false, scope: 'library', where, lists, error: null, selection: { kind: 'language' }, entry: null, actions, language }));
+  assert.match(render(null), /Loading…/);
+  const unset = render({ language: null, applies: 'Vietnamese', default: 'Vietnamese' });
+  assert.match(unset, /<text>Library<\/text><text>\/<\/text><text>Language<\/text>/);
+  assert.match(unset, /<select data-label="Language" data-value="Vietnamese">[\s\S]*<option value="Vietnamese">Tiếng Việt<\/option><option value="English">English<\/option>/);
+  assert.match(unset, /approval requests/);
+  assert.doesNotMatch(unset, /Use the default/, 'nothing to reset');
+  const english = render({ language: 'English', applies: 'English', default: 'Vietnamese' });
+  assert.match(english, /<select data-label="Language" data-value="English">/);
+  assert.match(english, /data-label="Use the default \(Vietnamese\)">Reset/);
+  // A language without an option shows as other, with its name to edit.
+  const thai = render({ language: 'Thai', applies: 'Thai', default: 'Vietnamese' });
+  assert.match(thai, /<select data-label="Language" data-value="other">[\s\S]*<option value="other">Thai \(other\)<\/option>/);
+  assert.match(thai, /<field data-label="Other language" data-value="Thai">/);
 });
 
 test('the project panel overrides an entry here, or drops the override to use the library again', async () => {

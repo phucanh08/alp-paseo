@@ -105,7 +105,7 @@ test('Codex asks ALP before leaving its sandbox, and ALP answers by the profile'
     agents: { reviewer: 'review', main: 'lead', peer: 'builder' },
   });
   const runtimes = [];
-  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: home, runLogDir: path.join(directory, 'runs') });
+  const runtime = createAlpRuntime({ language: 'English', transport: fakeTransport(runtimes), libraryDir: home, runLogDir: path.join(directory, 'runs') });
   t.after(() => runtime.shutdown());
   await runtime.open('root', { cwd: root, model: 'codex:gpt-6.1-sol' });
   await until(() => runtimes.length === 2);
@@ -159,7 +159,7 @@ test('Codex asks ALP before leaving its sandbox, and ALP answers by the profile'
 test('without permission settings Codex never asks, as before', async t => {
   const { directory, root, home } = await project(t);
   const runtimes = [];
-  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: home, runLogDir: path.join(directory, 'runs') });
+  const runtime = createAlpRuntime({ language: 'English', transport: fakeTransport(runtimes), libraryDir: home, runLogDir: path.join(directory, 'runs') });
   t.after(() => runtime.shutdown());
   await runtime.open('root', { cwd: root, model: 'codex:gpt-6.1-sol' });
   await until(() => runtimes.length === 2);
@@ -176,7 +176,7 @@ test('without permission settings Codex never asks, as before', async t => {
 test('a Claude session carries its profile to the transport', async t => {
   const { directory, root, home } = await project(t, { profiles: { review: { base: 'read-only', allow: ['Bash(npm test:*)'] } }, agents: { reviewer: 'review' } });
   const runtimes = [];
-  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: home, runLogDir: path.join(directory, 'runs') });
+  const runtime = createAlpRuntime({ language: 'English', transport: fakeTransport(runtimes), libraryDir: home, runLogDir: path.join(directory, 'runs') });
   t.after(() => runtime.shutdown());
   await runtime.open('root', { cwd: root });
   await until(() => runtimes.length === 2);
@@ -216,7 +216,7 @@ test('the user answers permission questions; always allow writes the rule and st
     agents: { reviewer: 'review' },
   });
   const runtimes = [];
-  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: home, runLogDir: path.join(directory, 'runs') });
+  const runtime = createAlpRuntime({ language: 'English', transport: fakeTransport(runtimes), libraryDir: home, runLogDir: path.join(directory, 'runs') });
   t.after(() => runtime.shutdown());
   await runtime.open('root', { cwd: root, model: 'codex:gpt-6.1-sol' });
   await until(() => runtimes.length === 2);
@@ -280,6 +280,41 @@ test('the user answers permission questions; always allow writes the rule and st
   reviewer.finish('Done');
   await main.call('alp_wait', {});
   main.finish('Done');
+});
+
+test('by default ALP asks permission questions in Vietnamese and takes Vietnamese answers (ALPD §54)', async t => {
+  const { directory, root, home } = await project(t, {
+    profiles: { review: { base: 'read-only', ask: ['Bash(git push *)'], beyondMode: 'ask' } },
+    agents: { reviewer: 'review' },
+  });
+  const runtimes = [];
+  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: home, runLogDir: path.join(directory, 'runs') });
+  t.after(() => runtime.shutdown());
+  await runtime.open('root', { cwd: root, model: 'codex:gpt-6.1-sol' });
+  await until(() => runtimes.length === 2);
+  await runtime.prompt('root', { clientMessageId: 'm1', delivery: 'auto', content: [{ type: 'text', text: 'Review' }] });
+  await runtimes[0].call('alp_delegate', { agent: 'reviewer', task: 'Review', wait: false });
+  await until(() => runtimes.length === 3 && runtimes[2].started.length === 1);
+  const reviewer = runtimes[2];
+  const ask = (command, extra = {}) => reviewer.serverRequest('item/commandExecution/requestApproval', { kind: 'command', threadId: reviewer.threadId, command, ...extra });
+  const question = async () => { await until(() => runtime.questions().length === 1); return runtime.questions()[0]; };
+
+  const install = ask("/bin/zsh -lc 'npm install --no-audit'", { proposedExecpolicyAmendment: ['npm', 'install'] });
+  const first = await question();
+  assert.deepEqual(first.options, ['Cho phép lần này', 'Luôn cho phép', 'Từ chối']);
+  assert.equal(first.body, 'reviewer muốn chạy `npm install --no-audit`. Chế độ read-only của nó không cho phép việc này. Luôn cho phép sẽ thêm Bash(npm install *) vào hồ sơ review.');
+  runtime.answer(first.id, { text: 'Cho phép lần này' });
+  assert.deepEqual(await install, { decision: 'accept' });
+  // An English answer still counts.
+  const push = ask("/bin/zsh -lc 'git push origin main'");
+  const second = await question();
+  assert.deepEqual(second.options, ['Cho phép lần này', 'Từ chối']);
+  assert.match(second.body, /Hồ sơ quyền review của nó yêu cầu hỏi bạn mỗi lần\.$/);
+  runtime.answer(second.id, { text: 'Allow once' });
+  assert.deepEqual(await push, { decision: 'accept' });
+  const touch = ask("/bin/zsh -lc 'touch a'");
+  runtime.answer((await question()).id, { text: 'Từ chối' });
+  assert.deepEqual(await touch, { decision: 'decline' });
 });
 
 test('always allow writes to the file that defines the profile', async t => {
@@ -427,7 +462,7 @@ test('an assignment with workdir copy writes, builds and tests in its copy, whic
   process.env.ALP_CLAUDE_SANDBOX = '1';
   t.after(() => { if (previous === undefined) delete process.env.ALP_CLAUDE_SANDBOX; else process.env.ALP_CLAUDE_SANDBOX = previous; });
   const runtimes = [];
-  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: home, runLogDir: path.join(directory, 'runs'), copyDir: path.join(directory, 'copies') });
+  const runtime = createAlpRuntime({ language: 'English', transport: fakeTransport(runtimes), libraryDir: home, runLogDir: path.join(directory, 'runs'), copyDir: path.join(directory, 'copies') });
   t.after(() => runtime.shutdown());
   await runtime.open('root', { cwd: root, model: 'codex:gpt-6.1-sol' });
   await until(() => runtimes.length === 2);
@@ -482,7 +517,7 @@ test('advisors on Claude run Bash in a read-only floor by default', async t => {
   process.env.ALP_CLAUDE_SANDBOX = '1';
   t.after(() => { if (previous === undefined) delete process.env.ALP_CLAUDE_SANDBOX; else process.env.ALP_CLAUDE_SANDBOX = previous; });
   const runtimes = [];
-  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: home, runLogDir: path.join(directory, 'runs') });
+  const runtime = createAlpRuntime({ language: 'English', transport: fakeTransport(runtimes), libraryDir: home, runLogDir: path.join(directory, 'runs') });
   t.after(() => runtime.shutdown());
   await runtime.open('root', { cwd: root });
   await until(() => runtimes.length === 2);

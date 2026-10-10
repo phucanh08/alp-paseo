@@ -484,6 +484,17 @@ the user with `to: "user"`. Each answer it gets is reported to its requester
 the same way, and its handoff must say what the user asked and what it did. The
 watchdog does not count the wait for the user as silence.
 
+### The user's language
+
+Everything that reaches the user is written in the language set in ALP settings
+(Settings → ALP → General → Language, or `alp language <name>`), Vietnamese when unset:
+main's replies, questions and their options, approval requests and task titles; other
+agents' questions to the user; and ALP's own approval, permission and trust questions
+and notices (Vietnamese and English; other languages get English from ALP). Answers
+count in either language: `Duyệt` or `Approve`, `Cho phép lần này` or `Allow once`.
+Agents may brief and hand off to each other in any language. New sessions pick up a
+change.
+
 ## Project board
 
 Every agent working on a project shares one board, whether it was started by the

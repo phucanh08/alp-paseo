@@ -28,7 +28,7 @@ commit attribution). Look for process mistakes such as:
 - Ending a turn while assignments ran, or claiming work, delegation, review, or
   checks that the digest does not show.
 - Asking the user what the code could answer, or not asking a decision that was
-  the user's; answering in a language other than the user's.
+  the user's; writing for the user in a language other than the one ALP names.
 - Unclear requests: building or delegating a request that left open what to
   build, how far to go or how to judge it done, without first asking the user
   once, with options and a recommended default.

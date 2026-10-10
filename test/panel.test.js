@@ -141,7 +141,7 @@ test('the plugin server lists, adds, closes, reopens and approves tasks as the u
   const dispose = contribute({ registerProvider() {}, handle: (contract, handler) => handlers.set(contract.name, { contract, handler }) });
   if (supervise === undefined) delete process.env.ALP_SUPERVISE; else process.env.ALP_SUPERVISE = supervise;
   t.after(() => dispose());
-  assert.deepEqual([...handlers.keys()].sort(), ['alp.library.delete', 'alp.library.duplicate', 'alp.library.get', 'alp.library.list', 'alp.library.rename', 'alp.library.save', 'alp.library.skills', 'alp.library.test', 'alp.tasks.add', 'alp.tasks.change', 'alp.tasks.list']);
+  assert.deepEqual([...handlers.keys()].sort(), ['alp.library.delete', 'alp.library.duplicate', 'alp.library.get', 'alp.library.list', 'alp.library.rename', 'alp.library.save', 'alp.library.skills', 'alp.library.test', 'alp.settings.language.get', 'alp.settings.language.set', 'alp.tasks.add', 'alp.tasks.change', 'alp.tasks.list']);
   // Like the SDK's callPluginRpc: input and output are checked against the shared contract.
   const call = async (name, input) => {
     const { contract, handler } = handlers.get(name);

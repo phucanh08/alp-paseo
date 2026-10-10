@@ -25,6 +25,7 @@ import { isTrusted, revokeProject, trustProject, trustedProjects } from './core/
 import { parse as toml } from 'smol-toml';
 import { addGate, blockersOf, checkGates, childrenOf, closeTask, compactTasks, createTask, describeGate, gateOpen, epicReport, gatesOf, getTask, isTaskId, linkTask, recordVerification, listTasks, loadTasks, readyTasks, reopenTask, resolveGate, summarize, TASKS_DIR, updateTask } from './core/tasks.js';
 import { alpHome, connect, lockAlive, readLock } from './client/index.js';
+import { languageSetting, setLanguage } from './core/user-settings.js';
 
 const USAGE = `Usage:
   alp <init|upgrade> [directory]
@@ -76,6 +77,7 @@ const USAGE = `Usage:
   alp task gate <clear|rm> <id> <gate> [-m note]
   alp pause [codex|claude] [--now] [-m reason] | alp pause status   hold delegation; --now parks running assignments
   alp resume [codex|claude]                  lift a pause; parked assignments continue
+  alp language [name | --reset]              the language agents and ALP write to you in; default Vietnamese
   alp recall <assignment|task> [--project DIR] [--json] <question>   ask a finished assignment about its work
   alp interrupt <session>`;
 
@@ -1062,6 +1064,15 @@ async function resume(args) {
   else printPauses(state);
 }
 
+/** alp language: the language the user reads (ALPD §54); new sessions use it. */
+async function language(args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { reset: { type: 'boolean' }, json: { type: 'boolean' } } });
+  if (positionals.length > 1 || (values.reset && positionals.length)) throw new UsageError();
+  const state = values.reset ? await setLanguage(alpHome(), null) : positionals.length ? await setLanguage(alpHome(), positionals[0]) : await languageSetting(alpHome());
+  if (values.json) console.log(JSON.stringify(state));
+  else console.log(state.language ? `Language: ${state.language}` : `Language: ${state.applies} (the default; not set)`);
+}
+
 /** alp verify: run the project's verify commands here, in the project root. */
 async function verify(args) {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { project: { type: 'string' }, task: { type: 'string' }, json: { type: 'boolean' } } });
@@ -1138,7 +1149,7 @@ async function interrupt(args) {
   console.log('Interrupted');
 }
 
-const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, doctor, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, agents: args => libraryCommand('agents', args), skills: args => libraryCommand('skills', args), mcp: args => ['add', 'rm', 'mv', 'cp', 'test', 'show', 'edit'].includes(args[0]) ? editCommand('mcp', args) : libraryCommand('mcp', args), hooks: args => libraryCommand('hooks', args), providers: args => libraryCommand('providers', args), provider: args => editCommand('providers', args), teams: teamsCommand, trust: trustCommand, agent: args => editCommand('agents', args), team: args => editCommand('teams', args), skill: args => editCommand('skills', args), hook: args => editCommand('hooks', args), verify, recall, pause, resume, interrupt };
+const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, doctor, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, agents: args => libraryCommand('agents', args), skills: args => libraryCommand('skills', args), mcp: args => ['add', 'rm', 'mv', 'cp', 'test', 'show', 'edit'].includes(args[0]) ? editCommand('mcp', args) : libraryCommand('mcp', args), hooks: args => libraryCommand('hooks', args), providers: args => libraryCommand('providers', args), provider: args => editCommand('providers', args), teams: teamsCommand, trust: trustCommand, agent: args => editCommand('agents', args), team: args => editCommand('teams', args), skill: args => editCommand('skills', args), hook: args => editCommand('hooks', args), verify, recall, pause, resume, language, interrupt };
 const [command, ...args] = process.argv.slice(2);
 try {
   if (!Object.hasOwn(commands, command)) throw new UsageError();

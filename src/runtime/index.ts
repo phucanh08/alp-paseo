@@ -15,4 +15,6 @@ export { createCopy, gitEnvironment, reclaimCopies, reclaimWorktrees, removeCopy
 export { OWN_START, processStartedAt, sameProcessAlive } from './process-info.js';
 export type { Worktree, WorktreeChange } from './workspace.js';
 export { PIN_KINDS, renderBoard, renderPin } from './board.js';
+export { CHOICES, isVietnamese, languageInstruction, words } from './language.js';
+export type { Words } from './language.js';
 export type { Pin, PinKind } from './board.js';

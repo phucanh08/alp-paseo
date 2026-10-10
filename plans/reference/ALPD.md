@@ -1753,3 +1753,30 @@ Throughout, main answered the user's two messages only with tool calls.
 - `test/reachable.test.js`: the reminder appears after a minute and stops after main's message.
 - `test/runtime.test.js`: `alp_cancel` has a Claude schema.
 - `test/golden/log.txt`: the usage-limit park is mail of kind `stalled`.
+
+## 54. The user's language (2026-10-10)
+
+Goal (D26): the user reads one language, set in ALP settings, and everything that reaches them is written in it, approvals above all. Unset, it is Vietnamese.
+
+- **Setting.** `language` in `$ALP_HOME/settings.json`, a language name of at most 40 characters (`validateUserSettings`). `src/core/user-settings.js` reads it (`userLanguage`: the setting, else Vietnamese; a broken file falls back too), shows it (`languageSetting`) and writes it atomically, keeping the file's other keys (`setLanguage`, `null` clears it).
+- **Where it is set.**
+  - Settings → ALP has a General group with **Language**: a list of common languages (Tiếng Việt, English, 日本語, 한국어, 中文, Français, Deutsch, Español), Other with a name to type, and Reset to the default. RPC `alp.settings.language.get` and `alp.settings.language.set`.
+  - `alp language [name | --reset] [--json]`.
+- **Sessions.** `resolveSession` resolves the language for each session (`RuntimeOptions.language`, else the setting), so a change applies to new sessions. Each session's instructions get one line (`languageInstruction`):
+  - a root session (main) writes in it everything the user reads: replies, `alp_ask` questions and options, approval requests and what it says about them, gate notes, and task titles and descriptions. Briefs, handoffs and mail between agents may use any language; GitHub issues follow the repository;
+  - an assignment puts its `alp_ask` questions to the user in it;
+  - the supervisor checks that main does.
+- **ALP's own words** (`src/runtime/language.ts`). Vietnamese and English word tables cover:
+  - `alp_skill` and `alp_issue` approvals, with their choices (Duyệt / Từ chối);
+  - permission questions (Cho phép lần này / Luôn cho phép / Từ chối);
+  - the hook trust question (Tin cậy workspace này / Để sau);
+  - the usage-limit, usage-warning, pause and resume notices, written per root session.
+  Another language gets English from ALP. Answers in either language count (`CHOICES`, `APPROVALS`).
+- `templates/agents/main/AGENT.md` and the supervisor's checklist now refer to the language ALP names.
+
+**Evidence.**
+- `test/language.test.js`: the setting and its default; the word tables and answers in both languages; main's and an assignment's instruction line; a setting picked up by a new session; `alp language`.
+- `test/permissions.test.js`: a default (Vietnamese) permission question, its choices and body, and answers in both languages.
+- `test/settings-screen.test.js`: the General → Language view.
+- `test/panel.test.js`, `test/paseo.test.js`: the two RPCs.
+- Tests that assert ALP's English text run with `language: 'English'`.

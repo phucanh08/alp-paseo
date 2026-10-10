@@ -235,3 +235,11 @@ Decided by the user on 2026-10-10: every agent delegates work and runs long tool
 - Main ends its turn while work runs; ALP wakes it with results, questions and check-ins. Notes from assignments ride along and never wake an idle requester.
 - Every agent runs long shell commands in the background when its tools allow it.
 
+
+## D26 — The user's language
+
+Decided by the user on 2026-10-10: ALP settings name the language the user reads, and everything that reaches the user, above all approvals, is written in it. Unset, it is Vietnamese.
+
+- The setting is `language` in `$ALP_HOME/settings.json`, edited in Settings → ALP → General → Language or with `alp language`. New sessions use it.
+- Main writes its replies, `alp_ask` questions and options, approval requests and task titles in it. Other agents put their questions to the user in it. Agents may talk among themselves in any language, and GitHub issues follow the repository.
+- ALP writes its own approval, permission and trust questions and its notices in it, for Vietnamese and English; other languages get English from ALP. Answers count in either language.
