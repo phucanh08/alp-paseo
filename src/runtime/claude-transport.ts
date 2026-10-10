@@ -347,13 +347,28 @@ export class ClaudeTransport {
   async orchestrationContext() {
     const [catalog, usage] = await Promise.all([
       optionalRead(async () => this.query ? this.query.supportedModels() : undefined),
-      optionalRead(async () => this.query ? this.query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true }) : undefined),
+      // Without a session yet, a short-lived Claude process answers (ALPD §58); it takes a second or two.
+      this.query
+        ? optionalRead(async () => this.query!.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true }))
+        : optionalRead(() => this.probeUsage(), 15_000),
     ]);
     return { runtime: 'claude', observedAt: new Date().toISOString(), catalogAvailable: Array.isArray(catalog),
       models: (catalog ?? []).map(model => ({ id: `claude:${model.value}`, label: model.displayName,
         description: model.description, thinking: model.supportedEffortLevels })), usage: claudeUsage(usage) };
   }
   async initialize() {}
+
+  /** The plan's usage windows before a session starts, from a Claude process that sends no prompt and is closed after. */
+  private async probeUsage() {
+    if (this.closed) return undefined;
+    const { query } = await import(CLAUDE_SDK);
+    const probe = query({ prompt: new InputQueue(), options: { cwd: this.cwd, env: this.env, settingSources: [], persistSession: false, strictMcpConfig: true, mcpServers: {}, pathToClaudeCodeExecutable: this.command } }) as ClaudeQuery;
+    try {
+      return await probe.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true });
+    } finally {
+      probe.close();
+    }
+  }
 
   onNotification(listener: Listener) {
     this.listeners.add(listener);

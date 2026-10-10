@@ -43,7 +43,7 @@ test('ALP has Vietnamese and English words, and accepts answers in either', () =
   assert.equal(isVietnamese('English'), false);
   const vi = words('Vietnamese');
   assert.deepEqual([vi.approve, vi.reject, vi.allowOnce, vi.alwaysAllow, vi.deny], ['Duyệt', 'Từ chối', 'Cho phép lần này', 'Luôn cho phép', 'Từ chối']);
-  assert.match(vi.limitReached('Codex', '12:35', 'Claude', true, 'codex'), /^Codex đã hết hạn mức sử dụng; hạn mức đặt lại lúc 12:35\. .*các agent Claude vẫn làm tiếp\. ALP tự chạy lại/);
+  assert.match(vi.limitReached('Codex', '12:35', 'Claude', true, 'codex'), /^Codex đã hết hạn mức sử dụng; hạn mức đặt lại lúc 12:35\. .*các agent Claude vẫn làm tiếp\. ALP hỏi Codex mỗi phút và tự chạy lại/);
   // Languages without a word table get English from ALP.
   assert.equal(words('Japanese').approve, 'Approve');
   assert.ok(CHOICES.allowOnce.includes('cho phép lần này') && CHOICES.allowOnce.includes('allow once'));

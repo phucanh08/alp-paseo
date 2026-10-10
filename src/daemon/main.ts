@@ -118,7 +118,7 @@ async function run(home: string) {
   const runtime = createAlpRuntime({
     templates, runLogDir, worktreeDir, copyDir, boardDir: path.join(home, 'boards'), libraryDir: home,
     recallFile: path.join(home, 'state', 'recall.json'), pauseFile: path.join(home, 'state', 'pause.json'), liveFile: path.join(home, 'state', 'live.json'),
-    autoResume: settings?.limits?.autoResume === true, recoveryResume: settings?.recovery?.autoResume !== false, previousExit: exit,
+    autoResume: settings?.limits?.autoResume !== false, recoveryResume: settings?.recovery?.autoResume !== false, previousExit: exit,
   });
   const store = createStore(path.join(home, 'state'));
   let stopping: Promise<void> | undefined;

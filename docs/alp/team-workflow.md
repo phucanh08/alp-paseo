@@ -394,9 +394,23 @@ When that happens:
 - When a runtime reports a usage window at 90% or more, the user gets one
   warning per window.
 
-**Resuming after a limit.** The user resumes, by default. Set
-`"limits": { "autoResume": true }` in `$ALP_HOME/settings.json` to let alpd
-resume a runtime a minute after its limit resets.
+**Resuming after a limit.** While a limit pauses a runtime, alpd asks the
+runtime about its limit every minute, as `/usage` does. A delegation to it asks
+at once, unless it asked in the last 15 seconds. The runtime is asked through a
+session open on it, or else through a short-lived process of its own that sends
+no prompt.
+
+ALP resumes the runtime as soon as the runtime says every usage window has room
+again. That catches a limit reset early, and does not wait for the reset time
+reported earlier. Parked assignments then continue by themselves. When the
+runtime cannot say, the reset time decides, a minute after.
+
+To keep resuming in your hands, set `"limits": { "autoResume": false }` in
+`$ALP_HOME/settings.json`. ALP then tells you once that the limit has lifted,
+and you run `alp resume`.
+
+`alp ps` shows when alpd last asked. Pauses you make with `alp pause` are never
+lifted by ALP.
 
 Pauses are kept in `$ALP_HOME/state/pause.json`, so they survive a restart.
 Parked assignments survive one too: the next alpd reopens them still parked,

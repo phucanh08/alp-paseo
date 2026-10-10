@@ -18,6 +18,8 @@ export function fakeTransport(agents) {
     const agent = {
       calls: [], threadId: `thread-${index}`, turnId: undefined, closed: false,
       async initialize() {},
+      /** What it says of its catalog and usage; set `limits` to a usage report (ALPD §58). */
+      async orchestrationContext() { return this.limits ? { runtime: 'codex', usage: this.limits } : { available: false }; },
       onNotification(fn) { this.notification = fn; }, onFailure(fn) { this.failure = fn; }, onRequest(fn) { this.serverRequest = fn; },
       async close() { this.closed = true; },
       async request(method, params) {
