@@ -114,6 +114,44 @@ Both use the `alp.library.*` RPC (ALPD §43), the same functions as `alp agent|t
 Each save checks the entry's revision, so two windows cannot overwrite each other.
 Changes apply to new sessions; running sessions keep what they started with.
 
+## Tasks: panel, screen and the composer pill
+
+The tasks of the workspace's ALP project (`.alp/tasks`) show in the same board in
+two places ([the Tasks panel](team-workflow.md#the-tasks-panel-in-paseo) describes
+the board itself):
+- **The Tasks panel** (desktop): open it from the workspace's **+** tab, or from the
+  command center with "Open ALP tasks". When it is 820 px wide or more, a task's
+  detail sits beside the list.
+- **The Tasks screen** (`alp-tasks`, any client, phones included): a whole screen with
+  the same board. Its header's close button goes back to the chat. Opened on a task, it
+  shows that task's detail; the detail's back arrow shows the list.
+
+The phone app cannot reach a workspace's **+** tab, so the screen opens from the chat:
+- **The Tasks pill** in the composer of every ALP agent, above the message box. Its
+  label counts the open tasks ("Tasks · 3"). Tap it for a menu of the open tasks,
+  what waits for you first: Approve, Review, In progress, Ready, Blocked, each with
+  the task's title. Epics and closed tasks stay on the board, and the menu lists at
+  most eight. Tap a task to open the screen on its detail, or **All tasks** for the
+  whole board.
+  - The pill is hidden when the workspace's directory is not in an ALP project.
+  - It shows only on agents whose provider is ALP. The provider always runs them in
+    an ALP project, so the plugin needs no extra check to find one.
+- **`/tasks`** in any agent's composer opens the screen, and `/tasks t-0003` opens
+  that task.
+- The command center's **"Open ALP tasks full screen"** opens the screen for the
+  current workspace.
+
+How the pills stay current:
+- A composer pill belongs to one agent. The plugin therefore follows the host's agents
+  through `paseo.agents.list` with a subscription, and adds or removes pills as ALP
+  agents come and go.
+- It reads each workspace's directory once and polls `alp.tasks.list` every 20
+  seconds, once per project however many agents show it.
+- A pill changes only when its tasks do, so a menu you have open stays open.
+- The screen's params are strings in its URL: `workspaceId`, `directory` and
+  optionally `taskId`. Screens get no workspace state from the host, so the opener
+  passes the directory.
+
 ## Mapping and supported behavior
 
 | Input | Behavior |

@@ -1,17 +1,17 @@
 import type { PluginTheme } from '@getpaseo/plugin';
-import { type PluginWorkspacePanelProps, useRpc, useWorkspace } from '@getpaseo/plugin/client';
+import { type PluginScreenProps, type PluginWorkspacePanelProps, useRpc, useWorkspace } from '@getpaseo/plugin/client';
 import { Icon, ScrollView, useToast } from '@getpaseo/plugin/client/react-native';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, Text, TextInput, View, type PressableStateCallbackType } from 'react-native';
 import { boardSections, tasksAdd, tasksChange, tasksList, type TaskRow } from '../shared/tasks';
 
 /**
- * The Tasks panel (ALPD §22, §47), shaped after the beads viewers: a list grouped by
- * what the user acts on, a board by status, and epics with their progress. A row opens
- * the task's detail, beside the list when the panel is wide enough.
+ * The Tasks panel and screen (ALPD §22, §47), shaped after the beads viewers: a list
+ * grouped by what the user acts on, a board by status, and epics with their progress.
+ * A row opens the task's detail, beside the list when there is room for both.
  */
 
-/** Plugin RPC has no server push, so the panel asks again while it is open. */
+/** Plugin RPC has no server push, so the board asks again while it is open. */
 const POLL_MS = 5000;
 /** At this width the list and the selected task's detail sit side by side. */
 const SPLIT_FROM = 820;
@@ -24,6 +24,24 @@ export type Filter = 'open' | 'ready' | 'closed' | 'all';
 export function TasksPanel({ theme, layout, workspaceId }: PluginWorkspacePanelProps) {
   // Agents of a worktree workspace work in its directory, which has its own .alp/tasks.
   const directory = useWorkspace(workspaceId, workspace => workspace.directory || workspace.projectRootPath);
+  return <TaskBoard theme={theme} compact={layout.compact} directory={directory} {...useTasks(directory)} />;
+}
+
+/**
+ * The Tasks screen: the same board on a whole screen, which phones reach from the
+ * composer's Tasks pill. The host gives screens no workspace state, so the opener
+ * passes the directory (tasksScreen in task-pills.ts); a taskId opens that task.
+ */
+export function TasksScreen({ theme, layout, params }: PluginScreenProps) {
+  const directory = params.directory || null;
+  const tasks = useTasks(directory);
+  // Opening another task while the screen shows starts the board again on it.
+  return <TaskBoard key={params.taskId ?? ''} theme={theme} compact={layout.compact} directory={directory} {...tasks}
+    initial={params.taskId ? { selected: params.taskId } : undefined} />;
+}
+
+/** A project's tasks and what changes them, asked again every POLL_MS while shown. */
+function useTasks(directory: string | null) {
   const list = useRpc(tasksList);
   const add = useRpc(tasksAdd);
   const change = useRpc(tasksChange);
@@ -68,10 +86,7 @@ export function TasksPanel({ theme, layout, workspaceId }: PluginWorkspacePanelP
     }
   }, [change, directory, refresh, toast]);
 
-  return (
-    <TaskBoard theme={theme} compact={layout.compact} directory={directory} projectRoot={data?.projectRoot ?? null} tasks={data?.tasks ?? null}
-      unreadable={data?.unreadable.length ?? 0} error={error} onAdd={onAdd} onAction={onAction} onRefresh={refresh} />
-  );
+  return { projectRoot: data?.projectRoot ?? null, tasks: data?.tasks ?? null, unreadable: data?.unreadable.length ?? 0, error, onAdd, onAction, onRefresh: refresh };
 }
 
 type BoardProps = {
@@ -85,7 +100,7 @@ type BoardProps = {
   onAdd(title: string, priority: number): Promise<boolean>;
   onAction(action: Action): void;
   onRefresh(): void;
-  /** Tests start on a view, a filter or a task. */
+  /** The screen starts on a task; tests also on a view, a filter or a width. */
   initial?: { view?: View_; filter?: Filter; selected?: string; width?: number };
 };
 
@@ -146,7 +161,7 @@ export function TaskBoard({ theme, compact, directory, projectRoot, tasks, unrea
     all: (tasks ?? []).length,
   }), [tasks]);
 
-  if (!directory) return <View style={styles.screen}><Text style={styles.muted}>This panel needs a workspace.</Text></View>;
+  if (!directory) return <View style={styles.screen}><Text style={styles.muted}>This view needs a workspace.</Text></View>;
   const open = (id: string) => setSelected(id);
   const detail = task ? <TaskDetail theme={theme} styles={styles} task={task} tasks={tasks ?? []} onBack={() => setSelected(null)} onOpen={open} onAction={onAction} /> : null;
   return (

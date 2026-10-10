@@ -73,8 +73,13 @@ test('the client registers the ALP settings screen and the project panel, with o
     addSettingsScreen: screen => { screens.push(screen); return () => {}; },
     addWorkspacePanel: panel => { panels.push(panel); return () => {}; },
     addCommandCenterItem: () => () => {},
+    addScreen: () => () => {},
+    addSlashCommand: () => () => {},
+    // The Tasks pills (test/panel.test.js) find no agents here.
+    paseo: { agents: { list: async () => { throw new Error('offline'); } } },
   });
   assert.equal(typeof cleanup, 'function');
+  cleanup();
   assert.deepEqual(screens.map(screen => [screen.id, screen.title, screen.icon, typeof screen.Component]), [['alp-settings', 'ALP', 'Bot', 'function']]);
   assert.deepEqual(panels.map(panel => [panel.id, panel.title, panel.context]), [['alp-tasks', 'Tasks', 'workspace'], ['alp-project', 'ALP project', 'workspace']]);
 });
