@@ -303,6 +303,20 @@ test('tasks main worked on go to the Tasks pill, not to a todo list of Paseo\'s 
   assert.ok(!events.some(e => e.type === 'timeline.item' && e.item.type === 'todo'), 'Paseo shows no todo pill of its own');
 });
 
+test('a compaction shows as Paseo\'s own compaction row, and a failed one as a warning (ALPD §57)', async t => {
+  const root = await fixture(t);
+  const { conn, events, runtimes } = await connection(t, root);
+  await conn.send(prompt('m1'));
+  const turnId = events.find(e => e.type === 'session.turn').turnId;
+  const item = { type: 'contextCompaction', id: 'compact-1' };
+  runtimes[0].notify('item/started', { threadId: 'native-thread', turnId, item });
+  runtimes[0].notify('item/completed', { threadId: 'native-thread', turnId, item: { ...item, status: 'completed', trigger: 'auto', preTokens: 170_000, postTokens: 14_000 } });
+  runtimes[0].notify('item/completed', { threadId: 'native-thread', turnId, item: { type: 'contextCompaction', id: 'compact-2', status: 'failed' } });
+  for (let i = 0; i < 100 && events.filter(e => e.type === 'timeline.item' && e.item.id?.startsWith('compact-')).length < 3; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  const shown = events.filter(e => e.type === 'timeline.item' && e.item.id?.startsWith('compact-')).map(e => e.item);
+  assert.deepEqual(shown.map(item => [item.type, item.status ?? item.level, item.preTokens ?? null]), [['compaction', 'loading', null], ['compaction', 'completed', 170_000], ['notification', 'warning', null]]);
+});
+
 test('the plugin loads where import.meta.url is no URL, as when Paseo bundles it', async t => {
   const { build } = await import('esbuild');
   const directory = await mkdtemp(path.join(tmpdir(), 'alp-paseo-bundle-'));

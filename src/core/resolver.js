@@ -230,6 +230,7 @@ export async function resolveAgent(projectRoot, { agent, library, templates } = 
     skills, hooks, runtime, projectRuntime: { ...projectRuntime },
     ...(config.mode !== undefined ? { mode: config.mode } : {}),
     ...(config.description !== undefined ? { description: config.description } : {}),
+    ...(typeof config.context === 'number' ? { context: config.context } : {}),
     mcp: { mcpServers: servers },
   });
 }

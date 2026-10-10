@@ -12,6 +12,8 @@ export const ago = (since, now = Date.now()) => {
 };
 /** A duration in the same form. */
 export const duration = ms => ago(new Date(0).toISOString(), ms);
+/** A token count as people say it: 164k, 1M. */
+const tokens = count => typeof count !== 'number' ? '?' : count >= 1_000_000 && count % 1_000_000 < 50_000 ? `${Math.round(count / 1_000_000)}M` : `${Math.round(count / 1000)}k`;
 
 /** `alp ps`: sessions as a tree, one line each. */
 export function renderPs(sessions) {
@@ -81,7 +83,15 @@ export function renderLog(rootId, entries) {
         text = `# ${entry.agent} instructions ${entry.sha} (ALP.md ${entry.parts?.project}, AGENT.md ${entry.parts?.agent}, ${entry.chars} chars)`;
         break;
       case 'context':
-        text = `◔ ${entry.agent} context ${entry.percent}% full: ${entry.level === 'now' ? 'told to hand off now' : 'told to plan a handoff'}`;
+        // Before 0.6 the advice came at 60% and 80% of the window (ALPD §35); since, once near compaction (§57).
+        text = entry.level === 'soon'
+          ? `◔ ${entry.agent} context ${tokens(entry.tokens)}, compacts at ${tokens(entry.compactAt)}: told it is near`
+          : `◔ ${entry.agent} context ${entry.percent}% full: ${entry.level === 'now' ? 'told to hand off now' : 'told to plan a handoff'}`;
+        break;
+      case 'compacted':
+        text = entry.failed
+          ? `✗ ${entry.agent}'s context could not be compacted${entry.error ? `: ${entry.error}` : ''}`
+          : `◑ ${entry.agent}'s context compacted${entry.preTokens !== undefined ? ` from ${tokens(entry.preTokens)}` : ''}${entry.postTokens !== undefined ? ` to ${tokens(entry.postTokens)}` : ''}${entry.trigger === 'manual' ? ' on request' : ''}`;
         break;
       case 'assignment.interrupted':
         text = `⏹ ${entry.agent} ${entry.assignmentId} interrupted: ${entry.reason}; the next alpd continues it`;

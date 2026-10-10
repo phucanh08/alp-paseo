@@ -78,7 +78,8 @@ project uses. The screen has two columns:
   built-in. It also shows who uses it.
 - Each section has New, and each entry Duplicate.
 - Opening an entry edits it:
-  - **Agent:** description, provider, model, thinking, default mode, instructions
+  - **Agent:** description, provider, model, thinking, context (Auto or 200k to 1M
+    tokens before compaction), default mode, instructions
     (`AGENT.md`), and switches for the skills, MCP servers and hooks it uses. The
     skills your library gives an agent by name (`role-skills.json`; main, lead and
     peer start with ALP's six) show on, marked "Default for this agent". Changing
@@ -184,7 +185,7 @@ After first-session initialization, ALP configuration files are read-only to the
 
 - Hooks, interactive permissions, images, structured commands, output schemas, live model/thinking changes, session listing, and revert are not supported or advertised.
 - Delegated child sessions are supported through `alp_delegate` and the public `session.subsession` contract. See [team workflow](team-workflow.md) for routing, migration, lifecycle, and limits. Start a new main session after enabling delegation in an older project: old native threads may have no registered delegation tool.
-- Live timeline mapping covers assistant text, shell commands, and dynamic delegation calls; other native tool item types are not yet rendered. This is not a complete Codex UI replacement.
+- Live timeline mapping covers assistant text, shell commands, dynamic delegation calls and compactions (Paseo's compaction row; a failed one is a warning); other native tool item types are not yet rendered. This is not a complete Codex UI replacement.
 - Replay uses the history returned by `thread/resume`; exhaustive pagination of very large native histories is not implemented.
 - Runtime may load the user's normal Codex or Claude Code authentication. ALP does not replace global authentication or write credentials into project files.
 - Claude Code runs through the Claude Agent SDK. ALP disables Claude's native multi-agent tools and exposes the ALP tools (`alp_delegate`, `alp_wait`, `alp_send`, `alp_ask`, `alp_handoff`) as in-process MCP tools so the same configured delegation graph and Paseo child-session lifecycle apply to both runtimes.

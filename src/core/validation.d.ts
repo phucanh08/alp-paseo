@@ -8,6 +8,7 @@ export function validateUserSettings(settings: unknown, source: string): { langu
 export function normalizeMcp(raw: unknown, directory: string, source: string): { mcpServers: Record<string, Record<string, unknown>> };
 export function validateResolvedAgent(agent: unknown): unknown;
 export const AGENT_SETTINGS: string[];
+export const CONTEXT_TOKENS: { min: number; max: number };
 export function validateAgentConfig(config: unknown, source: string): { description?: string; provider?: string; model?: string; thinking?: string; mode?: 'read-only' | 'workspace-write' | 'full-access'; skills?: string[]; mcp?: string[]; hooks?: string[] };
 export const HOOK_SETTINGS: string[];
 export const HOOK_EVENTS: string[];

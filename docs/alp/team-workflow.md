@@ -302,24 +302,32 @@ A task an earlier alpd held goes back to open only when that alpd is gone.
 ALP checks the pid and the time that process started, since a pid can be
 reused by another process.
 
-## Context fill
+## Context fill and compaction
 
-ALP watches how full each session's context is and stays quiet until it
-matters. Past 60% it tells the session once to plan how it finishes; past 80%
-it tells it once to act before the runtime compacts the context:
-- an assignment finishes the step it is on and files `alp_handoff` with outcome
-  `partial` (what is done, what remains, where), and its requester continues the
-  rest in a fresh assignment;
-- main pins decisions and findings with `alp_pin`, updates task notes, and tells
-  the user when a fresh session would serve better.
+Claude Code and Codex compact a session's context when it fills, and keep going.
+ALP does not ask agents to hand off because of it (D27):
+- **Measuring.** ALP measures against the point where the runtime compacts. Claude
+  says where: at 967k of 1M for Opus 5.5, Fable 5.1 and Sonnet 5.5. For Codex it is
+  90% of the window.
+- **One note before.** At 90% of that point ALP tells the session once:
+  - an assignment keeps working;
+  - main keeps pins and task notes current.
 
-The note steers into a running turn, or waits for the next one without starting
-a turn. When the context drops below 50%, as after a compaction, the advice can
-come again. Supervisors are not advised. Each advice is logged as a `context`
-record, which `alp log` shows as `◔ peer context 85% full: told to hand off now`.
-Codex reports its fill itself; for Claude, ALP counts the tokens of each reply
-against the model's window (200k, or 1M for `[1m]` models, until a result reports
-the actual window).
+  The note steers into a running turn, or waits for the next one without starting a
+  turn. Supervisors are not told.
+- **Seeing it.** Each compaction shows in Paseo as it runs. It is logged as
+  `◑ peer's context compacted from 170k to 14k`.
+- **After it.** ALP gives the session what it holds of its work, in case the summary
+  lost it:
+  - an assignment's brief as it was given;
+  - open assignments, worktree changes waiting for `alp_merge`, and questions
+    waiting for the user;
+  - for main, its tasks and the board.
+
+An agent may set `context` in its `agent.json`: `"auto"` (the model's window, the
+default) or 100000 to 1000000 tokens, to work with less before compaction. Claude
+gets it as its compaction window; Codex compacts at 90% of it. In Paseo it is the
+Context select on the agent's General tab.
 
 ## Doctor
 

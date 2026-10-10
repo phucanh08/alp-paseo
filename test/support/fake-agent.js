@@ -47,9 +47,15 @@ export function fakeTransport(agents) {
         await this.call('alp_handoff', handoff);
         this.finish(text);
       },
-      /** Reports how full its context is. */
-      usage(totalTokens, modelContextWindow = 100_000) {
-        this.notification('thread/tokenUsage/updated', { threadId: this.threadId, turnId: this.turnId, tokenUsage: { last: { totalTokens }, total: { totalTokens }, modelContextWindow } });
+      /** Reports how full its context is, and where its runtime compacts it when it says. */
+      usage(totalTokens, modelContextWindow = 100_000, autoCompactTokens) {
+        this.notification('thread/tokenUsage/updated', { threadId: this.threadId, turnId: this.turnId, tokenUsage: { last: { totalTokens }, total: { totalTokens }, modelContextWindow, ...(autoCompactTokens ? { autoCompactTokens } : {}) } });
+      },
+      /** Compacts its context, as Codex reports it: a contextCompaction item from start to end. */
+      compact(preTokens, postTokens, { failed = false } = {}) {
+        const item = { type: 'contextCompaction', id: `compact-${index}-${++calls}` };
+        this.notification('item/started', { threadId: this.threadId, turnId: this.turnId, item });
+        this.notification('item/completed', { threadId: this.threadId, turnId: this.turnId, item: { ...item, ...(failed ? { status: 'failed', error: 'summary failed' } : { status: 'completed', trigger: 'auto', preTokens, postTokens }) } });
       },
       /** Fails the running turn on a used-up Codex window. */
       limit(resetsAt = Math.floor(Date.now() / 1000) + 3600) {

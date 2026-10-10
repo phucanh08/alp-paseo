@@ -2,25 +2,27 @@
 10:00:01  main → peer (full-access, codex:gpt-5.6-sol, async): Write the parser
 10:00:02  # peer instructions peer-sha (ALP.md alp-md, AGENT.md peer-md, 1000 chars)
 10:00:03  ◆ peer pins decision p1: Parse with a state machine
-10:00:05  ◔ peer context 85% full: told to hand off now
-10:00:06  ✉ note alp → peer: Your context is about 85% full; the runtime will compact it soon and lose detail. Finish the step you are on, then file 
-10:00:07  peer completed after 1m05s, handoff complete: Parser written
-10:00:08  ✉ result peer → main
-10:00:09  main → reviewer (read-only, codex:gpt-5.6-sol, async): Review the parser
-10:00:10  # reviewer instructions reviewer-sha (ALP.md alp-md, AGENT.md reviewer-md, 1000 chars)
-10:00:11  reviewer completed after 1m05s, handoff complete, verdict FAIL: One blocker
-10:00:12  ✉ result reviewer → main
-10:00:13  main → peer (full-access, codex:gpt-5.6-sol, async): Fix empty input
-10:00:14  # peer instructions peer-sha (ALP.md alp-md, AGENT.md peer-md, 1000 chars)
-10:00:15  ↻ peer's native process stopped (app-server exited with code 1); restart 1
-10:00:16  ⏸ peer a3 parked: its Codex process stopped
-10:00:17  ✉ note peer → main: Parked: its Codex process stopped. ALP is restarting the Codex process; this assignment continues by itself. Wait for it
-10:00:18  ▶ peer running again
-10:00:19  ▶ peer a3 resumed
-10:00:20  peer completed after 1m05s, handoff complete: Empty input rejected
-10:00:21  ✉ result peer → main
-10:00:22  main → peer (full-access, codex:gpt-5.6-sol, async): Document the parser
-10:00:23  # peer instructions peer-sha (ALP.md alp-md, AGENT.md peer-md, 1000 chars)
-10:00:24  ⏸ peer a4 parked: the Codex usage limit was reached
-10:00:25  ✉ stalled peer → main: Parked: the Codex usage limit was reached. ALP continues this assignment where it stopped when Codex is resumed (the use
-10:00:26  ‼ Codex usage limit reached; it resets 2100-01-01T00:00:00.000Z. ALP paused delegation to Codex agents and parked their assignments; Claude agents keep working. Run alp resume codex when it has reset.
+10:00:05  ◔ peer context 85k, compacts at 90k: told it is near
+10:00:06  ✉ note alp → peer: Your context holds about 85k tokens; the runtime compacts it at about 90k and keeps going. No handoff is needed for that
+10:00:07  ◑ peer's context compacted from 89k to 12k
+10:00:08  ✉ note alp → peer: Your context was just compacted. In case the summary lost any of it, this is what ALP holds of your work now.
+10:00:09  peer completed after 1m05s, handoff complete: Parser written
+10:00:10  ✉ result peer → main
+10:00:11  main → reviewer (read-only, codex:gpt-5.6-sol, async): Review the parser
+10:00:12  # reviewer instructions reviewer-sha (ALP.md alp-md, AGENT.md reviewer-md, 1000 chars)
+10:00:13  reviewer completed after 1m05s, handoff complete, verdict FAIL: One blocker
+10:00:14  ✉ result reviewer → main
+10:00:15  main → peer (full-access, codex:gpt-5.6-sol, async): Fix empty input
+10:00:16  # peer instructions peer-sha (ALP.md alp-md, AGENT.md peer-md, 1000 chars)
+10:00:17  ↻ peer's native process stopped (app-server exited with code 1); restart 1
+10:00:18  ⏸ peer a3 parked: its Codex process stopped
+10:00:19  ✉ note peer → main: Parked: its Codex process stopped. ALP is restarting the Codex process; this assignment continues by itself. Wait for it
+10:00:20  ▶ peer running again
+10:00:21  ▶ peer a3 resumed
+10:00:22  peer completed after 1m05s, handoff complete: Empty input rejected
+10:00:23  ✉ result peer → main
+10:00:24  main → peer (full-access, codex:gpt-5.6-sol, async): Document the parser
+10:00:25  # peer instructions peer-sha (ALP.md alp-md, AGENT.md peer-md, 1000 chars)
+10:00:26  ⏸ peer a4 parked: the Codex usage limit was reached
+10:00:27  ✉ stalled peer → main: Parked: the Codex usage limit was reached. ALP continues this assignment where it stopped when Codex is resumed (the use
+10:00:28  ‼ Codex usage limit reached; it resets 2100-01-01T00:00:00.000Z. ALP paused delegation to Codex agents and parked their assignments; Claude agents keep working. Run alp resume codex when it has reset.

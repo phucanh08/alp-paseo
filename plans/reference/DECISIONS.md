@@ -243,3 +243,12 @@ Decided by the user on 2026-10-10: ALP settings name the language the user reads
 - The setting is `language` in `$ALP_HOME/settings.json`, edited in Settings → ALP → General → Language or with `alp language`. New sessions use it.
 - Main writes its replies, `alp_ask` questions and options, approval requests and task titles in it. Other agents put their questions to the user in it. Agents may talk among themselves in any language, and GitHub issues follow the repository.
 - ALP writes its own approval, permission and trust questions and its notices in it, for Vietnamese and English; other languages get English from ALP. Answers count in either language.
+
+## D27 — The runtime compacts; ALP keeps its state
+
+Decided by the user on 2026-10-10, after a study of Amp. Amp replaced compaction with handoff in October 2025, then went back to automatic compaction at 90% of the window in May 2026, because frontier models handle it well. It later let its agent read the compacted-away part of a thread again.
+
+- Claude Code and Codex compact a full context and keep going. ALP no longer asks agents to hand off because their context fills, and says nothing until the context nears the point where the runtime compacts. It measures that point from the runtime; it does not guess a window.
+- ALP sees each compaction, shows it in Paseo and the run log, and afterwards gives the session ALP's state again: an assignment's brief, its open assignments, changes waiting to merge, questions to the user, and a root's tasks and board.
+- An agent may set the context it works with before compaction: `auto` (the model's) by default, or a number of tokens. Claude Opus 5.5, Fable 5.1 and Sonnet 5.5 work with 1M.
+- Later: `alp_recall` over a session's own full transcript, including what was compacted away; `/compact` from Paseo.

@@ -173,6 +173,8 @@ export async function resolveSession(spec: SessionSpec, options: { templates?: R
     ...(spec.copy && spec.copyOf ? { copyOf: spec.copyOf } : {}),
     instructions: [compiled.material.instructions, learned, spec.systemPrompt].filter(Boolean).join('\n\n'),
     mcp, env: { ...spec.env }, persist: spec.persist ?? false, keepThread: spec.keepThread ?? false,
+    // ALPD §57: the window the agent works in before its runtime compacts; absent, the model's.
+    ...(agent.context ? { context: agent.context } : {}),
     // ALPD §54: the language everything the user reads is written in.
     language: options.language ?? await userLanguage(options.library),
   };

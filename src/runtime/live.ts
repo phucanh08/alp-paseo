@@ -38,6 +38,8 @@ export type LiveEntry = {
   lease?: string;
   fingerprint?: string;
   startedAt: number;
+  /** The brief it was given, repeated to it after a compaction (ALPD §57). */
+  brief?: string;
   /** The alpd process that wrote the entry; another epoch means an earlier alpd. */
   epoch: string;
 };

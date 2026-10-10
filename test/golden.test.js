@@ -41,11 +41,14 @@ test('alp log of a tree whose agents are slow, crash mid-turn and hit a usage li
   const { root, main, agents, runtime, runLog } = await tree(t, { prefix: 'alp-golden-', open: { model: 'codex:gpt-5.6-sol' }, options: directory => ({ language: 'English', pauseFile: `${directory}/pause.json` }) });
   const finished = id => until(async () => (await runLog()).some(entry => entry.event === 'assignment.finished' && entry.assignmentId === id), `${id} to finish`);
 
-  // A writer that pins a decision, fills its context and is slow to hand off.
+  // A writer that pins a decision, fills its context until it is compacted, and is slow to hand off.
   const writer = await main.call('alp_delegate', { agent: 'peer', task: 'Write the parser', wait: false });
   await until(() => agents[1]?.started.length === 1);
   await agents[1].call('alp_pin', { kind: 'decision', body: 'Parse with a state machine' });
   agents[1].usage(85_000);
+  await until(() => agents[1].steered.length === 1, 'the context advisory');
+  agents[1].compact(89_000, 12_000);
+  await until(() => agents[1].steered.length === 2, 'what ALP holds after the compaction');
   await agents[1].slowHandoff(20, { outcome: 'complete', summary: 'Parser written', verification: ['npm test: 12 passed'] }, 'Done');
   await finished(writer.assignmentId);
   await main.call('alp_wait', {});

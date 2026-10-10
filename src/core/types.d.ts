@@ -32,4 +32,6 @@ export interface ResolvedAgent {
   /** The permission mode the agent runs in unless its caller asks for another. */
   mode?: 'read-only' | 'workspace-write' | 'full-access';
   description?: string;
+  /** The context window it works in before its runtime compacts, in tokens; absent: the model's (ALPD §57). */
+  context?: number;
 }

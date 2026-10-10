@@ -402,6 +402,14 @@ const names = (lists: Lists, kind: Kind) => (lists[kind] ?? []).map(row => row.n
 const toggle = (list: string[] | undefined, name: string, on: boolean) => { const set = new Set(list ?? []); if (on) set.add(name); else set.delete(name); return [...set]; };
 const setOrDelete = (target: Content, key: string, value: unknown) => { if (value === '' || value === undefined || (Array.isArray(value) && !value.length)) delete target[key]; else target[key] = value; };
 
+/** An agent's context window (ALPD §57): the model's, or a smaller one; a value set by hand stays listed. */
+const CONTEXT_SIZES = [200_000, 400_000, 600_000, 1_000_000];
+export const contextOptions = (current: unknown) => [
+  { label: 'Auto (the model\'s)', value: '' },
+  ...[...new Set([...CONTEXT_SIZES, ...(typeof current === 'number' ? [current] : [])])].sort((a, b) => a - b)
+    .map(tokens => ({ label: tokens >= 1_000_000 ? `${tokens / 1_000_000}M tokens` : `${Math.round(tokens / 1000)}k tokens`, value: String(tokens) })),
+];
+
 /** An agent, by tab: what it runs on, its instructions, and the skills, MCP servers and hooks it uses. Without a tab, all of it. */
 /**
  * given: the skills the library gives the agent by name. With setGiven (the library scope) the
@@ -419,6 +427,8 @@ export function AgentForm({ content, update, lists, styles, theme, tab, given = 
           <SettingsSelect label="Provider" hint="The team or project settings may choose another" value={config.provider ?? ''} options={[{ label: 'Default', value: '' }, { label: 'Codex', value: 'codex' }, { label: 'Claude Code', value: 'claude' }, ...names(lists, 'providers').map(provider => ({ label: `${provider} (ACP)`, value: provider }))]} onValueChange={field('provider')} />
           <SettingsInput label="Model" hint="Such as claude:claude-sonnet-5-5, codex:gpt-6-sol or acp:gemini" initialValue={config.model ?? ''} onChangeText={field('model')} />
           <SettingsInput label="Thinking" hint="Effort, such as low, medium or high" initialValue={config.thinking ?? ''} onChangeText={field('thinking')} />
+          <SettingsSelect label="Context" hint="How much context it works with before the runtime compacts it" value={typeof config.context === 'number' ? String(config.context) : ''}
+            options={contextOptions(config.context)} onValueChange={value => update(draft => { draft.config ??= {}; setOrDelete(draft.config, 'context', value ? Number(value) : ''); })} />
           <SettingsSelect label="Default mode" value={config.mode ?? ''} options={MODES.map(mode => ({ label: mode || 'As its requester chooses', value: mode }))} onValueChange={field('mode')} />
         </SettingsSection>
       ) : null}
