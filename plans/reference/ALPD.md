@@ -1793,3 +1793,12 @@ Goal: on the phone the composer showed two pills: Paseo's own "0/1 tasks", made 
 **Evidence.**
 - `test/paseo.test.js`: a task main started is kept for the pill, and Paseo gets no todo item.
 - `test/panel.test.js`: menu order and label with session tasks; a pill finds its session through the persistence handle.
+
+## 56. Turns the runtime starts by itself (2026-10-10)
+
+Goal: in the user's `tools` session, main ran its CI watch in the background, as D25 asks. When the command ended, Claude Code answered in a turn of its own, which ALP had not started. ALP refused every tool call in it ("ALP tools are unavailable"), so main could not close its task.
+
+- `ClaudeTransport` adopts such a turn: the first message of the session's own (not a sub-agent's) that arrives with no turn running starts one with a new id and reports `turn/started`. The result ends it with `turn/completed`, as for any turn.
+- The runtime follows a `turn/started` it did not ask for when no turn of its own runs: the turn becomes the session's active one, with `turn.started` of origin `runtime`. ALP's tools work in it, and its end runs the usual turn-end path: hooks, supervisor review, the todo list and settling. A `turn/started` while ALP's own turn runs changes nothing.
+
+**Evidence.** `test/reachable.test.js`: the transport adopts a turn once, not for a sub-agent; the runtime follows a turn the runtime started, `alp_board` works in it, its end is a turn end, and a late report does not take over ALP's turn.

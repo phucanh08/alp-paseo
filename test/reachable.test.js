@@ -145,3 +145,42 @@ test('while the user waits a minute for main\'s first words, every ALP tool resu
   main.notification('item/completed', { threadId: main.threadId, item: { type: 'agentMessage', id: 'reply', text: 'Lead đang review, khoảng 10 phút nữa xong ạ.' } });
   assert.equal((await main.call('alp_board', {})).userWaiting, undefined);
 });
+
+test('Claude adopts a turn it starts by itself, as after a background task ended (ALPD §56)', async () => {
+  const { ClaudeTransport } = await import('../dist/runtime/index.js');
+  const { tmpdir } = await import('node:os');
+  const transport = new ClaudeTransport(process.execPath, tmpdir(), process.env);
+  const seen = [];
+  transport.onNotification((method, params) => (method === 'turn/started' || method === 'turn/completed') && seen.push([method, params.turn.id]));
+  const assistant = (parent = null) => ({ type: 'assistant', parent_tool_use_id: parent, message: { id: `m${seen.length}`, content: [{ type: 'text', text: 'CI is green' }] } });
+  // A sub-agent's message starts nothing; the session's own does, once.
+  transport.handle(assistant('tool-1'));
+  transport.handle(assistant());
+  transport.handle(assistant());
+  transport.handle({ type: 'result', subtype: 'success', is_error: false });
+  assert.equal(seen.length, 2);
+  assert.deepEqual(seen.map(([method]) => method), ['turn/started', 'turn/completed']);
+  assert.equal(seen[0][1], seen[1][1]);
+});
+
+test('ALP follows a turn the runtime started by itself: its tools work and its end is a turn end', async t => {
+  const { runtime, main, runLog } = await tree(t, { options: () => ({ checkInMs: 0 }) });
+  const events = [];
+  runtime.onEvent(envelope => envelope.sessionId === 'root' && events.push(envelope.event));
+  main.finish('Watching CI in the background.');
+  await until(() => events.some(event => event.type === 'turn.ended'), 'the first turn to end');
+  // The background command ends; Claude answers in a turn ALP did not start.
+  main.turnId = 'native-turn';
+  main.notification('turn/started', { threadId: main.threadId, turn: { id: 'native-turn' } });
+  assert.deepEqual(events.at(-1), { type: 'turn.started', turnId: 'native-turn', origin: 'runtime' });
+  const board = await main.call('alp_board', {});
+  assert.equal(board.error, undefined, JSON.stringify(board));
+  main.finish('CI is green; closing the task.');
+  await until(() => events.filter(event => event.type === 'turn.ended').length === 2, 'the native turn to end');
+  assert.equal(events.at(-1).turnId, 'native-turn');
+  // A turn ALP knows of is not taken over by one the runtime reports.
+  await runtime.prompt('root', { clientMessageId: 'm2', delivery: 'auto', content: [{ type: 'text', text: 'Next' }] });
+  main.notification('turn/started', { threadId: main.threadId, turn: { id: 'late' } });
+  assert.notEqual(events.at(-1).turnId, 'late');
+  assert.ok((await runLog()).length);
+});

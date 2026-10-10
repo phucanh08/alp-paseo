@@ -1382,6 +1382,16 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       return;
     }
 
+    // A turn the native runtime started by itself (ALPD §56): ALP follows it as its own, so
+    // its tools work and its end wakes, reviews and settles as any turn's does.
+    if (method === 'turn/started') {
+      if (!session.active && params.turn?.id) {
+        session.active = params.turn.id;
+        emit(sessionId, { type: 'turn.started', turnId: params.turn.id, origin: 'runtime' });
+      }
+      return;
+    }
+
     if (
       method === 'turn/completed' &&
       params.turn.id === session.active

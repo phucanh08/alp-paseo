@@ -957,6 +957,10 @@ work runs, so you can keep talking with it.
   each with options and a recommended default, and the offer to decide with
   those defaults.
 
+When a command main ran in the background ends, Claude may answer in a turn of its
+own. ALP follows that turn as one of main's: its ALP tools work, and its end is
+reviewed and reported like any other turn's.
+
 ## Structured handoff
 
 Every child session gets an `alp_handoff` tool. Before ending its turn the child

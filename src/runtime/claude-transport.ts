@@ -555,6 +555,12 @@ export class ClaudeTransport {
       this.emit('account/rateLimits/updated', { claude: message.rate_limit_info });
       return;
     }
+    // Claude starts a turn by itself when a background task it ran ends (ALPD §56). Adopt it, so
+    // ALP's tools work in it and its end is reported like any other turn's.
+    if (message.type === 'assistant' && !message.parent_tool_use_id && !this.activeTurn && !this.closed) {
+      this.activeTurn = randomUUID();
+      this.emit('turn/started', { threadId: this.threadId, turn: { id: this.activeTurn } });
+    }
     if (message.type === 'assistant' && message.error === 'rate_limit') this.limitedTurn = true;
     // How full the context is, reported as Codex does: the tokens of the latest model call against the window.
     const usage = message.type === 'assistant' && !message.parent_tool_use_id ? (message.message as any).usage : undefined;
