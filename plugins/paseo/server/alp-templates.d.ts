@@ -7,3 +7,8 @@ declare module 'alp:web' {
   const assets: Record<string, { type: string; body: string }>;
   export default assets;
 }
+
+declare module 'alp:plugin-client' {
+  const plugin: { id: string; requirements: { paseo?: string }; factory: string };
+  export default plugin;
+}

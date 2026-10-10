@@ -25,7 +25,7 @@ export type WebAssets = Record<string, { type: string; body: string }>;
 export type WebInfo = { port: number; token: string; url: string; pid: number; serverId: string };
 
 /** The built ALP web app (Paseo's app, D31): served from a directory, its socket speaks Paseo's protocol. */
-export type WebApp = { dir: string; gateway: PaseoGateway & { close?(): void } };
+export type WebApp = { dir: string; gateway: PaseoGateway & { close?(): void; scripts?: Record<string, string> } };
 
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -112,6 +112,13 @@ export function createWebServer({ daemon, assets, app, home, port = DEFAULT_WEB_
     if (!hosts().has(request.headers.host ?? '')) { response.writeHead(403).end('Forbidden host'); return; }
     if (request.method !== 'GET' && request.method !== 'HEAD') { response.writeHead(405).end(); return; }
     const pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
+    // Scripts alpd makes itself, such as its plugin's client code (ALPD §62 step 7).
+    const script = app?.gateway.scripts?.[pathname];
+    if (script !== undefined) {
+      response.writeHead(200, { ...headers('text/javascript; charset=utf-8', true), 'cache-control': 'no-cache', 'content-length': String(Buffer.byteLength(script)) });
+      response.end(request.method === 'HEAD' ? undefined : script);
+      return;
+    }
     if (app) { serveApp(request, response, app.dir, pathname).catch(() => { if (!response.headersSent) response.writeHead(500); response.end(); }); return; }
     // The app routes in the page: any other path gets the page.
     const asset = assets[pathname] ?? (path.extname(pathname) ? undefined : assets['/index.html']);

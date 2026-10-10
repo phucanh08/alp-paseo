@@ -143,7 +143,7 @@ test('what the app reads by itself gets the empty answer of a daemon without tha
   assert.deepEqual((await ask(client, { type: 'list_terminals_request', requestId: 't1', cwd: root })).payload.terminals, []);
   assert.equal((await ask(client, { type: 'subscribe_terminals_request', requestId: 't2', cwd: root })).type, 'terminals_changed');
   assert.equal((await ask(client, { type: 'workspace_setup_status_request', requestId: 'w1', workspaceId: root })).payload.snapshot, null);
-  assert.equal((await ask(client, { type: 'get_daemon_config_request', requestId: 'd1' })).payload.config.pluginsEnabled, false);
+  assert.equal((await ask(client, { type: 'get_daemon_config_request', requestId: 'd1' })).payload.config.pluginsEnabled, true);
   assert.deepEqual((await ask(client, { type: 'list_provider_features_request', requestId: 'p1', draftConfig: { provider: 'alp', cwd: root } })).payload.features, []);
   assert.deepEqual((await ask(client, { type: 'directory_suggestions_request', requestId: 's1', query: '' })).payload.directories, []);
 });
@@ -338,4 +338,68 @@ test('projects and workspaces are kept by alpd: add, create with an agent, title
   assert.equal(removed.accepted, true);
   await client.next(frame => frame.message?.type === 'project.update' && frame.message.payload.kind === 'remove' && frame.message.payload.projectId === folder.project.projectId);
   assert.deepEqual((await ask(client, { type: 'project.list.request', requestId: 'l2' })).payload.projects.map(entry => entry.projectId), [project.projectId]);
+});
+
+test("ALP's plugin runs in the app from alpd: its script, catalog and RPCs", async t => {
+  const { connected, ask, root, origin } = await setup(t);
+  // The plugin's code is a same-origin script, so the page needs no 'unsafe-eval'.
+  const script = await fetch(`${origin}/alp-plugins.js`);
+  assert.equal(script.status, 200);
+  assert.match(script.headers.get('content-type'), /javascript/);
+  assert.doesNotMatch(script.headers.get('content-security-policy'), / 'unsafe-eval'/);
+  const code = await script.text();
+  assert.match(code, /^window\.__ALP_PLUGINS__ = Object\.assign\(window\.__ALP_PLUGINS__ \|\| \{\}, \{ "alp-provider": \(function\(require\)/);
+  const factory = new Function('window', `${code}; return window.__ALP_PLUGINS__['alp-provider'];`)({});
+  // Paseo's app calls it with its require shim and takes the default export as the plugin's setup.
+  const anything = new Proxy(function () {}, { get: (_target, key) => key === '__esModule' ? undefined : anything, apply: () => anything, construct: () => anything });
+  const shim = name => { if (['react', 'react/jsx-runtime', 'react-native', '@tanstack/react-query', 'zod'].includes(name) || name.startsWith('@getpaseo/plugin')) return anything; throw new Error(`not in the app: ${name}`); };
+  assert.equal(typeof factory(shim).default, 'function');
+
+  const client = await connected();
+  const features = client.frames.find(frame => frame.message?.payload?.status === 'server_info').message.payload.features;
+  assert.deepEqual([features.plugins, features.pluginSettings, features.providerSubagents], [true, true, true]);
+  const [entry] = (await ask(client, { type: 'plugin.catalog.get.request', requestId: 'c1' })).payload.plugins;
+  assert.equal(entry.id, 'alp-provider');
+  assert.match(entry.clientBundle, /^alp-preloaded:alp-provider:[0-9a-f]{16}$/);
+  assert.ok(entry.requirements.paseo);
+  assert.equal((await ask(client, { type: 'plugin.list.request', requestId: 'l1' })).payload.plugins[0].status, 'running');
+
+  const invoke = async (method, input) => (await ask(client, { type: 'plugin.rpc.invoke.request', requestId: `${method}-${Math.random()}`, pluginId: 'alp-provider', method, input })).payload;
+  assert.deepEqual((await invoke('alp.tasks.list', { directory: root })).output.tasks, []);
+  const added = (await invoke('alp.tasks.add', { directory: root, title: 'Write the docs' })).output;
+  assert.match(added.id, /^t-/);
+  assert.deepEqual((await invoke('alp.tasks.list', { directory: root })).output.tasks.map(task => task.title), ['Write the docs']);
+  assert.equal((await invoke('alp.tasks.change', { directory: root, id: added.id, action: 'close' })).output.status, 'closed');
+  assert.ok((await invoke('alp.library.list', { directory: root, kind: 'teams' })).output.entries.length > 0);
+  // A bad call fails as Paseo's daemon fails it, and an unknown one says so.
+  assert.equal((await invoke('alp.tasks.add', { directory: root, title: '' })).code, 'handler_error');
+  assert.equal((await invoke('alp.nope', {})).code, 'method_not_found');
+});
+
+test('the team members a root runs are its subagents, each with its own timeline', async t => {
+  const { connected, ask, root, agents } = await setup(t);
+  await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify({ delegation: { main: ['lead'] } }));
+  const client = await connected();
+  const agentId = (await ask(client, { type: 'create_agent_request', requestId: 'a1', config: { provider: 'alp', cwd: root }, initialPrompt: 'Delegate', labels: {} })).payload.agentId;
+  await until(() => agents[0]?.started.length === 1, 'the first turn');
+  const lead = agents[0].call('alp_delegate', { agent: 'lead', wait: true, task: 'Investigate the logs' });
+  const opened = (await client.next(frame => frame.message?.type === 'agent.provider_subagents.update' && frame.message.payload.kind === 'upsert')).message.payload.subagent;
+  assert.deepEqual([opened.parentAgentId, opened.parentSubagentId, opened.title, opened.status, opened.provider], [agentId, null, 'lead', 'running', 'alp']);
+  await until(() => agents[1]?.started.length === 1, "the lead's turn");
+  agents[1].finish('Found it.');
+  await lead;
+  await client.next(frame => frame.message?.type === 'agent.provider_subagents.update' && frame.message.payload.subagent?.status === 'completed');
+  const live = client.frames.filter(frame => frame.message?.type === 'agent.provider_subagents.update' && frame.message.payload.kind === 'timeline').map(frame => frame.message.payload);
+  assert.ok(live.every(payload => payload.parentAgentId === agentId && payload.subagentId === opened.id && payload.epoch));
+  assert.ok(live.some(payload => payload.item.type === 'assistant_message' && payload.item.text === 'Found it.'));
+  // Neither on the root's own timeline.
+  assert.ok(!client.frames.some(frame => frame.message?.type === 'agent_stream' && frame.message.payload.event.item?.text === 'Found it.'));
+
+  const [listed] = (await ask(client, { type: 'agent.provider_subagents.list.request', requestId: 's1', parentAgentId: agentId })).payload.subagents;
+  assert.deepEqual([listed.id, listed.status], [opened.id, 'completed']);
+  assert.match(listed.description, /Investigate the logs/);
+  const timeline = (await ask(client, { type: 'agent.provider_subagents.timeline.get.request', requestId: 's2', parentAgentId: agentId, subagentId: opened.id })).payload;
+  assert.equal(timeline.error, null);
+  assert.ok(timeline.rows.some(row => row.item.type === 'assistant_message' && row.item.text === 'Found it.'));
+  assert.equal((await ask(client, { type: 'agent.provider_subagents.timeline.get.request', requestId: 's3', parentAgentId: agentId, subagentId: 'missing' })).payload.error, 'No subagent missing');
 });
