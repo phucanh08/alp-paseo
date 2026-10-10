@@ -69,6 +69,7 @@ export type DaemonServer = {
 export type SessionSummary = SessionSnapshot & {
   status: SessionStatus;
   title?: string;
+  archived?: boolean;
   lastError?: SessionRecord['lastError'];
   updatedAt?: string;
 };
@@ -118,7 +119,8 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
     }
     if (!record) return;
     if (event.type === 'session.updated') save(record, { session: { ...record.session, ...event.session, ...(event.session.parked ? {} : { parked: undefined }) } });
-    else if (event.type === 'turn.started') save(record, { status: 'running', activeTurnId: event.turnId });
+    // Work on an archived session brings it back.
+    else if (event.type === 'turn.started') save(record, { status: 'running', activeTurnId: event.turnId, archived: undefined });
     else if (event.type === 'turn.ended') save(record, { status: 'idle', activeTurnId: undefined, ...(event.state === 'failed' ? { lastError: { message: event.error?.message ?? 'Turn failed' } } : {}) });
     else if (event.type === 'session.failed') save(record, { status: 'error', lastError: event.error });
     else if (event.type === 'session.closed') save(record, { status: record.status === 'error' ? 'error' : 'closed', activeTurnId: undefined });
@@ -291,7 +293,16 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
     const session = live ?? record?.session;
     if (!session) return undefined;
     const status: SessionStatus = live ? (live.activeTurnId ? 'running' : 'idle') : record?.status === 'error' ? 'error' : 'closed';
-    return { ...session, ...(live ? {} : { busy: false, activeTurnId: undefined }), status, title: record?.title, lastError: record?.lastError, updatedAt: record?.updatedAt };
+    return { ...session, ...(live ? {} : { busy: false, activeTurnId: undefined }), status, title: record?.title, ...(record?.archived ? { archived: true } : {}), lastError: record?.lastError, updatedAt: record?.updatedAt };
+  }
+
+  /** The record of a root the user acts on. */
+  function rootRecord(sessionId: string) {
+    if (typeof sessionId !== 'string') throw new RpcError(-32602, 'sessionId is required');
+    const record = records.get(sessionId);
+    if (!record) throw new RpcError(ERROR.notFound, `No session ${sessionId}`);
+    if (record.rootId !== record.id) throw new RpcError(-32602, 'Only a root session can be renamed or archived');
+    return record;
   }
 
   function known(sessionId: string) {
@@ -540,14 +551,34 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
       return {};
     },
 
+    /** The user's name for a root, in place of its first prompt (ALPD §61). */
+    'session.rename'(_connection, { sessionId, title }) {
+      if (typeof title !== 'string' || !title.trim() || title.length > 200) throw new RpcError(-32602, 'title must be 1 to 200 characters');
+      const record = rootRecord(sessionId);
+      // A name is not activity: the record keeps its time.
+      Object.assign(record, { title: title.replace(/\s+/g, ' ').trim() });
+      void store?.put(record);
+      return { session: summary(record.id) };
+    },
+
+    /** Sets a root aside: it closes, with its tree, and leaves the lists until unarchived (ALPD §61). */
+    async 'session.archive'(_connection, { sessionId, archived = true }) {
+      const record = rootRecord(sessionId);
+      if (archived && runtime.snapshot(record.id)) await runtime.close(record.id);
+      Object.assign(record, { archived: archived === true ? true : undefined });
+      void store?.put(record);
+      return { session: summary(record.id) };
+    },
+
     'session.get'(_connection, { sessionId }) {
       return { session: known(sessionId) };
     },
 
-    'session.list'(_connection, { projectRoot, rootsOnly = false, includeClosed = false } = {}): { sessions: SessionSummary[] } {
+    'session.list'(_connection, { projectRoot, rootsOnly = false, includeClosed = false, includeArchived = false } = {}): { sessions: SessionSummary[] } {
       const ids = new Set([...runtime.list().map(session => session.id), ...records.keys()]);
       const sessions = [...ids].map(summary).filter((session): session is SessionSummary => !!session)
         .filter(session => includeClosed || session.status === 'idle' || session.status === 'running')
+        .filter(session => includeArchived || !session.archived)
         .filter(session => !rootsOnly || !session.parentId)
         .filter(session => projectRoot === undefined || session.projectRoot === projectRoot)
         .sort((a, b) => Number(!!a.parentId) - Number(!!b.parentId) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));

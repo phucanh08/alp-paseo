@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { access, readdir, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -75,6 +75,21 @@ export function workspaceHandlers(): Record<string, (params: any) => Promise<unk
         project: await isProject(directory),
         directories: await Promise.all(folders.map(async name => ({ name, project: await isProject(path.join(directory, name)) }))),
       };
+    },
+
+    /** The checkout's branch, for viewers that copy it. */
+    async 'project.info'({ projectRoot }) {
+      const root = await absoluteDirectory(projectRoot);
+      const branch = await run('git', ['-C', root, 'branch', '--show-current']).then(result => result.stdout.trim(), () => undefined);
+      return { projectRoot: root, git: branch !== undefined, ...(branch ? { branch } : {}) };
+    },
+
+    /** Shows a directory in the system's file manager, on the user's machine. */
+    async 'project.reveal'({ path: where }) {
+      const directory = await absoluteDirectory(where, 'path');
+      const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
+      spawn(opener, [directory], { stdio: 'ignore', detached: true }).on('error', () => {}).unref();
+      return {};
     },
 
     /** The checkout's changed files and its diff against HEAD, untracked files listed. */

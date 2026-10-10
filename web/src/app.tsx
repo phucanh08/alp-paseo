@@ -7,7 +7,7 @@ import type { PauseState, SessionSummary } from './types';
 import { SessionScreen } from './session';
 import { NewSession, ProjectPicker } from './start';
 import { Icon } from './ui';
-import { applyTheme, DEFAULT_WIDTH, HistoryScreen, SearchPalette, Sidebar, type Theme } from './sidebar';
+import { applyTheme, archive, DEFAULT_WIDTH, HistoryScreen, SearchPalette, Sidebar, type Theme } from './sidebar';
 import { AlpdContext, attached, follow, go, parse, rememberProject, savedProjects } from './context';
 
 /**
@@ -45,7 +45,9 @@ function useSessions(alpd: Alpd) {
     }).catch(() => {});
     void load();
     const timer = setInterval(load, 4000);
-    return () => { live = false; clearInterval(timer); };
+    // A rename or an archive asks again at once.
+    addEventListener('alp-sessions', load);
+    return () => { live = false; clearInterval(timer); removeEventListener('alp-sessions', load); };
   }, [alpd, tick]);
   return { sessions, pauses, asking, refresh: useCallback(() => setTick(value => value + 1), []) };
 }
@@ -98,10 +100,17 @@ function Shell({ alpd }: { alpd: Alpd }) {
       if (key === 'k') { event.preventDefault(); setSearching(value => !value); }
       else if (key === 'b') { event.preventDefault(); setHidden(value => !value); }
       else if (key === 'o' && event.shiftKey) { event.preventDefault(); newSession(); }
+      else if (key === 'backspace' && event.shiftKey && route.screen === 'session') {
+        // Paseo's ⇧⌘⌫: archive the session on screen (a root; a team member's screen is not one).
+        const target = event.target as HTMLElement;
+        if (target.closest('input, textarea, [contenteditable]') || !sessions.some(session => session.id === route.id)) return;
+        event.preventDefault();
+        if (confirm('Archive this session? It closes and leaves the sidebar; History can bring it back.')) void archive(alpd, route.id, route.id);
+      }
     };
     addEventListener('keydown', keys);
     return () => removeEventListener('keydown', keys);
-  }, [newSession]);
+  }, [newSession, route, sessions, alpd]);
 
   return (
     <div className="shell">
