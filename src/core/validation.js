@@ -13,7 +13,7 @@ function requireValue(condition, code, source, message) {
 /** Top-level keys of a project's .alp/settings.json. */
 export const PROJECT_SETTINGS = ['$schema', 'defaultAgent', 'workflow', 'runtime', 'permissions', 'verify', 'delegation'];
 /** Top-level keys of the user's $ALP_HOME/settings.json. */
-export const USER_SETTINGS = ['$schema', 'language', 'permissions', 'limits', 'recovery'];
+export const USER_SETTINGS = ['$schema', 'language', 'permissions', 'limits', 'recovery', 'web'];
 /**
  * Top-level keys ALP no longer reads, with what to use instead. They warn rather than
  * fail, so settings written for an older ALP keep working.
@@ -96,6 +96,13 @@ export function validateUserSettings(settings, source) {
     const extra = Object.keys(settings[key]).find(field => field !== 'autoResume');
     check(!extra, `unsupported ${key} field '${extra}'; use autoResume`);
     if (settings[key].autoResume !== undefined) check(typeof settings[key].autoResume === 'boolean', `${key}.autoResume must be true or false`);
+  }
+  if (settings.web !== undefined) {
+    check(object(settings.web), 'web must be an object');
+    const extra = Object.keys(settings.web).find(field => !['enabled', 'port'].includes(field));
+    check(!extra, `unsupported web field '${extra}'; use enabled or port`);
+    if (settings.web.enabled !== undefined) check(typeof settings.web.enabled === 'boolean', 'web.enabled must be true or false');
+    if (settings.web.port !== undefined) check(Number.isInteger(settings.web.port) && settings.web.port >= 1024 && settings.web.port <= 65535, 'web.port must be a port from 1024 to 65535');
   }
   if (settings.language !== undefined) check(nonempty(settings.language) && settings.language.trim().length <= 40, 'language must be a language name of at most 40 characters, such as Vietnamese or English');
   validatePermissions(settings.permissions, source);
