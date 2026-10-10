@@ -103,7 +103,9 @@ export function validateUserSettings(settings, source) {
 }
 
 /** Keys of an agent's agent.json (ALPD §41). */
-export const AGENT_SETTINGS = ['$schema', 'description', 'provider', 'model', 'thinking', 'mode', 'skills', 'mcp', 'hooks'];
+export const AGENT_SETTINGS = ['$schema', 'description', 'provider', 'model', 'thinking', 'mode', 'context', 'skills', 'mcp', 'hooks'];
+/** The context window an agent may set (ALPD §57), in tokens; 'auto' is the model's. */
+export const CONTEXT_TOKENS = { min: 100_000, max: 1_000_000 };
 const AGENT_MODES = ['read-only', 'workspace-write', 'full-access'];
 const entryName = value => typeof value === 'string' && /^[\w.-]+$/.test(value) && value !== '.' && value !== '..';
 
@@ -142,6 +144,10 @@ export function validateAgentConfig(config, source) {
   if (config.description !== undefined) check(typeof config.description === 'string', 'description must be a string');
   for (const key of ['provider', 'model', 'thinking']) if (config[key] !== undefined) check(nonempty(config[key]), `${key} must be a nonempty string`);
   if (config.mode !== undefined) check(AGENT_MODES.includes(config.mode), `mode must be one of ${AGENT_MODES.join(', ')}`);
+  if (config.context !== undefined) {
+    check(config.context === 'auto' || (Number.isSafeInteger(config.context) && config.context >= CONTEXT_TOKENS.min && config.context <= CONTEXT_TOKENS.max),
+      `context must be "auto" or a number of tokens from ${CONTEXT_TOKENS.min} to ${CONTEXT_TOKENS.max}`);
+  }
   for (const key of ['skills', 'mcp', 'hooks']) {
     if (config[key] === undefined) continue;
     check(Array.isArray(config[key]) && config[key].every(entryName), `${key} must list names of letters, digits, '.', '_' or '-'`);

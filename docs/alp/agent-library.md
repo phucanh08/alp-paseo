@@ -36,6 +36,7 @@ agent.
   "model": "claude-sonnet-5-5",
   "thinking": "medium",
   "mode": "workspace-write",
+  "context": 400000,
   "skills": ["style"],
   "mcp": ["docs"],
   "hooks": ["tests"]
@@ -48,6 +49,10 @@ agent.
   then the session's team for that member, then `agent.json`.
 - `mode` is the agent's default permission mode when its caller does not choose one. A
   permission profile still caps it.
+- `context` is how much context the agent works with before its runtime compacts it:
+  `"auto"` (the default, the model's window) or 100000 to 1000000 tokens. Claude gets it as
+  its compaction window; Codex compacts at 90% of it. See
+  [Context fill and compaction](team-workflow.md#context-fill-and-compaction).
 - `skills`, `mcp` and `hooks` name entries of the project, else the library. A name that
   resolves to neither fails with the `agent.json` path, and so does an unknown key, with a
   suggestion for a likely typo.

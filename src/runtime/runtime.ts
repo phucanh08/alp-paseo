@@ -230,8 +230,10 @@ type Session = {
   progressAt?: number;
   /** A digest of the instructions the session runs with. */
   instructionsSha?: string;
-  /** How far the context advisory went since the context last emptied: 1 plan a handoff, 2 hand off now. */
+  /** The context advisory was given since the context last emptied (ALPD §57). */
   contextLevel?: number;
+  /** An assignment's brief as its requester gave it, repeated after a compaction. */
+  brief?: string;
   /** Why the running turn is being stopped, so its end parks the assignment instead of ending it. */
   parkReason?: string;
   /** Mail arrived while its runtime was paused; it is delivered on resume. */
@@ -322,12 +324,16 @@ const CHECKED_IN = 'Not a result: the assignment keeps running. Act on this mail
 const RESTART_LIMIT = 3;
 const RESTART_WINDOW_MS = 10 * 60_000;
 /**
- * The context advisory (ALPD §35): silent below CONTEXT_PLAN, then once each at
- * CONTEXT_PLAN and CONTEXT_NOW. Below CONTEXT_RESET, as after a compaction, it starts over.
+ * The context advisory (ALPD §57): the runtime compacts a full context and keeps going, so
+ * ALP says nothing until a session's fill reaches CONTEXT_SOON of the point where its
+ * runtime compacts, and then once. Below CONTEXT_RESET of it, as after a compaction, it may
+ * come again. Where the runtime does not say that point, it is COMPACT_SHARE of the window.
  */
-const CONTEXT_PLAN = 0.6;
-const CONTEXT_NOW = 0.8;
+const CONTEXT_SOON = 0.9;
 const CONTEXT_RESET = 0.5;
+const COMPACT_SHARE = 0.9;
+/** How much of an assignment's brief ALP repeats after a compaction. */
+const BRIEF_CHARS = 8000;
 // Placeholder delivery marks while a steer or a woken turn is starting.
 const STEERING = '\u0000steering';
 const STARTING = '\u0000starting';
@@ -744,7 +750,11 @@ const clock = (at = Date.now()) => new Date(at).toTimeString().slice(0, 8);
 const stamp = (line: string, at = Date.now()) => `[${clock(at)}] ${line}`;
 const unstamped = (line: string) => line.replace(/^\[\d\d:\d\d:\d\d\] /, '');
 const span = (ms: number) => ms < 90_000 ? `${Math.max(1, Math.round(ms / 1000))} s` : `${Math.round(ms / 60_000)} min`;
+/** A token count as people say it: 164k, 1M. */
+const thousands = (tokens: number) => tokens >= 1_000_000 && tokens % 1_000_000 < 50_000 ? `${Math.round(tokens / 1_000_000)}M` : `${Math.round(tokens / 1000)}k`;
 
+/** Cuts text to `limit` characters, keeping its lines. */
+const cut = (text: string, limit: number) => text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
 const clip = (text: string, limit = JOURNAL_LINE_CHARS) => {
   const flat = text.replace(/\s+/g, ' ').trim();
   return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
@@ -923,6 +933,17 @@ function targetNote(profiles: Record<string, PermissionProfile | null>) {
       (profile!.workdir === 'copy' ? ', and works in a disposable copy of your tree, so name paths relative to the project, not absolute paths in your tree' : '')).join('; ') + '.'];
 }
 
+/**
+ * The agent's context setting, for the runtime that compacts (ALPD §57): Claude works in a
+ * window of that size, Codex compacts at COMPACT_SHARE of it. Absent: the model's own.
+ */
+function contextConfig(runtimeKind: RuntimeKind, mapping: ResolvedSession) {
+  if (!mapping.context) return {};
+  if (runtimeKind === 'claude') return { context: mapping.context };
+  if (runtimeKind === 'codex') return { config: { model_auto_compact_token_limit: Math.round(mapping.context * COMPACT_SHARE) } };
+  return {};
+}
+
 function nativeSessionConfig(
   runtimeKind: RuntimeKind,
   mapping: ResolvedSession,
@@ -953,6 +974,7 @@ function nativeSessionConfig(
       ].join('\n\n'),
       mcpServers: mapping.mcp,
       thinking: mapping.thinking,
+      ...contextConfig(runtimeKind, mapping),
       nativeMultiAgent: false,
       dynamicTools: [SEND_TOOL, BOARD_TOOL, taskTool(taskActions(mapping, parentAgent, role))],
     };
@@ -985,6 +1007,7 @@ function nativeSessionConfig(
     model: mapping.model,
     sandbox: runtimeKind === 'codex' && mapping.mode === 'full-access' ? 'danger-full-access' : nativeMode(mapping),
     approvalPolicy: codexApproval(mapping),
+    ...contextConfig(runtimeKind, mapping),
     // Claude only: Codex has a permissions field of its own.
     ...(runtimeKind === 'claude' ? { permissions: mapping.permissions, ...(claudeFloor(mapping) ? { floor: claudeFloor(mapping) } : {}) } : {}),
 
@@ -1360,6 +1383,11 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
       session.text.set(params.itemId, text);
       emit(sessionId, { type: 'item', item: { kind: 'assistant_message', id: params.itemId, text } });
+      return;
+    }
+
+    if ((method === 'item/completed' || method === 'item/started') && params.item?.type === 'contextCompaction') {
+      compaction(sessionId, session, params.item, method === 'item/completed');
       return;
     }
 
@@ -2175,30 +2203,74 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   }
 
   /**
-   * Tells a session how full its context is, only when that matters (ALPD §35):
-   * once past CONTEXT_PLAN to plan for it, once past CONTEXT_NOW to act before the
-   * runtime compacts it. An always-visible countdown would distract more than help.
+   * Tells a session once that its context nears compaction (ALPD §57), measured against
+   * the fill at which its runtime compacts: Claude says where; otherwise COMPACT_SHARE of
+   * the window, or of the context setting. Nothing earlier, and no push to hand off: the
+   * runtime compacts and keeps going, and ALP gives the session its state again after.
    */
   function contextReport(sessionId: string, session: Session, usage: any) {
     const used = usage?.last?.totalTokens;
     const window = usage?.modelContextWindow;
     if (session.role === 'supervisor' || typeof used !== 'number' || typeof window !== 'number' || window <= 0) return;
-    const fill = used / window;
+    const compactAt = typeof usage.autoCompactTokens === 'number' && usage.autoCompactTokens > 0
+      ? usage.autoCompactTokens
+      : Math.round(Math.min(session.mapping.context ?? window, window) * COMPACT_SHARE);
+    const fill = used / compactAt;
     if (fill < CONTEXT_RESET) { session.contextLevel = 0; return; }
-    const level = fill >= CONTEXT_NOW ? 2 : fill >= CONTEXT_PLAN ? 1 : 0;
-    if (level <= (session.contextLevel ?? 0)) return;
-    session.contextLevel = level;
-    const percent = Math.round(fill * 100);
-    runLog(rootOf(sessionId), { event: 'context', sessionId, agent: session.mapping.agent.name, percent, level: level === 2 ? 'now' : 'plan' });
+    if (fill < CONTEXT_SOON || session.contextLevel) return;
+    session.contextLevel = 1;
+    runLog(rootOf(sessionId), { event: 'context', sessionId, agent: session.mapping.agent.name, tokens: used, compactAt, level: 'soon' });
+    const size = `Your context holds about ${thousands(used)} tokens; the runtime compacts it at about ${thousands(compactAt)} and keeps going.`;
     const body = session.parent
-      ? level === 2
-        ? `Your context is about ${percent}% full; the runtime will compact it soon and lose detail. Finish the step you are on, then file alp_handoff with outcome partial: what is done, what remains, and where. Your requester continues the rest in a fresh assignment.`
-        : `Your context is about ${percent}% full. Plan how you finish: if much remains, prepare to file alp_handoff with outcome partial, listing what is done and what remains, before it fills.`
-      : level === 2
-        ? `Your context is about ${percent}% full; the runtime will compact it soon and lose detail. Write down now what must survive: pin decisions and findings with alp_pin, keep task notes current, and tell the user if a fresh session would serve better.`
-        : `Your context is about ${percent}% full. Keep decisions and findings on the board with alp_pin and in task notes, so they survive when it is compacted.`;
+      ? `${size} No handoff is needed for that: keep working. After the compaction ALP gives you your brief again; write anything you will need later where it lasts, such as your task's notes.`
+      : `${size} Make sure decisions and findings are pinned with alp_pin and task notes are current; after the compaction ALP gives you your assignments, open questions and tasks again.`;
     // During a turn it steers in; otherwise it waits for the next turn without starting one.
     post(sessionId, { kind: 'note', from: 'alp', assignment: sessionId, body, ...(session.active ? {} : { passive: true }) });
+  }
+
+  /**
+   * A compaction of the session's context, from its start to its end (ALPD §57): shown in
+   * its timeline and the run log; once done, ALP tells the session what it holds of its
+   * work, which the runtime's summary may have lost.
+   */
+  function compaction(sessionId: string, session: Session, item: any, done: boolean) {
+    const failed = done && item.status === 'failed';
+    const tokens = { ...(typeof item.preTokens === 'number' ? { preTokens: item.preTokens } : {}), ...(typeof item.postTokens === 'number' ? { postTokens: item.postTokens } : {}) };
+    const trigger = item.trigger === 'manual' || item.trigger === 'auto' ? { trigger: item.trigger as 'manual' | 'auto' } : {};
+    emit(sessionId, { type: 'item', item: { kind: 'compaction', id: String(item.id), status: !done ? 'running' : failed ? 'failed' : 'completed', ...trigger, ...tokens } });
+    if (!done) return;
+    const agent = session.mapping.agent.name;
+    runLog(rootOf(sessionId), { event: 'compacted', sessionId, agent, ...trigger, ...tokens, ...(failed ? { failed: true, ...(item.error ? { error: String(item.error) } : {}) } : {}) });
+    if (failed) return;
+    session.contextLevel = 0;
+    if (session.supervisor) session.journal.push(stamp(`${agent}'s context was compacted`));
+    if (session.role !== 'supervisor') void restoreAfterCompaction(sessionId, session).catch(() => {});
+  }
+
+  /** What ALP holds of a session's work, told to it after a compaction (ALPD §57). */
+  async function restoreAfterCompaction(sessionId: string, session: Session) {
+    const parts = ['Your context was just compacted. In case the summary lost any of it, this is what ALP holds of your work now.'];
+    if (session.parent && session.brief) parts.push(`Your assignment from ${session.parentAgent ?? 'your requester'}, as it was given:\n${cut(session.brief, BRIEF_CHARS)}`);
+    const running = [...session.assignments.values()].filter(assignment => !assignment.finished);
+    if (running.length) {
+      parts.push('Your assignments still open:\n' + running.map(assignment =>
+        `- ${assignment.id}: ${assignment.agent}${assignment.taskId ? ` on ${assignment.taskId}` : ''}, ${sessions.get(assignment.id)?.parked ? 'parked' : 'running'} for ${span(Date.now() - assignment.startedAt)}`).join('\n'));
+    }
+    if (session.worktrees.size) {
+      parts.push('Finished worktree changes waiting for alp_merge or alp_discard:\n' + [...session.worktrees].map(([id, change]) => `- ${id}: ${change.agent}${change.taskId ? ` on ${change.taskId}` : ''}`).join('\n'));
+    }
+    const asked = [...userQuestions.values()].filter(pending => pending.question.sessionId === sessionId);
+    if (asked.length) parts.push('Waiting for the user to answer:\n' + asked.map(pending => `- ${clip(pending.question.body, 300)}`).join('\n'));
+    if (!session.parent) {
+      const project = session.mapping.agent.projectRoot;
+      const tasks = await loadTasks(project).then(({ tasks, errors }) => taskDigest(tasks, errors), () => '');
+      if (tasks) parts.push(tasks);
+      const board = renderBoard(await boardOf(project));
+      if (board) parts.push(board);
+    }
+    parts.push('Carry on where you were; alp_board and alp_task tell you more.');
+    if (session.closed) return;
+    post(sessionId, { kind: 'note', from: 'alp', assignment: sessionId, body: parts.join('\n\n'), ...(session.active ? {} : { passive: true }) });
   }
 
   /** Remembers a runtime's usage report and warns once per window when it nears its limit. */
@@ -3603,8 +3675,14 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
       child.settle = (state, error) =>
         void finishAssignment(sessionId, session, assignment, state, error);
+      const brief =
+        (task ? `${taskBrief(task, writes(childMode))}\n\n` : '') +
+        (continued ? `${continuedBrief(args.continueFrom, continued)}\n\n` : '') +
+        args.task;
+      child.brief = brief;
       // From here a restarted alpd can continue it: its thread exists.
       void inFlight.put({
+        brief: cut(brief, BRIEF_CHARS),
         assignmentId: childId, rootId, parentId: sessionId, callId: params.callId, agent: args.agent, project, ancestry: [...session.ancestry, args.agent],
         runtime: child.runtimeKind, model: child.mapping.model, threadId: child.threadId, spec: childSpec, delegation: session.delegation,
         mode: childMode, isolation, ...(assignment.taskId ? { taskId: assignment.taskId } : {}), ...(assignment.worktree ? { worktree: assignment.worktree } : {}),
@@ -3629,9 +3707,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
             text:
               `Assignment from ${session.mapping.agent.name}. ` +
               'Finish by filing your handoff for that agent with alp_handoff.\n\n' +
-              (task ? `${taskBrief(task, writes(childMode))}\n\n` : '') +
-              (continued ? `${continuedBrief(args.continueFrom, continued)}\n\n` : '') +
-              args.task +
+              brief +
               (digest ? `\n\n${digest}` : ''),
           },
         ],
@@ -4047,6 +4123,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       await openSession(id, { ...spec, restore: { agent: entry.agent, threadId: entry.threadId, runtime: entry.runtime, model: entry.model, workflow: parent.mapping.workflow } }, 'skip', entry.delegation);
       const child = sessions.get(id)!;
       child.settle = (state, error) => void finishAssignment(entry.parentId, parent, assignment, state, error);
+      if (entry.brief) child.brief = entry.brief;
       if (assignment.taskId && writes(entry.mode)) {
         const task = await getTask(project, assignment.taskId).catch(() => undefined);
         if (task?.paths.length) {

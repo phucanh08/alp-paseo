@@ -1802,3 +1802,30 @@ Goal: in the user's `tools` session, main ran its CI watch in the background, as
 - The runtime follows a `turn/started` it did not ask for when no turn of its own runs: the turn becomes the session's active one, with `turn.started` of origin `runtime`. ALP's tools work in it, and its end runs the usual turn-end path: hooks, supervisor review, the todo list and settling. A `turn/started` while ALP's own turn runs changes nothing.
 
 **Evidence.** `test/reachable.test.js`: the transport adopts a turn once, not for a sub-agent; the runtime follows a turn the runtime started, `alp_board` works in it, its end is a turn end, and a late report does not take over ALP's turn.
+
+## 57. The runtime compacts; ALP keeps its state (2026-10-10)
+
+Goal (D27): §35 measured a Claude session against a 200k window it guessed until the first result. Assignments run one turn and never see a result, so a peer on Opus 5.5 (1M) was told to hand off now at about 164k. Amp's experience (D27) is that pushing agents to manage their context is not worth it. So the runtime compacts, ALP measures against the point where it does, sees it happen, and gives the session ALP's state again after.
+
+- **Measuring.**
+  - `ClaudeTransport` reads `getContextUsage({ detail: 'summary' })` once the session starts. `rawMaxTokens` is the window and `autoCompactThreshold` is where Claude compacts. Measured on 0.3.292: Opus 5.5, Fable 5.1 and Sonnet 5.5 have 1M and compact at 967k; Haiku 4.5 has 200k and compacts at 167k; `autoCompactWindow: 400000` gives 400k and 367k.
+  - `thread/tokenUsage/updated` carries `autoCompactTokens` when known. Before Claude has said what its window is, `modelContextWindow` is `null` and ALP says nothing; a result's window is used only when none was measured.
+  - Codex reports its window itself. ALP takes 90% of it, or of the context setting, as the compaction point.
+- **The advisory.** Once per filling, at 90% of the compaction point, one note: an assignment keeps working, with no handoff needed for it; a root keeps pins and task notes current. Below 50% of the compaction point, or after a compaction, it may come again. Supervisors are skipped. The run log records `{ event: 'context', tokens, compactAt, level: 'soon' }`. Log entries from §35 still print as before.
+- **Seeing a compaction.**
+  - Codex reports one as a `contextCompaction` item, started then completed. `ClaudeTransport` reports Claude's in the same shape: from `status: 'compacting'` to `compact_boundary`, with `trigger`, `preTokens` and `postTokens`. A `compact_result: 'failed'` completes it as failed.
+  - The runtime shows it as a timeline item `compaction` (`running`, then `completed` or `failed`). The Paseo provider maps it to Paseo's own compaction row, or to a warning when it failed.
+  - The run log records `{ event: 'compacted', trigger, preTokens, postTokens }`, which `alp log` prints as `◑ peer's context compacted from 89k to 12k`. A supervisor's journal notes it.
+- **Restoring after it.** A completed compaction posts one note from `alp` (steered in during a turn, passive otherwise). It holds:
+  - for an assignment, its brief as given (task brief, continuation and words, up to 8000 characters); it is kept on the session and in the live book, so a recovered assignment has it too;
+  - the session's open assignments with their state and age, finished worktree changes waiting for `alp_merge` or `alp_discard`, and its questions waiting for the user;
+  - for a root, the task digest and the board.
+- **The context setting.** `agent.json` may set `context`: `"auto"` (the default, the model's) or 100000 to 1000000 tokens. Claude gets it as `autoCompactWindow`; Codex as `model_auto_compact_token_limit` at 90% of it; ACP agents ignore it. Settings → agent → General has a Context select: Auto, 200k, 400k, 600k or 1M.
+
+**Evidence.** `test/context.test.js`:
+- for a peer: nothing below the compaction point, one note at 82k of 90k without `alp_handoff`, the compaction shown running then completed, logged, and the brief returned; a reported compaction point is used, and the note comes again after a compaction; a failed compaction is logged and changes nothing else;
+- main gets its open assignments and tasks after a compaction, and between turns a passive note with no turn;
+- the setting reaches Claude as `context` and Codex as `model_auto_compact_token_limit` (400k → 360k), and bad values are refused;
+- `ClaudeTransport` reports no guessed window, then the measured one over a result's, and a compaction from start to boundary, and a failed one.
+
+`test/golden/log.txt` shows the advisory, the compaction and the restore note.

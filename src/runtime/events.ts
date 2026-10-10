@@ -11,6 +11,8 @@ export type TimelineItem =
   | { kind: 'assistant_message'; id: string; text: string }
   /** Something about ALP as a whole the user should see, such as a usage limit or a pause (ALPD §29). */
   | { kind: 'notice'; id: string; level: 'info' | 'warning' | 'error'; text: string }
+  /** The runtime compacting the session's context (ALPD §57). */
+  | { kind: 'compaction'; id: string; status: 'running' | 'completed' | 'failed'; trigger?: 'auto' | 'manual'; preTokens?: number; postTokens?: number }
   /** The tasks a root's tree created or worked on (plans/reference/ALPD.md §21). */
   | { kind: 'todo'; id: string; items: Array<{ id: string; text: string; status: 'pending' | 'in_progress' | 'completed' }> }
   | {

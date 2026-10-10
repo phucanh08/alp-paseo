@@ -18,6 +18,7 @@ type SDKMessage = any;
 type ClaudeQuery = AsyncGenerator<SDKMessage, void> & {
   supportedModels(): Promise<Array<{ value: string; displayName: string; description: string; supportedEffortLevels?: string[] }>>;
   usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET(options: { skipBehaviors: boolean }): Promise<any>;
+  getContextUsage(options: { detail: 'summary' | 'full' }): Promise<any>;
   interrupt(): Promise<unknown>;
   setPermissionMode(mode: 'default' | 'acceptEdits' | 'bypassPermissions'): Promise<void>;
   close(): void;
@@ -174,6 +175,8 @@ type NativeConfig = {
   permissions?: PermissionRules | null;
   /** The OS sandbox for Bash, when ALP chose one. */
   floor?: 'read-only' | 'workspace-write';
+  /** The context window the session works in before Claude compacts it, in tokens; absent: the model's (ALPD §57). */
+  context?: number;
 };
 
 type PermissionRules = {
@@ -316,9 +319,11 @@ export class ClaudeTransport {
   /** The last rate limit Claude reported, and whether the running turn hit one. */
   private rateLimit?: { status: string; resetsAt?: number; overageStatus?: string; rateLimitType?: string; utilization?: number };
   private limitedTurn = false;
-  /** The model's context window, from the last result, or guessed from the model name before one. */
+  /** The model's context window and the fill at which Claude compacts it, as Claude reports them (ALPD §57). */
   private contextWindow?: number;
-  private model?: string;
+  private compactAt?: number;
+  /** The compaction running now, from its start to its boundary. */
+  private compaction?: string;
 
   constructor(
     private readonly command: string,
@@ -499,8 +504,7 @@ export class ClaudeTransport {
     const rules = config.permissions || config.floor ? { allow: [], deny: [], ...config.permissions, ...(config.floor ? { floor: config.floor, floorRoot: config.cwd } : {}) } : null;
     const { settings: ruleSettings, ...permissions } = claudePermissions(config.sandbox, () => config.sandbox, rules,
       async request => (this.requestHandler ? await this.requestHandler('item/permission/request', request) as PermissionAnswer : { allow: false, message: 'No one can approve it' }));
-    const settings = { ...(config.thinking === 'ultracode' ? { ultracode: true } : {}), ...ruleSettings };
-    this.model = config.model;
+    const settings = { ...(config.thinking === 'ultracode' ? { ultracode: true } : {}), ...(config.context ? { autoCompactWindow: config.context } : {}), ...ruleSettings };
     const options = {
       cwd: config.cwd,
       env: this.env,
@@ -523,6 +527,17 @@ export class ClaudeTransport {
 
     this.query = query({ prompt: this.input, options }) as ClaudeQuery;
     this.pump = this.consume(this.query).catch((error) => this.fail(error));
+    void this.measureContext();
+  }
+
+  /** Reads the window and the compaction threshold Claude resolved for this session, before any turn. */
+  private async measureContext() {
+    // The first read waits for Claude to start; a reply from usage lets ALP guess meanwhile.
+    const usage: any = await optionalRead(async () => this.query?.getContextUsage({ detail: 'summary' }), 60_000);
+    if (!usage) return;
+    const window = usage.rawMaxTokens ?? usage.maxTokens;
+    if (typeof window === 'number' && window > 0) this.contextWindow = window;
+    this.compactAt = usage.isAutoCompactEnabled !== false && typeof usage.autoCompactThreshold === 'number' && usage.autoCompactThreshold > 0 ? usage.autoCompactThreshold : undefined;
   }
 
   private convertMcp(values: Record<string, any>) {
@@ -562,19 +577,40 @@ export class ClaudeTransport {
       this.emit('turn/started', { threadId: this.threadId, turn: { id: this.activeTurn } });
     }
     if (message.type === 'assistant' && message.error === 'rate_limit') this.limitedTurn = true;
+    // A compaction, reported as Codex reports one: a contextCompaction item from start to end (ALPD §57).
+    if (message.type === 'system' && (message.subtype === 'status' || message.subtype === 'compact_boundary')) {
+      const system = message as any;
+      if (system.subtype === 'status' && system.status === 'compacting' && !this.compaction) {
+        this.compaction = randomUUID();
+        this.emit('item/started', { threadId: this.threadId, turnId: this.activeTurn, item: { type: 'contextCompaction', id: this.compaction } });
+      } else if (system.subtype === 'status' && system.compact_result === 'failed') {
+        this.emit('item/completed', { threadId: this.threadId, turnId: this.activeTurn, item: { type: 'contextCompaction', id: this.compaction ?? randomUUID(), status: 'failed', error: system.compact_error } });
+        this.compaction = undefined;
+      } else if (system.subtype === 'compact_boundary') {
+        const meta = system.compact_metadata ?? {};
+        this.emit('item/completed', {
+          threadId: this.threadId, turnId: this.activeTurn,
+          item: { type: 'contextCompaction', id: this.compaction ?? randomUUID(), status: 'completed', trigger: meta.trigger, preTokens: meta.pre_tokens, postTokens: meta.post_tokens },
+        });
+        this.compaction = undefined;
+      }
+      return;
+    }
     // How full the context is, reported as Codex does: the tokens of the latest model call against the window.
+    // Until Claude has said what its window is, ALP does not guess one (ALPD §57).
     const usage = message.type === 'assistant' && !message.parent_tool_use_id ? (message.message as any).usage : undefined;
     if (usage) {
       const totalTokens = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.output_tokens ?? 0);
       const last = { totalTokens, inputTokens: usage.input_tokens ?? 0, cachedInputTokens: usage.cache_read_input_tokens ?? 0, outputTokens: usage.output_tokens ?? 0 };
       this.emit('thread/tokenUsage/updated', {
         threadId: this.threadId, turnId: this.activeTurn,
-        tokenUsage: { last, total: last, modelContextWindow: this.contextWindow ?? (/\[1m\]/i.test(this.model ?? '') ? 1_000_000 : 200_000) },
+        tokenUsage: { last, total: last, modelContextWindow: this.contextWindow ?? null, ...(this.compactAt ? { autoCompactTokens: this.compactAt } : {}) },
       });
     }
     if (message.type === 'result') {
       const windows = Object.values((message as any).modelUsage ?? {}).map((entry: any) => entry?.contextWindow).filter((value): value is number => typeof value === 'number' && value > 0);
-      if (windows.length) this.contextWindow = Math.max(...windows);
+      // Only when it was not measured: the measured window may be the setting's, smaller than the model's.
+      if (windows.length && !this.compactAt) this.contextWindow = Math.max(...windows);
     }
     if (message.type === 'assistant' && !message.parent_tool_use_id) {
       for (const block of message.message.content as any[]) {

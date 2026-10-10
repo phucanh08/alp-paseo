@@ -111,6 +111,11 @@ function timelineItem(item: TimelineItem): ProviderTimelineItem {
   if (item.kind === 'user_message') return { type: 'user_message', id: item.id, text: item.text, ...(item.clientMessageId ? { clientMessageId: item.clientMessageId } : {}) };
   if (item.kind === 'assistant_message') return { type: 'assistant_message', id: item.id, text: item.text };
   if (item.kind === 'notice') return { type: 'notification', id: item.id, level: item.level, message: item.text } as ProviderTimelineItem;
+  // Paseo shows a compaction as loading until it is done; one that failed shows as a warning.
+  if (item.kind === 'compaction') {
+    if (item.status === 'failed') return { type: 'notification', id: item.id, level: 'warning', message: 'Compacting the context failed' } as ProviderTimelineItem;
+    return { type: 'compaction', id: item.id, status: item.status === 'running' ? 'loading' : 'completed', ...(item.trigger ? { trigger: item.trigger } : {}), ...(item.preTokens !== undefined ? { preTokens: item.preTokens } : {}) } as ProviderTimelineItem;
+  }
   if (item.kind === 'todo') return { type: 'todo', id: item.id, items: item.items.map(entry => ({ id: entry.id, text: entry.text, status: entry.status, completed: entry.status === 'completed' })) };
   return {
     type: 'tool_call',
