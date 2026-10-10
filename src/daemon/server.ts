@@ -5,6 +5,7 @@ import path from 'node:path';
 import { AlpRpcError, MAX_FRAME, PROTOCOL_VERSION } from '../client/index.js';
 import { DEFAULT_MODEL, models, modes, thinkingOptions, type AlpEvent, type AlpRuntime, type Envelope, type SessionSnapshot } from '../runtime/index.js';
 import type { Receipt, SessionRecord, SessionStatus, Store } from './store.js';
+import { workspaceHandlers } from './workspace-rpc.js';
 
 /**
  * alpd's JSON-RPC surface over one shared runtime (plans/reference/ALPD.md §3, §6, §14).
@@ -56,6 +57,11 @@ export type DaemonServer = {
   listen(): Promise<void>;
   /** An in-process connection that delivers events synchronously, for embedding. */
   local(): DaemonConnection;
+  /**
+   * A connection over another transport, such as the web app's WebSocket (ALPD §61):
+   * it says daemon.hello first, as a socket client does, and gets JSON-RPC messages back through `send`.
+   */
+  accept(send: (message: unknown) => void): { receive(message: unknown): void; close(): void };
   close(): Promise<void>;
 };
 
@@ -376,6 +382,7 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
   }
 
   const handlers: Record<string, (connection: Connection, params: any) => Promise<unknown> | unknown> = {
+    ...Object.fromEntries(Object.entries(workspaceHandlers()).map(([name, handler]) => [name, (_connection: Connection, params: any) => handler(params)])),
     'daemon.status': () => ({ pid: process.pid, startedAt, version, protocolVersion: PROTOCOL_VERSION, sessions: runtime.list().length, questions: runtime.questions().length, ...(previousExit ? { previousExit } : {}) }),
 
     'session.status'(_connection, { sessionId }) {
@@ -649,6 +656,20 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
         },
         onEvent(listener) { events.add(listener); return () => events.delete(listener); },
         onClose(listener) { closes.add(listener); return () => closes.delete(listener); },
+        close() {
+          if (ended) return;
+          ended = true;
+          disconnect(connection);
+        },
+      };
+    },
+
+    accept(send) {
+      const connection: Connection = { helloed: false, roots: new Set(), send };
+      connections.add(connection);
+      let ended = false;
+      return {
+        receive(message) { if (!ended) void dispatch(connection, message); },
         close() {
           if (ended) return;
           ended = true;

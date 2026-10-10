@@ -32,6 +32,7 @@ const USAGE = `Usage:
   alp daemon <start|stop|status|restart>
   alp daemon <install|uninstall>         run alpd as a login service that restarts after a crash
   alp acp                                serve ALP to an editor (Zed, JetBrains) over the Agent Client Protocol on stdio
+  alp web [--print]                      open the local web app alpd serves; --print only prints its address
   alp doctor [--project DIR] [--fix] [--json]   check this machine and project; --fix repairs what is safe to
   alp run [--agent A] [--team pho|cafe|ID] [--model M] [--mode read-only|workspace-write|full-access] [--thinking T] [--project DIR] [--json] <prompt>
   alp ps [--all]
@@ -1143,6 +1144,31 @@ async function recall(args) {
   console.log(answer.answer);
 }
 
+/** alp web: opens the web app alpd serves on 127.0.0.1, with the token in the address (ALPD §61). */
+async function webCommand(args) {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { print: { type: 'boolean' } } });
+  if (positionals.length) throw new UsageError();
+  const lock = await readLock(alpHome()).catch(() => undefined);
+  await start();
+  const file = path.join(alpHome(), 'web.json');
+  let info;
+  // A fresh alpd writes web.json just before it is ready; one from before the web app has none.
+  for (let i = 0; i < 50; i++) {
+    info = await readFile(file, 'utf8').then(JSON.parse, () => undefined);
+    const current = await readLock(alpHome()).catch(() => undefined);
+    if (info?.pid === current?.pid) break;
+    info = undefined;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  if (!info) throw new Error(lockAlive(lock) ? 'alpd serves no web app: it is older than this alp (alp daemon restart), or "web": { "enabled": false } is set in ~/.alp/settings.json' : 'alpd started without its web app; see ~/.alp/logs/alpd.log');
+  // The token rides in the fragment, which the browser never sends to a server.
+  const url = `${info.url}#token=${info.token}`;
+  console.log(url);
+  if (values.print) return;
+  const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
+  spawn(opener, [url], { stdio: 'ignore', detached: true }).on('error', () => console.error('Open the address above in your browser')).unref();
+}
+
 /** alp acp: ALP as an ACP agent for editors; stdout carries only the protocol (ALPD §60). */
 async function acpCommand(args) {
   if (args.length) throw new UsageError();
@@ -1158,7 +1184,7 @@ async function interrupt(args) {
   console.log('Interrupted');
 }
 
-const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, doctor, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, agents: args => libraryCommand('agents', args), skills: args => libraryCommand('skills', args), mcp: args => ['add', 'rm', 'mv', 'cp', 'test', 'show', 'edit'].includes(args[0]) ? editCommand('mcp', args) : libraryCommand('mcp', args), hooks: args => libraryCommand('hooks', args), providers: args => libraryCommand('providers', args), provider: args => editCommand('providers', args), teams: teamsCommand, trust: trustCommand, agent: args => editCommand('agents', args), team: args => editCommand('teams', args), skill: args => editCommand('skills', args), hook: args => editCommand('hooks', args), verify, recall, pause, resume, language, interrupt, acp: acpCommand };
+const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, doctor, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, agents: args => libraryCommand('agents', args), skills: args => libraryCommand('skills', args), mcp: args => ['add', 'rm', 'mv', 'cp', 'test', 'show', 'edit'].includes(args[0]) ? editCommand('mcp', args) : libraryCommand('mcp', args), hooks: args => libraryCommand('hooks', args), providers: args => libraryCommand('providers', args), provider: args => editCommand('providers', args), teams: teamsCommand, trust: trustCommand, agent: args => editCommand('agents', args), team: args => editCommand('teams', args), skill: args => editCommand('skills', args), hook: args => editCommand('hooks', args), verify, recall, pause, resume, language, interrupt, acp: acpCommand, web: webCommand };
 const [command, ...args] = process.argv.slice(2);
 try {
   if (!Object.hasOwn(commands, command)) throw new UsageError();

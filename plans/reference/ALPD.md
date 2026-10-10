@@ -1904,3 +1904,33 @@ Goal (D30, step 1): editors that speak the Agent Client Protocol use ALP as thei
 
 Live: `node src/cli.js acp` on a temp `ALP_HOME` answered `initialize` (version 0.6.0), `session/new` in an empty directory (set up as an ALP project; Phở and Cafe, full access) and `session/list`.
 
+## 61. The local web app (2026-10-10)
+
+Goal (D30, steps 2–3): installing ALP is enough to code from a browser. alpd serves a web app shaped after Paseo's, and the page speaks alpd's own protocol, so it sees whole trees, tasks and questions.
+
+- **Serving** (`src/daemon/web.ts`): an HTTP server on `127.0.0.1`, port 7433 or `settings.web.port` (the next of 10 when busy), started after the socket unless `settings.web.enabled` is false; alpd runs on without it if it cannot start. `$ALP_HOME/web.json` (0600) holds `{ port, token, url, pid }`; the token is made once and kept, so an open page survives restarts.
+  - The page, its script and stylesheet are built by esbuild from `web/` and embedded in `alpd.js` (`alp:web`), so alpd needs no files beside it, under the CLI and under Paseo alike. Any path without an extension gets the page.
+  - Every response checks `Host` is `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding), and sends `Content-Security-Policy` (`default-src 'self'`, sockets to this port only), `X-Frame-Options: DENY` and no caching.
+- **The socket** `/ws` needs the token (compared in constant time) and an `Origin` of the page itself, so no other site in the browser can reach alpd. Messages are alpd's JSON-RPC, one per WebSocket message, through `DaemonServer.accept(send)`, a connection like a socket client's: `daemon.hello` first, events as notifications. `ws` is bundled; the bundles carry a `require` shim for it.
+- **New RPCs** for viewers outside Paseo (`src/daemon/workspace-rpc.ts`), acting as the user as the plugin's server does:
+  - `tasks.list` / `tasks.add` / `tasks.change` (close, reopen, approve), with the rows the Tasks panel shows, now in `src/core/task-rows.js` and shared with the plugin;
+  - `project.browse { path? }`: the folders in a directory (hidden ones left out, at most 500), whether each is an ALP project;
+  - `project.changes { projectRoot }`: branch, `git status` files and `git diff HEAD`, clipped to 400,000 characters.
+- **`alp web [--print]`** starts alpd when needed, waits for this alpd's `web.json`, and opens `<url>#token=<token>`. The token rides in the fragment, which the browser never sends; the page keeps it in localStorage and drops it from the address.
+- **The page** (`web/src`, React 19, about 220 KB):
+  - The connection says hello, reconnects with backoff, and replays each followed tree after alpd comes back. Items are snapshots by id (§4.2), in the order first seen, rendered once per frame.
+  - **Sidebar:** projects from `session.list` (polled every 4 s) and those opened in the page, each with its sessions (status dot, title, age), a new-session button, and "Open a project" with a folder browser. A pause banner from `daemon.pauses`.
+  - **Session:** the header (title, project, team, main's model, permission select while idle, side-panel toggle); the timeline (user bubbles; Markdown replies; tool rows with icons by kind, expandable output, and for `alp_delegate` a link to the child's session; mail and ALP's prompts as collapsed notes; notices; compaction dividers; task lists); questions with options, a reply box and dismiss; the composer (Enter sends, Shift+Enter for a new line, stop while running). A message to a running root steers it; to a closed one resumes it (`session.create` with `resume`); to an assignment goes as the user's mail (`session.message`).
+  - **New session:** `session.preview` for the teams and main; a team and permission select in the composer; it creates `web-<uuid>` with `persist: true` and prompts.
+  - **Side panel:** Team (`session.status` every 2 s: agents and their state, assignments, worktrees to merge), Tasks (sections as the Paseo panel; approve, close, reopen, add), Changes (files and a diff by file).
+  - The Markdown renderer builds React elements and never inserts HTML, so an agent's text cannot run in the page that holds the token; links must be http(s).
+  - Paseo's dark palette and tokens, with a light scheme; the side panel hides under 900 px, the sidebar under 640 px.
+
+**Evidence.**
+- `test/web.test.js`, with an in-process alpd on a free port:
+  - the page and its headers, any route serves it, a missing file is 404, another Host is 403, and `web.json` records where;
+  - a socket with a wrong token is refused (401), from another origin is refused (403), must say hello first, and answers `session.preview`;
+  - tasks added, listed and closed; a directory that is not a project is refused; folders browse with their project flag; changes without git and with an untracked file;
+  - settings accept `web.enabled` and `web.port` and refuse a low port and unknown fields.
+- Live, on a temp `ALP_HOME` and port 7533: `alp web --print` started alpd and printed the address; the page connected, a new Phở session in read-only ran `ls` on Claude Opus 5.5, its tool row and Vietnamese reply streamed in, the Team tab showed main and the supervisor, Changes listed the untracked files, and dark and light schemes rendered.
+

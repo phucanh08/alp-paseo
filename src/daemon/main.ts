@@ -4,11 +4,13 @@ import { mkdir, open, readFile, rename, stat, unlink, utimes, writeFile } from '
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import templates from 'alp:templates';
+import webAssets from 'alp:web';
 import { alpHome, daemonPaths, PROTOCOL_VERSION } from '../client/index.js';
 import { createAlpRuntime, reclaimCopies, reclaimWorktrees } from '../runtime/index.js';
 import { createDaemonServer } from './server.js';
 import { acquireLock, heartbeat, releaseLock, updateLock } from './lock.js';
 import { createStore } from './store.js';
+import { createWebServer } from './web.js';
 import { validateUserSettings } from '../core/validation.js';
 
 declare const __ALP_VERSION__: string;
@@ -122,11 +124,13 @@ async function run(home: string) {
   });
   const store = createStore(path.join(home, 'state'));
   let stopping: Promise<void> | undefined;
+  let web: ReturnType<typeof createWebServer> | undefined;
   const shutdown = (code = 0) => {
     stopping ??= (async () => {
       const force = setTimeout(() => process.exit(code), 10_000);
       force.unref();
       clearInterval(beat);
+      await web?.close().catch(() => {});
       await server.close().catch(() => {});
       await runtime.shutdown().catch(() => {});
       await store.flush();
@@ -154,6 +158,11 @@ async function run(home: string) {
     await releaseLock(home);
     throw error;
   }
+  // The local web app (ALPD §61); alpd works without it.
+  web = settings?.web?.enabled === false ? undefined : createWebServer({ daemon: server, assets: webAssets, home, port: settings?.web?.port, log: message => console.log(`${new Date().toISOString()} web: ${message}`) });
+  await web?.listen()
+    .then(info => console.log(`${new Date().toISOString()} web app on ${info.url}`))
+    .catch(error => console.error(`${new Date().toISOString()} web app not started`, error));
   await updateLock(home, { ...lock, ready: true });
   // Clients that cannot locate alpd themselves (the Paseo plugin) start it from here next time.
   const { install } = daemonPaths(home);

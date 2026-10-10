@@ -23,7 +23,7 @@ Build a small provider-neutral ALP core, integrate it with Paseo first, then sta
 | 12 | Later, on demand (D21): event journal, orders, retries, review quorum, reload, PR monitor, mail dedupe, D20 leftovers | `phases/12-gascity-later.md` |
 | 13 | D23, building: ALP settings in Paseo — teams (Phở and Cafe become teams), agents, skills, MCP, ALP-run hooks, ACP providers | `phases/13-settings-teams-acp.md` |
 | 14 | Noted for later: mains of different teams working together | `phases/14-team-of-teams.md` |
-| 15 | D30: ALP as an ACP agent (step 1), then a local web app served by alpd (steps 2–3) | `reference/DECISIONS.md` D30, `reference/ALPD.md` §60 |
+| 15 | D30: ALP as an ACP agent (step 1), then a local web app served by alpd (steps 2–3) | `reference/DECISIONS.md` D30, `reference/ALPD.md` §60–§61 |
 
 ## Non-goals for early phases
 

@@ -19,9 +19,12 @@ const embeddedTemplates = {
 
 // Paseo re-bundles plugin code, so the plugin also learns where its alpd was built.
 await build({ entryPoints: ['plugins/paseo/server/index.ts'], outfile: 'plugins/paseo/server/dist/index.js', bundle: true, format: 'esm', platform: 'node', target: 'node20', external: ['@getpaseo/plugin', '@getpaseo/plugin/*', '@anthropic-ai/claude-agent-sdk'], plugins: [embeddedTemplates], define: { __ALP_DAEMON_ENTRY__: JSON.stringify(path.resolve('plugins/paseo/server/dist/alpd.js')) } });
+// ws is CommonJS: bundles that carry it get a require of their own.
+const requireShim = { js: "import { createRequire as __alpRequire } from 'node:module'; const require = __alpRequire(import.meta.url);" };
+
 // The viewer-neutral runtime and the daemon server on their own, for tests.
 for (const [entry, outfile] of [['src/runtime/index.ts', 'dist/runtime/index.js'], ['src/daemon/index.ts', 'dist/daemon/index.js']]) {
-  await build({ entryPoints: [entry], outfile, bundle: true, format: 'esm', platform: 'node', target: 'node20', external: ['@anthropic-ai/claude-agent-sdk'] });
+  await build({ entryPoints: [entry], outfile, bundle: true, format: 'esm', platform: 'node', target: 'node20', external: ['@anthropic-ai/claude-agent-sdk'], ...(entry.includes('daemon') ? { banner: requireShim } : {}) });
 }
 
 // alp acp: the ACP agent the CLI loads (ALPD §60).
@@ -29,8 +32,23 @@ await build({ entryPoints: ['src/acp/main.ts'], outfile: 'dist/acp.js', bundle: 
 // The ACP agent on its own, for tests.
 await build({ entryPoints: ['src/acp/agent.ts'], outfile: 'dist/acp/agent.js', bundle: true, format: 'esm', platform: 'node', target: 'node20' });
 
+// The web app alpd serves (ALPD §61), embedded in alpd so it needs no files beside it.
+const web = await build({ entryPoints: { app: 'web/src/app.tsx' }, outdir: 'dist/web', bundle: true, format: 'esm', platform: 'browser', target: 'es2022', minify: true, write: false, jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' }, legalComments: 'none' });
+const webAssets = { '/index.html': { type: 'text/html; charset=utf-8', body: await readFile('web/index.html', 'utf8') } };
+for (const file of web.outputFiles) {
+  const name = `/${path.basename(file.path)}`;
+  webAssets[name] = { type: name.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8', body: file.text };
+}
+const embeddedWeb = {
+  name: 'embedded-alp-web',
+  setup(build) {
+    build.onResolve({ filter: /^alp:web$/ }, () => ({ path: 'web', namespace: 'alp-web' }));
+    build.onLoad({ filter: /.*/, namespace: 'alp-web' }, () => ({ contents: `export default ${JSON.stringify(webAssets)}`, loader: 'js' }));
+  },
+};
+
 // alpd: for the CLI, and next to the plugin bundle so an installed plugin can start it.
 const { version } = JSON.parse(await readFile('plugins/paseo/package.json', 'utf8'));
 for (const outfile of ['dist/alpd.js', 'plugins/paseo/server/dist/alpd.js']) {
-  await build({ entryPoints: ['src/daemon/main.ts'], outfile, bundle: true, format: 'esm', platform: 'node', target: 'node20', external: ['@anthropic-ai/claude-agent-sdk'], plugins: [embeddedTemplates], define: { __ALP_VERSION__: JSON.stringify(version) } });
+  await build({ entryPoints: ['src/daemon/main.ts'], outfile, bundle: true, format: 'esm', platform: 'node', target: 'node20', external: ['@anthropic-ai/claude-agent-sdk'], plugins: [embeddedTemplates, embeddedWeb], define: { __ALP_VERSION__: JSON.stringify(version) }, banner: requireShim });
 }

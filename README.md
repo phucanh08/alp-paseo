@@ -162,6 +162,21 @@ Agents and ALP write to you in the language set in Settings → ALP → General 
 
 Finished assignments stay recallable for 14 days: main, or the agent that assigned one, asks it with `alp_recall` why it did something, and you ask with `alp recall <assignment|task> "question"`. ALP forks the assignment's session read-only, asks, and drops the fork; the question never changes the assignment's own session. ALP keeps the native threads of assignments for this, and deletes them after 14 days. The Paseo plugin keeps the same daemon running while Paseo runs: it starts alpd with Paseo and again whenever alpd goes down, except after `alp daemon stop`, and its sessions reconnect.
 
+## The web app
+
+alpd serves a web app on your machine, so installing ALP is enough to work from a browser:
+
+```sh
+alp web            # opens http://127.0.0.1:7433 with its access token
+```
+
+- **Left:** your projects and their sessions, newest first. "Open a project" browses your folders; a folder that is not an ALP project yet is set up on its first session.
+- **Middle:** the session. Main's replies, commands and tool calls (click one for its output), delegations with a link to the assignment's own session, mail, notices and compactions, and the composer. Writing while main works adds to its turn; stop ends the turn and the work it started. Questions from the team appear above the composer, with their options.
+- **Right:** the team at work (each agent's state, assignments, worktrees waiting to merge), the project's tasks (approve, close, reopen, add), and the checkout's changes with their diff.
+- A new session chooses its team and permissions first, as in Paseo.
+
+alpd listens on 127.0.0.1 only. The page needs the token `alp web` puts in its address (kept in `~/.alp/web.json`), and alpd refuses requests for another host name and sockets from another site. `"web": { "port": 8000 }` in `~/.alp/settings.json` moves it, and `"web": { "enabled": false }` turns it off. Details: [ALPD §61](plans/reference/ALPD.md#61-the-local-web-app-2026-10-10).
+
 ## Editors (ACP)
 
 `alp acp` serves ALP over the [Agent Client Protocol](https://agentclientprotocol.com) on stdio, so an editor such as Zed or a JetBrains IDE can use ALP as its agent. In Zed's `settings.json`:

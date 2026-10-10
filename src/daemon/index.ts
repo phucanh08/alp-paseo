@@ -2,4 +2,6 @@
 export { createDaemonServer, ERROR } from './server.js';
 export type { DaemonConnection, DaemonServer, SessionSummary } from './server.js';
 export { createStore } from './store.js';
+export { createWebServer, DEFAULT_WEB_PORT, webFile } from './web.js';
+export type { WebAssets, WebInfo } from './web.js';
 export type { SessionRecord, SessionStatus, Store } from './store.js';
