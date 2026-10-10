@@ -1709,3 +1709,24 @@ Goal (D25): agents delegate and run long tools in the background, and wait only 
   - the instructions say background first.
 - `test/team.test.js`: the wake-limit test now counts the requester's steers, after a peer's note wakes nothing.
 - Tests that relied on waiting now pass `wait: true`.
+
+## 52. A sharper supervisor (2026-10-10)
+
+Goal: a review of the user's `tools` session showed the supervisor missing the turn where main left the user waiting 28 minutes on a vague request, and sending two wrong findings. One claimed a recurrence that main's later, refining lesson allowed. The other held main to the supervisor's own commit attribution (Sonnet 4.6, where main runs Opus 5.5). The user chose all five fixes, with Sonnet 5 as the model.
+
+- **Times.** Every journal line is stamped with its local time (`stamp`). `eventful` ignores the stamp.
+- **Waiting.** A supervised root records `userWaiting` when the user asks or steers.
+  - Main's first non-empty message after that adds "main answered the user N after their message of HH:MM:SS".
+  - A turn that ends with no final message while the user waits adds "the user's message of HH:MM:SS got no reply in this turn".
+- **Main's session.** The digest states main's runtime, model, effort and mode, and says the supervisor's own system prompt describes its session, not main's.
+- **Checklist** (`templates/agents/supervisor/AGENT.md`): unclear requests built without asking once; the user left waiting, or long work started unannounced; blocking where work could run in the background (D24, D25). Main is judged by its own session.
+- **Lessons.** The supervisor reads every lesson. A later lesson on the same point refines or replaces an earlier one, so a recurrence means the latest applicable lesson was broken. This is said in the template and in the runtime's lessons line.
+- **Model.** Phở and Cafe run the supervisor on `claude:claude-sonnet-5` with medium effort.
+
+**Evidence.**
+- `test/supervisor.test.js`:
+  - stamped digest lines, the answered-after line, and the session line;
+  - the new checklist and lesson rules in the supervisor's instructions;
+  - Sonnet 5;
+  - a new test for "got no reply in this turn".
+- `test/paseo.test.js`: the supervisor child on Sonnet 5.

@@ -807,7 +807,7 @@ of 16 child assignments per user turn and ancestry depth of 4 remain in effect.
 
 When a root main session opens in Phở or Cafe, and the host can show child
 sessions, the runtime starts its supervisor beside it without delaying main's open.
-The supervisor is agent `supervisor` on `claude:claude-sonnet-4-6` with `medium`
+The supervisor is agent `supervisor` on `claude:claude-sonnet-5` with `medium`
 effort, always read-only, and has only `alp_send` and `alp_board`. It is a child of
 main but not an assignment: it files no handoff, delegates nothing, does not count as
 a peer, and survives interrupts of main. A supervisor that fails to start never fails
@@ -819,13 +819,19 @@ tree during that turn, oldest first: the user's prompt or steer, main's tool cal
 shell commands with their status, assignments with agent, model, effort, mode,
 isolation and task, their results and handoffs, mail between agents, questions to the
 user and answers, board pins, worktree events, main's final message, and
-how the turn ended. The digest is capped at 12,000 characters. A turn that ends while
+how the turn ended. Each line carries its local time. ALP adds when main first
+answered the user after their message, or that the message got no reply in the turn,
+and states main's own session (runtime, model, effort, mode). The supervisor judges
+main by that session, never by its own system prompt. The digest is capped at 12,000 characters. A turn that ends while
 the supervisor is still reviewing is sent when that review ends. The tree counts as
 busy from the end of main's turn until the review is done, so alpd does not close an
 idle tree in between.
 
 The supervisor checks the turn against `ALP.md`, main's `AGENT.md`, the profile and
-the recorded lessons. When it finds process mistakes, it sends main one note with
+the recorded lessons, including leaving the user waiting, building an unclear
+request without asking, and blocking where work could run in the background. A
+later lesson on the same point refines an earlier one, so a recurrence means the
+latest lesson was broken. When it finds process mistakes, it sends main one note with
 `alp_send` to `parent`. That note is deferred mail: it is never steered into a
 running turn or taken by `alp_wait`; it wakes an idle main, or rides on main's next
 turn. Main answers in that turn and records the lesson with

@@ -11,5 +11,5 @@
   },
   "delegation": { "main": ["lead", "oracle", "reviewer"], "lead": ["peer", "oracle", "reviewer"] },
   "maxPeers": 2,
-  "supervisor": { "agent": "supervisor", "model": "claude:claude-sonnet-4-6", "thinking": "medium" }
+  "supervisor": { "agent": "supervisor", "model": "claude:claude-sonnet-5", "thinking": "medium" }
 }
