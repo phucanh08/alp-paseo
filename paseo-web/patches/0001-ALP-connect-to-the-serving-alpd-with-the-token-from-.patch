@@ -1,0 +1,102 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: anhlp <phucanhdn08@gmail.com>
+Date: Sat, 10 Oct 2026 19:56:18 +0700
+Subject: [PATCH 1/2] ALP: connect to the serving alpd with the token from alp
+ web
+
+---
+ packages/app/src/runtime/host-runtime.ts | 46 ++++++++++++++++++++----
+ 1 file changed, 40 insertions(+), 6 deletions(-)
+
+diff --git a/packages/app/src/runtime/host-runtime.ts b/packages/app/src/runtime/host-runtime.ts
+index 2ecbe60..49df8ba 100644
+--- a/packages/app/src/runtime/host-runtime.ts
++++ b/packages/app/src/runtime/host-runtime.ts
+@@ -1413,13 +1413,45 @@ const INITIAL_DAEMON_CONNECTION_HINT_GLOBAL_KEY = "__PASEO_INITIAL_DAEMON_CONNEC
+ export interface InitialDaemonConnectionHint {
+   listen: string;
+   useTls?: boolean;
++  password?: string;
++  label?: string;
+ }
+ 
+ const InitialDaemonConnectionHintSchema: z.ZodType<InitialDaemonConnectionHint> = z.object({
+   listen: z.string().trim().min(1),
+   useTls: z.boolean().optional().default(false),
++  password: z.string().min(1).optional(),
++  label: z.string().min(1).optional(),
+ });
+ 
++// ALP: alpd serves this app and its socket from one origin, and `alp web` hands the
++// page its token in the URL fragment, which the browser never sends anywhere.
++const ALP_TOKEN_STORAGE_KEY = "alp.token";
++
++function readAlpConnectionHint(): InitialDaemonConnectionHint | null {
++  const location = Reflect.get(globalThis, "location") as Location | undefined;
++  if (!location?.host) {
++    return null;
++  }
++  const fromFragment = /(?:^#|&)token=([0-9a-f]{64})(?:&|$)/.exec(location.hash ?? "")?.[1] ?? null;
++  let token = fromFragment;
++  try {
++    if (fromFragment) {
++      globalThis.localStorage?.setItem(ALP_TOKEN_STORAGE_KEY, fromFragment);
++      globalThis.history?.replaceState(globalThis.history.state, "", location.pathname + location.search);
++    }
++    token = fromFragment ?? globalThis.localStorage?.getItem(ALP_TOKEN_STORAGE_KEY) ?? null;
++  } catch {
++    // Storage may be off; the token from the fragment still serves this visit.
++  }
++  return {
++    listen: location.host,
++    useTls: location.protocol === "https:",
++    label: "ALP",
++    ...(token ? { password: token } : {}),
++  };
++}
++
+ export function readInitialDaemonConnectionHint(input?: {
+   isWebRuntime?: boolean;
+ }): InitialDaemonConnectionHint | null {
+@@ -1430,7 +1462,7 @@ export function readInitialDaemonConnectionHint(input?: {
+   const result = InitialDaemonConnectionHintSchema.safeParse(
+     Reflect.get(globalThis, INITIAL_DAEMON_CONNECTION_HINT_GLOBAL_KEY),
+   );
+-  return result.success ? result.data : null;
++  return result.success ? result.data : readAlpConnectionHint();
+ }
+ 
+ function readConfiguredLocalDaemonOverride(): string | null {
+@@ -1578,10 +1610,9 @@ export class HostRuntimeStore {
+       ? this.deps.readInitialConnectionHint()
+       : readInitialDaemonConnectionHint();
+     if (initialHint) {
+-      const bootstrapped = await this.bootstrapInitialConnectionHint(initialHint);
+-      if (bootstrapped) {
+-        return;
+-      }
++      // ALP: the page's own alpd is the only daemon; never fall back to a Paseo daemon on localhost:6767.
++      await this.bootstrapInitialConnectionHint(initialHint);
++      return;
+     }
+ 
+     if (override) {
+@@ -1739,7 +1770,8 @@ export class HostRuntimeStore {
+       connection.type === "directTcp"
+         ? { ...connection, useTls: hint.useTls ?? connection.useTls ?? false }
+         : connection;
+-    if (registryHasConnection(this.hosts, connectionWithHint)) {
++    // A new token from `alp web` replaces the one the registry kept.
++    if (registryHasConnection(this.hosts, connectionWithHint) && !hint.password) {
+       return true;
+     }
+ 
+@@ -1747,6 +1779,8 @@ export class HostRuntimeStore {
+       await this.probeAndUpsertConnection({
+         connection: connectionWithHint,
+         timeoutMs: DEFAULT_LOCALHOST_BOOTSTRAP_TIMEOUT_MS,
++        ...(hint.password ? { password: hint.password } : {}),
++        ...(hint.label ? { label: hint.label } : {}),
+       });
+       return true;
+     } catch (error) {

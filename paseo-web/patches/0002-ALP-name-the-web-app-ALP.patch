@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: anhlp <phucanhdn08@gmail.com>
+Date: Sat, 10 Oct 2026 19:56:18 +0700
+Subject: [PATCH 2/2] ALP: name the web app ALP
+
+---
+ packages/app/app.config.js        |  3 ++-
+ packages/app/public/index.html    |  2 +-
+ packages/app/public/manifest.json | 12 ++++++++----
+ 3 files changed, 11 insertions(+), 6 deletions(-)
+
+diff --git a/packages/app/app.config.js b/packages/app/app.config.js
+index e09a06f..7dbe492 100644
+--- a/packages/app/app.config.js
++++ b/packages/app/app.config.js
+@@ -68,7 +68,8 @@ function resolveSecretFile(params) {
+ 
+ const variants = {
+   production: {
+-    name: "Paseo",
++    // ALP: this build is the ALP web app, served by alpd.
++    name: "ALP",
+     packageId: "sh.paseo",
+     googleServicesFile: resolveSecretFile({
+       envKey: "GOOGLE_SERVICES_FILE_PROD",
+diff --git a/packages/app/public/index.html b/packages/app/public/index.html
+index a95e7b8..4e375f1 100644
+--- a/packages/app/public/index.html
++++ b/packages/app/public/index.html
+@@ -6,7 +6,7 @@
+     <meta name="robots" content="noindex,nofollow" />
+     <meta name="theme-color" content="#181B1A" />
+     <meta name="apple-mobile-web-app-capable" content="yes" />
+-    <meta name="apple-mobile-web-app-title" content="Paseo" />
++    <meta name="apple-mobile-web-app-title" content="ALP" />
+     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+     <meta
+       name="viewport"
+diff --git a/packages/app/public/manifest.json b/packages/app/public/manifest.json
+index 05b5778..1eb71bc 100644
+--- a/packages/app/public/manifest.json
++++ b/packages/app/public/manifest.json
+@@ -1,15 +1,19 @@
+ {
+   "id": "/",
+-  "name": "Paseo",
+-  "short_name": "Paseo",
+-  "description": "Monitor and control local AI coding agents from anywhere.",
++  "name": "ALP",
++  "short_name": "ALP",
++  "description": "Teams of Codex and Claude Code agents on your machine, built on Paseo.",
+   "start_url": "/",
+   "scope": "/",
+   "display": "standalone",
+   "orientation": "portrait",
+   "theme_color": "#181B1A",
+   "background_color": "#181B1A",
+-  "categories": ["developer", "productivity", "utilities"],
++  "categories": [
++    "developer",
++    "productivity",
++    "utilities"
++  ],
+   "icons": [
+     {
+       "src": "/pwa-icon-192.png",

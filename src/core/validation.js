@@ -99,8 +99,9 @@ export function validateUserSettings(settings, source) {
   }
   if (settings.web !== undefined) {
     check(object(settings.web), 'web must be an object');
-    const extra = Object.keys(settings.web).find(field => !['enabled', 'port'].includes(field));
-    check(!extra, `unsupported web field '${extra}'; use enabled or port`);
+    const extra = Object.keys(settings.web).find(field => !['enabled', 'port', 'app'].includes(field));
+    check(!extra, `unsupported web field '${extra}'; use enabled, port or app`);
+    if (settings.web.app !== undefined) check(['paseo', 'classic'].includes(settings.web.app), "web.app must be 'paseo' or 'classic'");
     if (settings.web.enabled !== undefined) check(typeof settings.web.enabled === 'boolean', 'web.enabled must be true or false');
     if (settings.web.port !== undefined) check(Number.isInteger(settings.web.port) && settings.web.port >= 1024 && settings.web.port <= 65535, 'web.port must be a port from 1024 to 65535');
   }

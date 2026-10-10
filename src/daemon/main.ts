@@ -11,6 +11,7 @@ import { createDaemonServer } from './server.js';
 import { acquireLock, heartbeat, releaseLock, updateLock } from './lock.js';
 import { createStore } from './store.js';
 import { createWebServer } from './web.js';
+import { createPaseoBridge, webAppDir } from './paseo/index.js';
 import { validateUserSettings } from '../core/validation.js';
 
 declare const __ALP_VERSION__: string;
@@ -159,7 +160,11 @@ async function run(home: string) {
     throw error;
   }
   // The local web app (ALPD §61); alpd works without it.
-  web = settings?.web?.enabled === false ? undefined : createWebServer({ daemon: server, assets: webAssets, home, port: settings?.web?.port, log: message => console.log(`${new Date().toISOString()} web: ${message}`) });
+  const webLog = (message: string) => console.log(`${new Date().toISOString()} web: ${message}`);
+  // The built ALP web app (Paseo's app, ALPD §62) when it is here; else the classic page.
+  const appDir = settings?.web?.app === 'classic' ? undefined : webAppDir(fileURLToPath(import.meta.url));
+  const gateway = appDir ? createPaseoBridge({ daemon: server, version: VERSION, token: () => web?.token ?? '', serverId: () => web?.serverId ?? '', log: webLog }) : undefined;
+  web = settings?.web?.enabled === false ? undefined : createWebServer({ daemon: server, assets: webAssets, app: appDir && gateway ? { dir: appDir, gateway } : undefined, home, port: settings?.web?.port, log: webLog });
   await web?.listen()
     .then(info => console.log(`${new Date().toISOString()} web app on ${info.url}`))
     .catch(error => console.error(`${new Date().toISOString()} web app not started`, error));

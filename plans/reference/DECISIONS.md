@@ -278,3 +278,13 @@ Decided by the user on 2026-10-10: "turn ALP into ACP, then make a local web app
 - **Web (steps 2–3).** alpd serves a local web app on 127.0.0.1, on by default, guarded by a token and an Origin check. The browser speaks alpd's own JSON-RPC over a WebSocket, so it sees the whole tree, tasks and questions, which ACP cannot carry. The app is React, bundled with esbuild and shipped in the npm package; `alp web` opens it. Its layout follows Paseo's: projects and sessions on the left, the chat with tool rows and the composer in the middle, tasks on the right.
 - Paseo stays supported; this lifts the earlier "no custom desktop UI" non-goal for a local web app only.
 
+
+## D31 — The ALP web app is Paseo's app over alpd
+
+Decided by the user on 2026-10-10, after using the D30 web app: "it does not feel as natural as Paseo; take Paseo's web as the base and graft ALP onto it; whatever Paseo has that ALP lacks says the feature is in development when clicked, and report those features to me". Chosen over running Paseo's own daemon and web UI, so that installing ALP stays enough.
+
+- **The app.** ALP builds Paseo's web app (packages/app, Apache 2.0) from a pinned commit with a small set of patches kept in `paseo-web/`, keeps Paseo's licence and a notice of the changes, and serves it from alpd in place of the D30 app. The patches connect the app to the alpd that serves it with the token `alp web` gives it, name it ALP, and add what ALP needs.
+- **The protocol.** alpd speaks Paseo's daemon protocol to the app on the page's origin. ALP sessions show as Paseo agents and ALP's teams as models; the protocol grows step by step. A request ALP does not have yet is answered with `rpc_error` code `not_implemented`, which the app shows as "feature in development"; features that would only fail are not advertised.
+- **ALP's own parts** (team, tasks, questions, settings) appear inside the app as Paseo panels and cards.
+- **Tracking.** Every Paseo feature is listed with its state (in ALP, in progress, planned, in development, not applicable) on the tracker artifact the user follows, and reported to the user.
+- The D30 app stays as `"web": { "app": "classic" }` until the new app covers it, then goes.
