@@ -136,7 +136,7 @@ The phone app cannot reach a workspace's **+** tab, so the screen opens from the
   - The pill is hidden when the workspace's directory is not in an ALP project.
   - It shows only on agents whose provider is ALP. The provider always runs them in
     an ALP project, so the plugin needs no extra check to find one.
-- **`/tasks`** in any agent's composer opens the screen, and `/tasks t-0003` opens
+- **`/alp-tasks`** in any agent's composer opens the screen, and `/alp-tasks t-0003` opens
   that task.
 - The command center's **"Open ALP tasks full screen"** opens the screen for the
   current workspace.

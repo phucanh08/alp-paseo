@@ -29,9 +29,9 @@ export default function contribute(client: PluginClientContext) {
     context: 'workspace',
     onSelect({ workspace, openScreen }) { openScreen(tasksScreen(workspace.id, workspace.directory || workspace.projectRootPath)); },
   });
-  // "/tasks" opens the board, "/tasks t-0003" that task.
+  // "/alp-tasks" opens the board, "/alp-tasks t-0003" that task; not "/tasks", which Claude Code has.
   const removeSlash = client.addSlashCommand({
-    name: 'tasks',
+    name: 'alp-tasks',
     description: 'Open the ALP tasks of this project',
     argumentHint: '[task id]',
     context: 'agent',
