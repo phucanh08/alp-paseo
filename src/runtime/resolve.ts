@@ -110,11 +110,11 @@ async function lessons(file: string) {
 /** Agents that advise, review, or watch: they never write, and take no tasks. */
 export const READ_ONLY_AGENTS = ['oracle', 'reviewer', 'supervisor'];
 
-export async function resolveSession(spec: SessionSpec, options: { templates?: Record<string, string>; library?: string; language?: string } = {}) {
+export async function resolveSession(spec: SessionSpec, options: { templates?: Record<string, string>; library?: string; language?: string; /** False for a preview: it writes nothing (D31). */ initialize?: boolean } = {}) {
   if (!path.isAbsolute(spec.cwd) || !(await stat(spec.cwd)).isDirectory()) throw new Error('Session cwd must be an existing absolute directory');
   if (spec.workdir !== undefined && (!path.isAbsolute(spec.workdir) || !(await stat(spec.workdir)).isDirectory())) throw new Error('Session workdir must be an existing absolute directory');
   const starter = options.templates ? { templates: options.templates } : {};
-  if (!(await exists(path.join(spec.cwd, 'ALP.md'))) || !(await exists(path.join(spec.cwd, '.alp', 'settings.json')))) await initProject(spec.cwd, starter);
+  if (options.initialize !== false && (!(await exists(path.join(spec.cwd, 'ALP.md'))) || !(await exists(path.join(spec.cwd, '.alp', 'settings.json'))))) await initProject(spec.cwd, starter);
   if (options.library) await ensureLibrary(options.library, options.templates ? { templates: options.templates } : {});
   const restored = spec.restore;
   if (restored && spec.agent !== undefined && spec.agent !== restored.agent) throw new Error('Cannot resume a thread as a different ALP agent');

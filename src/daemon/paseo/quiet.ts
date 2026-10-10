@@ -3,8 +3,7 @@ import type { Handler } from './gateway.js';
 
 /**
  * What the app reads by itself, all the time, for features ALP has not got yet: project icons,
- * the checkout's git and pull request state, terminals, workspace setup, the daemon's config, a
- * draft agent's provider features.
+ * terminals, workspace setup, the daemon's config, a draft agent's provider features.
  * A refusal there would make the app retry and log errors without the user doing anything, so
  * these get the empty answer a daemon without that feature would give (ALPD §62). What the user
  * asks for by hand still answers "in development".
@@ -16,19 +15,6 @@ type Outbound = SessionOutboundMessage;
 export const quietHandlers: Record<string, Handler> = {
   project_icon_request: (message: Inbound<'project_icon_request'>) =>
     ({ type: 'project_icon_response', payload: { requestId: message.requestId, cwd: message.cwd, icon: null, error: null } }) satisfies Outbound,
-
-  checkout_status_request: (message: Inbound<'checkout_status_request'>) => ({
-    type: 'checkout_status_response',
-    payload: {
-      requestId: message.requestId, cwd: message.cwd, error: null, isGit: false, isPaseoOwnedWorktree: false, repoRoot: null, currentBranch: null,
-      isDirty: null, baseRef: null, aheadBehind: null, aheadOfOrigin: null, behindOfOrigin: null, hasRemote: false, remoteUrl: null,
-    },
-  }) satisfies Outbound,
-
-  checkout_pr_status_request: (message: Inbound<'checkout_pr_status_request'>) => ({
-    type: 'checkout_pr_status_response',
-    payload: { requestId: message.requestId, cwd: message.cwd, status: null, githubFeaturesEnabled: false, authState: 'unavailable', forge: 'github', error: null },
-  }) satisfies Outbound,
 
   list_terminals_request: (message: Inbound<'list_terminals_request'>) =>
     ({ type: 'list_terminals_response', payload: { requestId: message.requestId, ...(message.cwd ? { cwd: message.cwd } : {}), terminals: [] } }) satisfies Outbound,
