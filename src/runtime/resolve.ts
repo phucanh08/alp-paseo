@@ -62,13 +62,35 @@ async function exists(target: string) {
   }
 }
 
-/** Composes project and agent instructions with lazily referenced skills. */
+/** How much of a skill's description its listing carries. */
+const SKILL_DESCRIPTION_CHARS = 400;
+
+/** The description in a SKILL.md's frontmatter, on one line; empty when it has none. */
+export async function skillDescription(file: string) {
+  const text = await readFile(file, 'utf8').catch(() => '');
+  const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? '';
+  const match = /^description:[ \t]*(.*(?:\r?\n[ \t]+.*)*)/m.exec(front)?.[1] ?? '';
+  const flat = match.replace(/^[>|][-+]?/, '').replace(/\s+/g, ' ').trim().replace(/^(['"])(.*)\1$/, '$2');
+  return flat.length > SKILL_DESCRIPTION_CHARS ? `${flat.slice(0, SKILL_DESCRIPTION_CHARS - 1)}…` : flat;
+}
+
+/**
+ * Composes project and agent instructions with the agent's skills (ALPD §59): each by
+ * name, file and description, so an agent knows which work a skill is for without
+ * opening it, and opens it before that work.
+ */
 export class InstructionsAdapter implements AlpRuntimeAdapter<{ instructions: string; mcp: ResolvedAgent['mcp']; runtime: ResolvedAgent['runtime'] }> {
   id = 'native';
   // ALP runs an agent's hooks itself, at its own events (ALPD §45).
   capabilities() { return { instructions: 'emulated', skills: 'emulated', hooks: 'emulated', mcp: 'native' } as const; }
   async compile(agent: ResolvedAgent) {
-    const skills = agent.skills.length ? `Available skills (read a SKILL.md only when needed):\n${agent.skills.map(s => `${JSON.stringify(s.name)}: ${JSON.stringify(s.path)}`).join('\n')}` : '';
+    const listed = await Promise.all(agent.skills.map(async skill => {
+      const description = await skillDescription(skill.path);
+      return `- ${skill.name} (${skill.path})${description ? `: ${description}` : ''}`;
+    }));
+    const skills = listed.length
+      ? 'Your skills: methods written for kinds of work. Before you start work that a skill\'s description matches, read its SKILL.md and follow it; say which skill you use.\n' + listed.join('\n')
+      : '';
     return { adapterId: this.id, agentName: agent.name, projectRoot: agent.projectRoot, material: {
       instructions: [agent.instructions.project, agent.instructions.agent, skills].filter(Boolean).join('\n\n'),
       mcp: agent.mcp, runtime: agent.runtime,

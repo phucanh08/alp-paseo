@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync, realpathSync, rmdirSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { optionalRead, claudeUsage } from './runtime-context.js';
@@ -177,7 +177,25 @@ type NativeConfig = {
   floor?: 'read-only' | 'workspace-write';
   /** The context window the session works in before Claude compacts it, in tokens; absent: the model's (ALPD §57). */
   context?: number;
+  /** The agent's skills, each a SKILL.md, loaded as Claude Code skills alp:<name> (ALPD §59). */
+  skills?: Array<{ name: string; path: string }>;
 };
+
+/** The plugin name ALP's skills are loaded under, so Claude Code calls them alp:<name>. */
+export const SKILL_PLUGIN = 'alp';
+
+/**
+ * A Claude Code plugin in `directory` holding the given skills, linked to their own
+ * directories so an edit to a skill reaches the next session (ALPD §59).
+ */
+export function skillPlugin(directory: string, skills: Array<{ name: string; path: string }>) {
+  rmSync(directory, { recursive: true, force: true });
+  mkdirSync(path.join(directory, '.claude-plugin'), { recursive: true });
+  mkdirSync(path.join(directory, 'skills'));
+  writeFileSync(path.join(directory, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: SKILL_PLUGIN, description: "The agent's ALP skills" }));
+  for (const skill of skills) symlinkSync(path.dirname(skill.path), path.join(directory, 'skills', skill.name), 'dir');
+  return directory;
+}
 
 type PermissionRules = {
   allow: string[]; ask?: string[]; deny: string[]; beyondMode?: 'refuse' | 'ask';
@@ -249,7 +267,8 @@ export const claudePermissionMode = (sandbox: string) => sandbox === 'read-only'
 
 export function claudePermissions(sandbox: string, currentSandbox?: () => string, rules?: PermissionRules | null, ask?: (request: PermissionRequest) => Promise<PermissionAnswer>) {
   const readOnly = sandbox === 'read-only';
-  const readers = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'];
+  // A skill only adds instructions; what they lead to is checked as itself (ALPD §59).
+  const readers = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Skill'];
   return {
     // Plan mode permits writes to plan files and requires ExitPlanMode approval.
     // Fixed read-only callers restrict the tool surface; live sessions keep
@@ -324,6 +343,8 @@ export class ClaudeTransport {
   private compactAt?: number;
   /** The compaction running now, from its start to its boundary. */
   private compaction?: string;
+  /** The plugin directory that loads the agent's skills, removed on close. */
+  private skillDirectory?: string;
 
   constructor(
     private readonly command: string,
@@ -520,6 +541,16 @@ export class ClaudeTransport {
     const { settings: ruleSettings, ...permissions } = claudePermissions(config.sandbox, () => config.sandbox, rules,
       async request => (this.requestHandler ? await this.requestHandler('item/permission/request', request) as PermissionAnswer : { allow: false, message: 'No one can approve it' }));
     const settings = { ...(config.thinking === 'ultracode' ? { ultracode: true } : {}), ...(config.context ? { autoCompactWindow: config.context } : {}), ...ruleSettings };
+    // The agent's skills as Claude Code's own, so Claude lists them with their descriptions and calls them with Skill.
+    const plugins: Array<{ type: 'local'; path: string; skipMcpDiscovery: boolean }> = [];
+    if (config.skills?.length) {
+      try {
+        this.skillDirectory ??= path.join(os.tmpdir(), 'alp-skills', randomUUID());
+        plugins.push({ type: 'local', path: skillPlugin(this.skillDirectory, config.skills), skipMcpDiscovery: true });
+      } catch {
+        // The skills stay listed in the instructions by file.
+      }
+    }
     const options = {
       cwd: config.cwd,
       env: this.env,
@@ -532,6 +563,7 @@ export class ClaudeTransport {
       mcpServers,
       strictMcpConfig: true,
       settingSources: [],
+      ...(plugins.length ? { plugins } : {}),
       persistSession: !config.ephemeral,
       promptSuggestions: false,
       includePartialMessages: false,
@@ -727,6 +759,7 @@ export class ClaudeTransport {
     await this.pump?.catch(() => {});
     this.listeners.clear();
     this.failures.clear();
+    if (this.skillDirectory) rmSync(this.skillDirectory, { recursive: true, force: true });
     // Claude's sandbox leaves an empty .claude/.cc-writes in the workspace; remove what it created.
     if (this.claudeDirectory === false && this.config) {
       for (const directory of ['.claude/.cc-writes', '.claude']) { try { rmdirSync(path.join(this.config.cwd, directory)); } catch {} }

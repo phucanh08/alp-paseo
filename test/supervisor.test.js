@@ -222,7 +222,7 @@ test('main distills lessons into a skill scoped to the roles it picks, saved onl
   // Later sessions of those roles list it.
   await runtime.open('next', { cwd: root });
   await until(() => runtimes.length === 4);
-  assert.ok(runtimes[2].config.developerInstructions.includes(JSON.stringify(path.join(library, 'skills/verify-claims/SKILL.md'))));
+  assert.ok(runtimes[2].config.developerInstructions.includes(`- verify-claims (${path.join(library, 'skills/verify-claims/SKILL.md')})`));
 });
 
 test('main searches, then opens or comments on GitHub issues only with the user\'s approval', async t => {
