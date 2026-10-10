@@ -1,0 +1,43 @@
+From 9067101795a2f04f21cba77d0fc314b92c0b3340 Mon Sep 17 00:00:00 2001
+From: anhlp <phucanhdn08@gmail.com>
+Date: Sat, 10 Oct 2026 23:37:37 +0700
+Subject: [PATCH] ALP: run alpd's plugin from a same-origin script, without
+ eval
+
+---
+ packages/app/public/index.html       | 1 +
+ packages/app/src/plugins/evaluate.ts | 5 ++++-
+ 2 files changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/packages/app/public/index.html b/packages/app/public/index.html
+index f0ee838..fffd696 100644
+--- a/packages/app/public/index.html
++++ b/packages/app/public/index.html
+@@ -16,6 +16,7 @@
+     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+     <title>%WEB_TITLE%</title>
+     <script src="/alp-token.js"></script>
++    <script src="/alp-plugins.js"></script>
+     <!-- The `react-native-web` recommended style reset: https://necolas.github.io/react-native-web/docs/setup/#root-element -->
+     <style id="expo-reset">
+       /* Keep the app shell fixed to the viewport. */
+diff --git a/packages/app/src/plugins/evaluate.ts b/packages/app/src/plugins/evaluate.ts
+index a2703b6..a9f3c65 100644
+--- a/packages/app/src/plugins/evaluate.ts
++++ b/packages/app/src/plugins/evaluate.ts
+@@ -462,8 +462,11 @@ export function runPluginClientBundle(
+     if (name === "zod") return Zod;
+     throw new Error(`Module "${name}" is not available in plugin client code`);
+   };
++  // ALP: alpd's own plugin arrives as a same-origin script (/alp-plugins.js), so the app runs
++  // under a CSP without 'unsafe-eval'; its catalog entry names it instead of carrying code.
++  const preloaded = (globalThis as { __ALP_PLUGINS__?: Record<string, unknown> }).__ALP_PLUGINS__;
+   const evaluate: (source: string) => unknown = globalThis.eval;
+-  const factory = evaluate(bundle);
++  const factory = bundle.startsWith("alp-preloaded:") ? preloaded?.[id] : evaluate(bundle);
+   if (typeof factory !== "function")
+     throw new Error(`Plugin ${id} client bundle is not executable`);
+   const exports = factory(runtimeRequire);
+-- 
+2.54.0 (Apple Git-157)
+

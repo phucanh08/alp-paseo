@@ -44,8 +44,8 @@ export const quietHandlers: Record<string, Handler> = {
       type: 'get_daemon_config_response',
       payload: {
         requestId: message.requestId,
-        // Paseo's defaults: no Paseo MCP tools, no browser tools, no plugins of Paseo's own.
-        config: { mcp: { enabled: false, injectIntoAgents: false }, browserTools: { enabled: false }, providers: {}, metadataGeneration: { providers: [] }, autoArchiveAfterMerge: false, enableTerminalAgentHooks: false, appendSystemPrompt: '', pluginsEnabled: false },
+        // Paseo's defaults: no Paseo MCP tools, no browser tools; ALP's own plugin runs (step 7).
+        config: { mcp: { enabled: false, injectIntoAgents: false }, browserTools: { enabled: false }, providers: {}, metadataGeneration: { providers: [] }, autoArchiveAfterMerge: false, enableTerminalAgentHooks: false, appendSystemPrompt: '', pluginsEnabled: true },
       },
     }) satisfies Outbound,
 

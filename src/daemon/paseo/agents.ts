@@ -20,7 +20,8 @@ import { InMemoryAgentTimelineStore } from './timeline-store.js';
  * client as agent_update and agent_stream, as a Paseo daemon does for clients without owned
  * subscriptions. What ALP asks the user (alp_ask, a permission, a trust or approval prompt) is
  * a question card on the root it belongs to (step 4). Each root sits in one of the workspaces
- * the bridge keeps (step 6, workspaces.ts).
+ * the bridge keeps (step 6, workspaces.ts). The team members a root's tree runs are its
+ * provider subagents, each with its own timeline (step 7).
  */
 
 /** Where the agents' workspaces are kept (workspaces.ts). */
@@ -72,6 +73,11 @@ export function createAgents({ daemon, broadcast, directory, log = () => {} }: {
   const questions = new Map<string, UserQuestion>();
   const answered = new Map<string, AgentPermissionResponse>();
   let started: Promise<void> | undefined;
+  /** Team members of each root's tree, as Paseo's provider subagents. */
+  type Child = { id: string; root: string; parentId: string; agent: string; subtitle: string; toolCallId: string | null; cwd: string; status: 'running' | 'completed' | 'failed' | 'canceled'; createdAt: string; updatedAt: string; description: string | null };
+  const children = new Map<string, Child>();
+  const childTimelines = new InMemoryAgentTimelineStore();
+  const childDeltas = new Map<string, TimelineDeltas>();
 
   function agentOf(session: SessionSummary): AgentSnapshotPayload {
     const status = session.status === 'running' || (session.status === 'idle' && session.busy) ? 'running'
@@ -194,12 +200,71 @@ export function createAgents({ daemon, broadcast, directory, log = () => {} }: {
     broadcast({ type: 'agent_stream', payload: { agentId: root, event, timestamp } });
   }
 
+  /** The root a session's events belong to: itself, or the root of the tree a team member runs in. */
+  const rootOf = (sessionId: string) => roots.has(sessionId) || replaying.has(sessionId) || timelines.has(sessionId) ? sessionId : children.get(sessionId)?.root;
+
+  function subagentOf(child: Child) {
+    return {
+      id: child.id,
+      parentAgentId: child.root,
+      parentSubagentId: child.parentId === child.root ? null : child.parentId,
+      provider: PROVIDER,
+      title: child.agent,
+      description: child.description,
+      status: child.status,
+      createdAt: child.createdAt,
+      updatedAt: child.updatedAt,
+      toolCallId: child.toolCallId,
+      cwd: child.cwd,
+      subtitle: child.subtitle,
+    };
+  }
+
+  function publishChild(child: Child) {
+    if (replaying.has(child.root)) return;
+    broadcast({ type: 'agent.provider_subagents.update', payload: { kind: 'upsert', subagent: subagentOf(child) } });
+  }
+
+  /** A team member opened (or opened again) in a tree the bridge follows. */
+  function childOpened(envelope: Envelope & { event: { type: 'session.opened' } }) {
+    const { session, cwd } = envelope.event;
+    const root = rootOf(session.parentId!);
+    if (!root) return;
+    const child = children.get(session.id) ?? { id: session.id, root, parentId: session.parentId!, agent: session.agent, subtitle: `${session.runtime}:${session.model}`, toolCallId: session.toolCallId ?? null, cwd, status: 'running' as const, createdAt: envelope.ts, updatedAt: envelope.ts, description: null };
+    Object.assign(child, { status: 'running', updatedAt: envelope.ts });
+    children.set(child.id, child);
+    if (!childTimelines.has(child.id)) { childTimelines.initialize(child.id); childDeltas.set(child.id, new TimelineDeltas()); }
+    publishChild(child);
+  }
+
+  function childEvent(child: Child, envelope: Envelope) {
+    const { event } = envelope;
+    if (event.type === 'item') {
+      if (event.item.kind === 'user_message' && child.description === null) { child.description = event.item.text.slice(0, 500); publishChild(child); }
+      const item = childDeltas.get(child.id)?.next(event.item);
+      if (!item) return;
+      const row = childTimelines.append(child.id, item, { timestamp: envelope.ts });
+      if (!replaying.has(child.root)) broadcast({ type: 'agent.provider_subagents.update', payload: { kind: 'timeline', parentAgentId: child.root, subagentId: child.id, provider: PROVIDER, item: row.item, timestamp: row.timestamp, seq: row.seq, epoch: childTimelines.getEpoch(child.id) } });
+      return;
+    }
+    const status = event.type === 'turn.started' ? 'running'
+      : event.type === 'turn.ended' ? (event.state === 'completed' ? 'completed' : event.state === 'failed' ? 'failed' : 'canceled')
+      : event.type === 'session.failed' ? 'failed'
+      : event.type === 'session.closed' && child.status === 'running' ? 'completed'
+      : undefined;
+    if (!status) return;
+    Object.assign(child, { status, updatedAt: envelope.ts });
+    publishChild(child);
+  }
+
   function onEvent(envelope: Envelope) {
     // A question may come from any session of a tree; it belongs to the tree's root.
     if (envelope.event.type === 'question') { asked(envelope.event.question); return; }
     if (envelope.event.type === 'question.resolved') { resolved(envelope.event.questionId, resolutionOf(envelope.event.questionId, envelope.event.outcome)); return; }
+    if (envelope.event.type === 'session.opened' && envelope.event.session.parentId) { childOpened(envelope as Envelope & { event: { type: 'session.opened' } }); return; }
+    const child = children.get(envelope.sessionId);
+    if (child) { childEvent(child, envelope); return; }
     const root = envelope.sessionId;
-    // Team members' events reach the app with the subagents (step 7); here only roots.
     const session = roots.get(root);
     if (!session && !replaying.has(root) && !timelines.has(root)) { if (envelope.event.type === 'session.opened' && !envelope.event.session.parentId) void refresh().catch(() => {}); return; }
     const { event } = envelope;
@@ -414,6 +479,50 @@ export function createAgents({ daemon, broadcast, directory, log = () => {} }: {
       }
     },
 
+    async 'agent.provider_subagents.list.request'(message: Inbound<'agent.provider_subagents.list.request'>) {
+      const reply = (subagents: ReturnType<typeof subagentOf>[], error: string | null): Outbound => ({ type: 'agent.provider_subagents.list.response', payload: { requestId: message.requestId, parentAgentId: message.parentAgentId, subagents, error } });
+      try {
+        await started;
+        const session = known(message.parentAgentId);
+        await ensureTimeline(session.id);
+        return reply([...children.values()].filter(child => child.root === session.id).map(subagentOf), null);
+      } catch (error: any) {
+        return reply([], error?.message ?? String(error));
+      }
+    },
+
+    /** A team member's own conversation, paged as a root's is. */
+    async 'agent.provider_subagents.timeline.get.request'(message: Inbound<'agent.provider_subagents.timeline.get.request'>) {
+      const direction = message.direction ?? (message.cursor ? 'after' : 'tail');
+      const base = { requestId: message.requestId, parentAgentId: message.parentAgentId, subagentId: message.subagentId, provider: PROVIDER, direction, projection: 'projected' as const };
+      try {
+        await started;
+        await ensureTimeline(known(message.parentAgentId).id);
+        const child = children.get(message.subagentId);
+        if (!child || child.root !== message.parentAgentId) throw new Error(`No subagent ${message.subagentId}`);
+        const page = childTimelines.fetch(child.id, { direction, ...(message.cursor ? { cursor: message.cursor } : {}), limit: message.limit ?? (direction === 'after' ? 0 : 200) });
+        return {
+          type: 'agent.provider_subagents.timeline.get.response',
+          payload: {
+            ...base,
+            epoch: page.epoch,
+            startCursor: page.startSeq !== null ? { epoch: page.epoch, seq: page.startSeq } : null,
+            endCursor: page.endSeq !== null ? { epoch: page.epoch, seq: page.endSeq } : null,
+            reset: page.reset,
+            staleCursor: page.staleCursor,
+            gap: page.gap,
+            window: page.window,
+            hasOlder: page.hasOlder,
+            hasNewer: page.hasNewer,
+            rows: page.rows.map(row => ({ item: row.item, timestamp: row.timestamp, seq: row.seqEnd, seqStart: row.seqStart, seqEnd: row.seqEnd, sourceSeqRanges: row.sourceSeqRanges })),
+            error: null,
+          },
+        } satisfies Outbound;
+      } catch (error: any) {
+        return { type: 'agent.provider_subagents.timeline.get.response', payload: { ...base, epoch: '', reset: false, staleCursor: false, gap: false, window: { minSeq: 0, maxSeq: 0, nextSeq: 0 }, hasOlder: false, hasNewer: false, rows: [], error: error?.message ?? String(error) } } satisfies Outbound;
+      }
+    },
+
     async get_providers_snapshot_request(message: Inbound<'get_providers_snapshot_request'>) {
       const preview = await teams(message.cwd);
       return {
@@ -544,7 +653,7 @@ export function createAgents({ daemon, broadcast, directory, log = () => {} }: {
   return {
     handlers,
     view,
-    features: { providersSnapshot: true },
+    features: { providersSnapshot: true, providerSubagents: true, projectedSubagentTimeline: true, providerSubagentNesting: true },
     start() {
       started ??= (async () => {
         await directory.load();
