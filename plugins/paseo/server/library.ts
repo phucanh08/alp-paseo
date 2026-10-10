@@ -1,10 +1,11 @@
 import { deleteEntry, duplicateEntry, getEntry, listEntries, renameEntry, saveEntry, setGivenSkills } from '../../../src/core/library-edit.js';
 import { testEntry } from '../../../src/client/library-test.js';
 import { alpHome } from '../../../src/client/index.js';
+import { languageSetting, setLanguage } from '../../../src/core/user-settings.js';
 import type { PluginServerContext } from './compat.js';
 import { templates } from './mapping.js';
 import { projectOf } from './tasks.js';
-import { libraryDelete, libraryDuplicate, libraryGet, libraryList, libraryRename, librarySave, librarySkills, libraryTest } from '../shared/library.js';
+import { languageGet, languageSet, libraryDelete, libraryDuplicate, libraryGet, libraryList, libraryRename, librarySave, librarySkills, libraryTest } from '../shared/library.js';
 
 /** Where an edit reads and writes: the user's library, and the workspace's project when there is one. */
 async function where(directory?: string) {
@@ -21,6 +22,8 @@ export function registerLibraryRpc(server: PluginServerContext) {
   server.handle(libraryGet, async ({ directory, kind, name, scope }) => getEntry(kind, name, { ...await where(directory), ...(scope ? { scope } : {}) }));
   server.handle(librarySave, async ({ directory, kind, name, scope, content, revision }) => saveEntry(kind, name, content, { ...await where(directory), scope, ...(revision !== undefined ? { revision } : {}) }));
   server.handle(librarySkills, async ({ agent, skills }) => setGivenSkills(agent, skills, { library: alpHome() }));
+  server.handle(languageGet, async () => languageSetting(alpHome()));
+  server.handle(languageSet, async ({ language }) => setLanguage(alpHome(), language));
   server.handle(libraryDelete, async ({ directory, kind, name, scope, revision }) => deleteEntry(kind, name, { ...await where(directory), scope, ...(revision !== undefined ? { revision } : {}) }));
   server.handle(libraryDuplicate, async ({ directory, kind, from, to, scope }) => duplicateEntry(kind, from, to, { ...await where(directory), scope }));
   server.handle(libraryRename, async ({ directory, kind, from, to, scope }) => renameEntry(kind, from, to, { ...await where(directory), scope }));

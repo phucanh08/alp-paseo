@@ -55,7 +55,7 @@ async function setup(t, settings, options = {}) {
   await initProject(root);
   if (settings) await writeFile(path.join(root, '.alp/settings.json'), JSON.stringify(settings));
   const runtimes = [];
-  const runtime = createAlpRuntime({ transport: fakeTransport(runtimes), libraryDir: library, runLogDir: path.join(directory, 'runs'), ...options });
+  const runtime = createAlpRuntime({ language: 'English', transport: fakeTransport(runtimes), libraryDir: library, runLogDir: path.join(directory, 'runs'), ...options });
   t.after(() => runtime.shutdown());
   const prompt = (id, text, session = 'root') => runtime.prompt(session, { clientMessageId: id, delivery: 'auto', content: [{ type: 'text', text }] });
   return { root, library, runtime, runtimes, prompt };

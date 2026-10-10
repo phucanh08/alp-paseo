@@ -63,8 +63,9 @@ Installation commands above target the selected user's daemon. Implementation ve
 
 **Settings → ALP** edits your library in `$ALP_HOME` (default `~/.alp`), which every
 project uses. The screen has two columns:
-- The aside on the left lists the kinds in three groups: Organisation (Teams, Agents),
-  Capabilities (Skills, MCP servers, Hooks) and Runtimes (Providers). Each kind shows
+- The aside on the left starts with General (Language), then lists the kinds in three
+  groups: Organisation (Teams, Agents), Capabilities (Skills, MCP servers, Hooks) and
+  Runtimes (Providers). Each kind shows
   its count and, opened, its entries with a dot for where they come from. It stays
   in place, so you always see where you are and switch with one click.
 - The aside folds to icons with its toggle, and folds on its own when the screen is
@@ -97,6 +98,11 @@ project uses. The screen has two columns:
     The agent form's Provider list offers the library's providers.
 - Built-ins are read-only. **Save as my own** makes the library's entry of that name,
   which overrides the built-in. Removing it brings the built-in back.
+- **General → Language** is the language you read (ALPD §54). Main writes its replies,
+  questions, approval requests and task titles in it; other agents ask you in it; ALP
+  asks for approvals and writes its notices in it. Pick one from the list, or Other to
+  type a name. Unset, Vietnamese applies; **Reset** goes back to it. It is `language`
+  in `$ALP_HOME/settings.json`, also set with `alp language`.
 
 The **ALP project** workspace panel shows the same lists for the workspace's project,
 except Providers, which live only in the library:

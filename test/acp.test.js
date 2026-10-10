@@ -26,7 +26,7 @@ async function setup(t, { env = {}, settings = {} } = {}) {
   await initProject(root);
   await writeFile(path.join(root, '.alp', 'settings.json'), JSON.stringify({ defaultAgent: 'main', workflow: { mode: 'pho', supervisor: false }, ...settings }));
   await saveEntry('providers', 'fake', { provider: { kind: 'acp', label: 'Fake', command: process.execPath, args: [FAKE], env: { FAKE_ACP_LOG: logFile, ...env } } }, { scope: 'library', library: home });
-  const runtime = createAlpRuntime({ supervisor: false, libraryDir: home, runLogDir: path.join(dir, 'runs') });
+  const runtime = createAlpRuntime({ language: 'English', supervisor: false, libraryDir: home, runLogDir: path.join(dir, 'runs') });
   const events = [];
   runtime.onEvent(envelope => events.push(envelope));
   t.after(async () => { await runtime.shutdown(); await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });

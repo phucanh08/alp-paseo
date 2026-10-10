@@ -38,7 +38,7 @@ function normalize(entries, project) {
 }
 
 test('alp log of a tree whose agents are slow, crash mid-turn and hit a usage limit', async t => {
-  const { root, main, agents, runtime, runLog } = await tree(t, { prefix: 'alp-golden-', open: { model: 'codex:gpt-5.6-sol' }, options: directory => ({ pauseFile: `${directory}/pause.json` }) });
+  const { root, main, agents, runtime, runLog } = await tree(t, { prefix: 'alp-golden-', open: { model: 'codex:gpt-5.6-sol' }, options: directory => ({ language: 'English', pauseFile: `${directory}/pause.json` }) });
   const finished = id => until(async () => (await runLog()).some(entry => entry.event === 'assignment.finished' && entry.assignmentId === id), `${id} to finish`);
 
   // A writer that pins a decision, fills its context and is slow to hand off.
