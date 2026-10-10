@@ -191,6 +191,28 @@ test('each ALP agent\'s composer gets a Tasks pill whose menu opens the screen o
   assert.deepEqual([full.label, full.behavior.items.length, full.behavior.items.at(-1).title], ['Tasks · 11', 10, 'All tasks (3 more)']);
   const unread = taskButton(null, () => {});
   assert.deepEqual([unread.label, unread.visible, unread.behavior.items.map(item => item.title)], ['Tasks', true, ['All tasks']]);
+
+  // The tasks the agent's session worked on come first, done ones too, and the label counts them.
+  const sessions = { 'provider-s1': ['t-0006', 't-0003', 't-gone'] };
+  const mine = taskButton({ projectRoot: '/w', tasks, sessions }, () => {}, ['provider-s1', 'a1']);
+  assert.deepEqual([mine.label, mine.title], ['Tasks · 1/2', 'ALP tasks: 1 of 2 done in this session, 5 open']);
+  assert.deepEqual(mine.behavior.items.map(item => item.kind === 'item' ? item.title : '---'), [
+    'Done · Old', 'In progress · Normalize', '---', 'Approve · Ship the release', 'Review · Add --json', 'Ready · Fix colors', 'Blocked · Docs', '---', 'All tasks',
+  ]);
+  assert.equal(taskButton({ projectRoot: '/w', tasks, sessions }, () => {}, ['other']).label, 'Tasks · 5');
+});
+
+test('a pill finds its session by the agent\'s persistence handle', async () => {
+  const { code } = await compileClient('client/task-pills.ts');
+  const { addTaskPills } = load(code);
+  const tasks = [row('t-0001', 'Ship', { status: 'in_progress' }), row('t-0002', 'Docs', { ready: true })];
+  const { client, host } = fakeClient({ '/w/ws1': { projectRoot: '/w', tasks, unreadable: [], sessions: { 'p-1': ['t-0001'] } } });
+  const stop = addTaskPills(client);
+  await settle();
+  host.snapshot([{ id: 'a1', provider: 'alp', workspaceId: 'ws1', cwd: '/w', persistence: { provider: 'alp', sessionId: 'p-1' } }]);
+  await settle();
+  assert.equal(host.pills[0].button.label, 'Tasks · 0/1');
+  await stop();
 });
 
 test('the Tasks screen shows the board of the directory it was opened with', async () => {

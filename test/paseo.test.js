@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createProvider, mapSession, default as contribute } from '../plugins/paseo/server/dist/index.js';
+import { createProvider, mapSession, sessionTasks, default as contribute } from '../plugins/paseo/server/dist/index.js';
 import { ProviderEventSchema, PROVIDER_CAPABILITIES } from '@getpaseo/plugin/server/provider';
 import { connect, readLock } from '../src/client/index.js';
 import { createTask } from '../src/core/tasks.js';
@@ -288,7 +288,7 @@ test('a team session shows its team, and main starts its supervisor as a child o
   assert.ok(runtimes[0].calls.find(c => c.method === 'thread/start').params.dynamicTools.some(tool => tool.name === 'alp_lesson'));
 });
 
-test('tasks main worked on appear in Paseo as a todo list when its turn ends', async t => {
+test('tasks main worked on go to the Tasks pill, not to a todo list of Paseo\'s own (ALPD §55)', async t => {
   const root = await fixture(t);
   await mkdir(path.join(root, '.alp'), { recursive: true });
   const task = await createTask(root, { title: 'Add --json' }, 'user');
@@ -298,9 +298,9 @@ test('tasks main worked on appear in Paseo as a todo list when its turn ends', a
   const started = JSON.parse((await runtimes[0].serverRequest('item/tool/call', { threadId: 'native-thread', turnId, callId: 'c1', namespace: null, tool: 'alp_task', arguments: { action: 'start', id: task.id } })).contentItems[0].text);
   assert.equal(started.task.status, 'in_progress');
   runtimes[0].notify('turn/completed', { threadId: 'native-thread', turn: { id: turnId, status: 'completed' } });
-  for (let i = 0; i < 100 && !events.some(e => e.type === 'timeline.item' && e.item.type === 'todo'); i++) await new Promise(resolve => setTimeout(resolve, 5));
-  const todo = events.find(e => e.type === 'timeline.item' && e.item.type === 'todo');
-  assert.deepEqual(todo.item.items, [{ id: task.id, text: `${task.id} · Add --json`, status: 'in_progress', completed: false }]);
+  for (let i = 0; i < 100 && !sessionTasks.has('s'); i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(sessionTasks.get('s'), [task.id]);
+  assert.ok(!events.some(e => e.type === 'timeline.item' && e.item.type === 'todo'), 'Paseo shows no todo pill of its own');
 });
 
 test('the plugin loads where import.meta.url is no URL, as when Paseo bundles it', async t => {

@@ -5,6 +5,7 @@ import { registerLibraryRpc } from './library.js';
 import { alpHome } from '../../../src/client/index.js';
 import { superviseDaemon } from '../../../src/client/supervise.js';
 export { createProvider } from './provider.js';
+export { sessionTasks } from './session-tasks.js';
 export { mapSession, toSessionSpec, PaseoAdapter } from './mapping.js';
 export { ClaudeTransport, claudePermissions, CodexTransport } from '../../../src/runtime/index.js';
 export default function contribute(server: PluginServerContext) {

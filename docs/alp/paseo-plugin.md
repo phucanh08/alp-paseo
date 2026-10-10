@@ -133,6 +133,11 @@ The phone app cannot reach a workspace's **+** tab, so the screen opens from the
   the task's title. Epics and closed tasks stay on the board, and the menu lists at
   most eight. Tap a task to open the screen on its detail, or **All tasks** for the
   whole board.
+  - Once the agent's session has worked on tasks, those come first in the menu, done
+    ones too, and the label counts them: "Tasks · 1/2" is one of two done. They are
+    the tasks ALP reports at the end of a turn; Paseo would otherwise show them as a
+    second pill of its own ("0/1 tasks") that opens nothing, so the provider keeps
+    them for this pill instead (ALPD §55).
   - The pill is hidden when the workspace's directory is not in an ALP project.
   - It shows only on agents whose provider is ALP. The provider always runs them in
     an ALP project, so the plugin needs no extra check to find one.

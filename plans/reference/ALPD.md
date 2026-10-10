@@ -1780,3 +1780,16 @@ Goal (D26): the user reads one language, set in ALP settings, and everything tha
 - `test/settings-screen.test.js`: the General → Language view.
 - `test/panel.test.js`, `test/paseo.test.js`: the two RPCs.
 - Tests that assert ALP's English text run with `language: 'English'`.
+
+## 55. One Tasks pill (2026-10-10)
+
+Goal: on the phone the composer showed two pills: Paseo's own "0/1 tasks", made from the todo list ALP reports at the end of a turn, which lists tasks but opens none; and ALP's "Tasks · 2" (PR #45). The user chose to keep one, ALP's.
+
+- The provider no longer sends the todo item to Paseo. It keeps the ids by the session id Paseo knows (`server/session-tasks.ts`), and `alp.tasks.list` returns them as `sessions`, limited to the project's tasks.
+- A pill finds its session by the agent's persistence handle (`persistence.sessionId`), which is not the agent's id, then by the agent's id.
+- The pill lists the session's tasks first, done ones as Done, then the project's other open tasks, at most eight in all; its label counts the session's done tasks ("Tasks · 1/2"). Without session tasks it counts open tasks as before.
+- The runtime and `alp run` keep the todo list.
+
+**Evidence.**
+- `test/paseo.test.js`: a task main started is kept for the pill, and Paseo gets no todo item.
+- `test/panel.test.js`: menu order and label with session tasks; a pill finds its session through the persistence handle.
