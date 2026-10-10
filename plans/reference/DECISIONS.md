@@ -260,3 +260,12 @@ Decided by the user on 2026-10-10, after main could not delegate to Codex for al
 - While a usage limit pauses a runtime, alpd asks the runtime about its limit every minute, and at once when an agent delegates to it.
 - When the runtime says the limit lifted, ALP resumes it and the parked work continues. This is now the default. `"limits": { "autoResume": false }` keeps the resume with the user, who is then told when the limit lifts.
 - Pauses the user makes are never lifted by ALP.
+
+## D29 — Agents see what their skills are for
+
+Decided by the user on 2026-10-10, after transcripts showed Claude agents rarely used their skills.
+
+- Each agent's instructions list its skills with their descriptions and ask it to read a skill before work that skill is for.
+- Claude agents also get their skills as Claude Code skills (`alp:<name>`), which they run with the Skill tool.
+- ALP logs each skill an agent uses, so how much skills are used can be checked from `alp log`.
+- An agent sees only its own role's skills.

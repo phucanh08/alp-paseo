@@ -23,7 +23,7 @@ import { CHOICES, languageInstruction, words, type Words } from './language.js';
 import { OWN_START, sameProcessAlive } from './process-info.js';
 import { createRecallBook, recallPrompt, RECALL_KEEP_MS, RECALL_QUESTION_CHARS, RECALL_TIMEOUT_MS, type RecallEntry } from './recall.js';
 import { branchExists, checkoutFingerprint, checkoutKey, commitWorktree, createCopy, createWorktree, linkModules, mergeWorktree, reattachWorktree, removeCopy, removeWorktree, type Copy, type Worktree, type WorktreeChange } from './workspace.js';
-import { claudeSandboxAvailable } from './claude-transport.js';
+import { claudeSandboxAvailable, SKILL_PLUGIN } from './claude-transport.js';
 import { ALP_REPO, gh, projectRepo, type GitHubRunner } from './github.js';
 import { usageAllows } from './runtime-context.js';
 import { parse as toml } from 'smol-toml';
@@ -240,6 +240,8 @@ type Session = {
   contextLevel?: number;
   /** An assignment's brief as its requester gave it, repeated after a compaction. */
   brief?: string;
+  /** The skills it has used, each logged once (ALPD §59). */
+  skillsUsed?: Set<string>;
   /** Why the running turn is being stopped, so its end parks the assignment instead of ending it. */
   parkReason?: string;
   /** Mail arrived while its runtime was paused; it is delivered on resume. */
@@ -954,6 +956,11 @@ function contextConfig(runtimeKind: RuntimeKind, mapping: ResolvedSession) {
   return {};
 }
 
+/** The agent's skills for Claude, which loads them as its own (ALPD §59); Codex reads them from the instructions. */
+function skillConfig(runtimeKind: RuntimeKind, mapping: ResolvedSession): { skills?: Array<{ name: string; path: string }> } {
+  return runtimeKind === 'claude' && mapping.agent.skills.length ? { skills: mapping.agent.skills.map(({ name, path }) => ({ name, path })) } : {};
+}
+
 function nativeSessionConfig(
   runtimeKind: RuntimeKind,
   mapping: ResolvedSession,
@@ -985,6 +992,7 @@ function nativeSessionConfig(
       mcpServers: mapping.mcp,
       thinking: mapping.thinking,
       ...contextConfig(runtimeKind, mapping),
+      ...skillConfig(runtimeKind, mapping),
       nativeMultiAgent: false,
       dynamicTools: [SEND_TOOL, BOARD_TOOL, taskTool(taskActions(mapping, parentAgent, role))],
     };
@@ -1018,11 +1026,13 @@ function nativeSessionConfig(
     sandbox: runtimeKind === 'codex' && mapping.mode === 'full-access' ? 'danger-full-access' : nativeMode(mapping),
     approvalPolicy: codexApproval(mapping),
     ...contextConfig(runtimeKind, mapping),
+    ...skillConfig(runtimeKind, mapping),
     // Claude only: Codex has a permissions field of its own.
     ...(runtimeKind === 'claude' ? { permissions: mapping.permissions, ...(claudeFloor(mapping) ? { floor: claudeFloor(mapping) } : {}) } : {}),
 
     developerInstructions: [
       mapping.instructions,
+      ...(skillConfig(runtimeKind, mapping).skills ? [`Your skills are also Claude Code skills named ${SKILL_PLUGIN}:<name>: run one with the Skill tool, or read its file.`] : []),
       ...permissionNote(mapping),
       ...targetNote(targetProfiles),
       // The team's house rules (ALPD §42); Phở and Cafe's are the text this line held before teams.
@@ -1411,6 +1421,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         nativeItem(sessionId, session, params.item);
       }
       if (method === 'item/started' && params.item?.type === 'commandExecution') watchCopy(sessionId, session, params.item);
+      if (method === 'item/started' && params.item) skillUse(sessionId, session, params.item);
       return;
     }
 
@@ -2290,6 +2301,27 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       : `${size} Make sure decisions and findings are pinned with alp_pin and task notes are current; after the compaction ALP gives you your assignments, open questions and tasks again.`;
     // During a turn it steers in; otherwise it waits for the next turn without starting one.
     post(sessionId, { kind: 'note', from: 'alp', assignment: sessionId, body, ...(session.active ? {} : { passive: true }) });
+  }
+
+  /**
+   * An agent starting to use one of its skills (ALPD §59): Claude's Skill tool naming it,
+   * or a command or tool reading its SKILL.md. Logged once per session and skill, and
+   * told to the supervisor, so how often skills are used can be read off the run log.
+   */
+  function skillUse(sessionId: string, session: Session, item: any) {
+    const skills = session.mapping.agent.skills;
+    if (!skills.length || item.type === 'agentMessage' || item.type === 'reasoning') return;
+    const text = typeof item.command === 'string' ? item.command : JSON.stringify(item).slice(0, 20_000);
+    if (!text.includes('SKILL.md') && !text.includes('Skill')) return;
+    for (const skill of skills) {
+      if (session.skillsUsed?.has(skill.name)) continue;
+      const called = new RegExp(`^Skill \\{"skill":"(?:${SKILL_PLUGIN}:)?${skill.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`).test(text);
+      const read = text.includes(skill.path) || text.includes(`/skills/${skill.name}/SKILL.md`);
+      if (!called && !read) continue;
+      (session.skillsUsed ??= new Set()).add(skill.name);
+      runLog(rootOf(sessionId), { event: 'skill', sessionId, agent: session.mapping.agent.name, skill: skill.name, via: called ? 'skill' : 'read' });
+      if (session.supervisor) session.journal.push(stamp(`${session.mapping.agent.name} used skill ${skill.name}`));
+    }
   }
 
   /**

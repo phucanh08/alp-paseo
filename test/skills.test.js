@@ -8,6 +8,7 @@ import { upgradeProject } from '../src/core/upgrade.js';
 import { resolveAgent } from '../src/core/resolver.js';
 import { seedLibrary } from '../src/core/library.js';
 import { PaseoAdapter } from '../plugins/paseo/server/dist/index.js';
+import { skillDescription } from '../dist/runtime/index.js';
 import { legacyProject } from './support/legacy.js';
 
 const expected = {
@@ -104,7 +105,7 @@ test('an app update changes only library files the user left as shipped', async 
   assert.equal(await readFile(path.join(other, 'skills/kept/SKILL.md'), 'utf8'), 'mine');
 });
 
-test('Paseo receives a skill index while bodies and supporting references stay lazy', async t => {
+test('Paseo receives a skill index with each skill\'s description, while bodies and supporting references stay lazy', async t => {
   const [root, library] = [await fixture(t), await fixture(t)];
   await initProject(root);
   await seedLibrary(library);
@@ -112,8 +113,11 @@ test('Paseo receives a skill index while bodies and supporting references stay l
   for (const agent of Object.keys(expected)) {
     const resolved = await resolveAgent(root, { agent, library });
     const compiled = await new PaseoAdapter().compile(resolved);
+    assert.match(compiled.material.instructions, /Before you start work that a skill's description matches, read its SKILL\.md and follow it/);
     for (const skill of resolved.skills) {
-      assert.ok(compiled.material.instructions.includes(JSON.stringify(skill.path)));
+      const description = await skillDescription(skill.path);
+      assert.ok(description.length > 40, skill.name);
+      assert.ok(compiled.material.instructions.includes(`- ${skill.name} (${skill.path}): ${description}`), skill.name);
       assert.equal(compiled.material.instructions.includes(await readFile(skill.path, 'utf8')), false);
     }
     assert.equal(compiled.material.instructions.includes(reference), false);
@@ -205,4 +209,17 @@ test('upgrade preserves a customized retired skill for explicit review', async t
   const result = await upgradeProject(root);
   assert.deepEqual(result.customSkills, [relative]);
   assert.equal(await readFile(path.join(root, relative, 'SKILL.md'), 'utf8'), 'Custom user method');
+});
+
+test('a skill\'s description is read from its frontmatter: plain, quoted, folded, missing, or clipped', async t => {
+  const root = await fixture(t);
+  const write = async (name, text) => { const file = path.join(root, name, 'SKILL.md'); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, text); return file; };
+  assert.equal(await skillDescription(await write('plain', '---\nname: plain\ndescription: Use for plain work.\n---\n# Body')), 'Use for plain work.');
+  assert.equal(await skillDescription(await write('quoted', '---\nname: quoted\ndescription: "Use: when quoted."\n---\n')), 'Use: when quoted.');
+  assert.equal(await skillDescription(await write('folded', '---\nname: folded\ndescription: >\n  Use for work\n  over two lines.\nother: x\n---\n')), 'Use for work over two lines.');
+  assert.equal(await skillDescription(await write('none', '# No frontmatter\ndescription: not this')), '');
+  assert.equal(await skillDescription(path.join(root, 'missing', 'SKILL.md')), '');
+  const long = await skillDescription(await write('long', `---\ndescription: ${'x'.repeat(500)}\n---\n`));
+  assert.equal(long.length, 400);
+  assert.ok(long.endsWith('…'));
 });

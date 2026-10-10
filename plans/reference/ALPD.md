@@ -1854,3 +1854,26 @@ Goal (D28): a Codex limit paused Codex at 07:55. The limit reset at 12:35, but w
 - at start, a left pause is checked by a probe process, which is closed after; a report that clears before the reset time resumes it, and a user pause is left alone.
 
 Live: a probe of the real Codex (28% / 59%) and Claude (9% / 48%) without a session answered `true` in about 1 s and 1.8 s.
+
+## 59. Agents that use their skills (2026-10-10)
+
+Goal (D29): in the user's `tools` project, Codex agents read their skills in every session (lead 3/3, peer 4/4). Claude agents rarely did: lead read one in 3 of 9 sessions, always prompt-leverage, and peer read none in 4. Four Claude lead sessions made 10 commits without reading smart-commits. The instructions listed only a name and a path ("read a SKILL.md only when needed"), and Claude did not see ALP's skills among its own.
+
+- **The listing.** `InstructionsAdapter` lists each skill as `- name (path): description`, with the frontmatter `description` (plain, quoted or folded, clipped to 400 characters by `skillDescription`). It tells the agent to read a skill's `SKILL.md` before work its description matches, and to say which skill it uses. Bodies stay lazy.
+- **Claude's own skills.**
+  - `nativeSessionConfig` passes `skills: [{ name, path }]` to Claude sessions.
+  - `ClaudeTransport` builds a plugin, `skillPlugin`, in `$TMPDIR/alp-skills/<uuid>`: `.claude-plugin/plugin.json` names it `alp`, and `skills/<name>` links each skill's directory. It is passed as `plugins: [{ type: 'local', path, skipMcpDiscovery: true }]`, rebuilt on a restart, and removed on close. If it cannot be made, the listing still names the files.
+  - The instructions add that the skills are Claude Code skills `alp:<name>`.
+  - `Skill` joins the tools a read-only session may use; what a skill leads to is checked as itself.
+- **Logging use.** `skillUse` looks at each started item of a session with skills. Claude's Skill tool appears as the command `Skill {"skill":"alp:<name>"}`; a command or tool input naming the skill's `SKILL.md` counts as reading it. Each skill is logged once per session as `{ event: 'skill', agent, skill, via: 'skill' | 'read' }`, and noted in a supervisor's journal.
+
+Only the agent's own skills are listed or loaded; the others' files stay readable on disk, but nothing points to them.
+
+**Evidence.**
+- `test/skill-use.test.js`:
+  - Claude gets the skills and the `alp:` note, and Codex gets the descriptions only;
+  - use is logged once per skill, by reading or by the Skill tool, and an unknown skill is not logged;
+  - the plugin links each skill directory and is made again from scratch;
+  - a read-only session may run Skill but not Write.
+- `test/skills.test.js`: the listing carries each shipped skill's description, and `skillDescription` handles plain, quoted, folded, missing and long text.
+- Live: a read-only Claude session given peer's skills listed `alp:bug-loop`, `alp:smart-commits` and `alp:xia`. Asked to debug, Haiku 4.5 ran `Skill {"skill":"alp:bug-loop"}`, and the plugin directory was gone after close.

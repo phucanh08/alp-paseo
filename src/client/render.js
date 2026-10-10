@@ -88,6 +88,9 @@ export function renderLog(rootId, entries) {
           ? `◔ ${entry.agent} context ${tokens(entry.tokens)}, compacts at ${tokens(entry.compactAt)}: told it is near`
           : `◔ ${entry.agent} context ${entry.percent}% full: ${entry.level === 'now' ? 'told to hand off now' : 'told to plan a handoff'}`;
         break;
+      case 'skill':
+        text = `✦ ${entry.agent} uses skill ${entry.skill}${entry.via === 'skill' ? ' (Skill tool)' : ''}`;
+        break;
       case 'compacted':
         text = entry.failed
           ? `✗ ${entry.agent}'s context could not be compacted${entry.error ? `: ${entry.error}` : ''}`

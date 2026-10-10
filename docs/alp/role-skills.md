@@ -20,6 +20,22 @@ write or delegation authority. Read-only diagnosis stops before changes. Lead ro
 missing user decisions to main; peer routes them to lead. Main retains responsibility
 for communicating with the user and may execute work itself.
 
+## How agents see their skills
+
+An agent sees only its own skills: its role's in `role-skills.json`, plus those its
+`agent.json` names. Each one appears in the agent's instructions with its file and the
+`description` from its frontmatter, so the agent knows what work a skill is for without
+opening it. The instructions tell the agent to read a skill's `SKILL.md` before work its
+description matches, and to say which skill it uses.
+
+Claude agents also get their skills as Claude Code skills named `alp:<name>`. A plugin
+made for the session links each skill's own directory. Claude lists the skills with
+their descriptions and runs one with its Skill tool, read-only sessions included. Codex
+reads the files.
+
+Each first use of a skill in a session is logged. `alp log` prints it as
+`✦ peer uses skill bug-loop` (or `… (Skill tool)`), and a supervisor's digest notes it.
+
 ## The user's skill library
 
 Skills and the skills each role gets live in the user's library in `$ALP_HOME`

@@ -2,14 +2,14 @@
 export { createAlpRuntime } from './runtime.js';
 export type { AlpRuntime, RuntimeOptions, OpenOptions, RuntimeTransport, PromptInput, PromptContent } from './runtime.js';
 export type { AlpEvent, AlpError, Envelope, SessionSnapshot, TimelineItem, TurnOrigin, AssignmentSnapshot, UserQuestion, TreeStatus, SessionState } from './events.js';
-export { resolveSession, InstructionsAdapter } from './resolve.js';
+export { resolveSession, InstructionsAdapter, skillDescription } from './resolve.js';
 export type { SessionSpec, HostMcpServer, ResolvedSession, RuntimeKind } from './resolve.js';
 export { DEFAULT_MODEL, DEFAULT_CLAUDE_MODEL, models, modes, thinkingOptions, thinkingOptionsFor } from './catalog.js';
 export { CodexTransport } from './transport.js';
 export { usageAllows } from './runtime-context.js';
 export { AcpTransport, acpDecision, acpPermission } from './acp-transport.js';
 export type { AcpProvider } from './acp-transport.js';
-export { ClaudeTransport, claudePermissions, claudeSandboxAvailable, toolShapes as claudeToolShapes } from './claude-transport.js';
+export { ClaudeTransport, claudePermissions, claudeSandboxAvailable, skillPlugin, SKILL_PLUGIN, toolShapes as claudeToolShapes } from './claude-transport.js';
 export { MAIL_BATCH_CHARS, MAIL_BODY_CHARS, publicEvent, renderMail, takeBatch, USER } from './mailbox.js';
 export type { MailEvent, MailKind } from './mailbox.js';
 export { createCopy, gitEnvironment, reclaimCopies, reclaimWorktrees, removeCopy } from './workspace.js';
