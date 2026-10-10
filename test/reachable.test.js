@@ -131,3 +131,17 @@ test('notes from running assignments ride with main\'s next turn instead of waki
   const text = main.started[1].params.input.at(-1).text;
   assert.match(text, /note from peer[\s\S]*Halfway[\s\S]*result from peer/);
 });
+
+test('while the user waits a minute for main\'s first words, every ALP tool result reminds main to answer', async t => {
+  const { runtime, main } = await tree(t, { options: () => ({ checkInMs: 0 }) });
+  await steer(runtime, 'Sao rồi e ơi');
+  assert.equal((await main.call('alp_board', {})).userWaiting, undefined, 'not within the first minute');
+  const real = Date.now;
+  t.after(() => { Date.now = real; });
+  Date.now = () => real() + 61_000;
+  const reminded = await main.call('alp_board', {});
+  assert.match(reminded.userWaiting, /^The user wrote to you at \d\d:\d\d:\d\d and has had no reply for \d+ s\. Before more tool calls, answer them in a short message they can read/);
+  // Words the user can read end the reminders.
+  main.notification('item/completed', { threadId: main.threadId, item: { type: 'agentMessage', id: 'reply', text: 'Lead đang review, khoảng 10 phút nữa xong ạ.' } });
+  assert.equal((await main.call('alp_board', {})).userWaiting, undefined);
+});

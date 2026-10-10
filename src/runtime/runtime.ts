@@ -250,7 +250,7 @@ type Session = {
   supervisor?: string;
   /** What happened in the tree during this root's turn, for its supervisor. */
   journal: string[];
-  /** A supervised root: when the user last wrote and has had no reply yet. */
+  /** A root: when the user wrote and has had no reply yet. */
   userWaiting?: number;
   /** The turn answers only the supervisor's questions; it is not reviewed again. */
   supervisorWake?: boolean;
@@ -307,9 +307,11 @@ type Waiter = {
 };
 
 const MAX_WAKES = 8;
+/** How long the user may wait for main's first words before its tool results remind it. */
+const USER_REPLY_MS = 60_000;
 
 /** What a waiting session hears when the user wrote to it. */
-const USER_WROTE = 'The user just wrote to you; their message follows. Answer them first in a short reply, and steer an assignment with alp_send when their words change its brief. Your assignments keep running: then alp_wait again, or end your turn and ALP wakes you with their results.';
+const USER_WROTE = 'The user just wrote to you; their message follows. Answer them first in a short message they can read (tool calls alone show them nothing), and steer an assignment with alp_send when their words change its brief. Your assignments keep running: then alp_wait again, or end your turn and ALP wakes you with their results.';
 /** What a waiting session hears with a check-in, or mail from its requester or the user. */
 const CHECKED_IN = 'Not a result: the assignment keeps running. Act on this mail first (a steer from your requester or the user\'s words may change what your assignments should do: pass that on with alp_send), then alp_wait again or end your turn.';
 /** A session's native process is restarted at most RESTART_LIMIT times within RESTART_WINDOW_MS unless it makes progress meanwhile. */
@@ -473,6 +475,21 @@ const DISCARD_TOOL = {
   inputSchema: {
     type: 'object',
     properties: { assignmentId: { type: 'string' } },
+    required: ['assignmentId'],
+    additionalProperties: false,
+  },
+};
+
+const CANCEL_TOOL = {
+  type: 'function',
+  name: 'alp_cancel',
+  description: 'Stop one of your running or parked assignments, with its own assignments. Its changes stay where it made them (your checkout, or its worktree for alp_merge or alp_discard) and its task goes back to open. Use it to hand the rest to another agent or runtime, for example when one is parked on a usage limit.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      assignmentId: { type: 'string' },
+      reason: { type: 'string', description: 'Why, for the run log and its result.' },
+    },
     required: ['assignmentId'],
     additionalProperties: false,
   },
@@ -942,6 +959,7 @@ function nativeSessionConfig(
       'A result carries the child\'s structured handoff (null if it filed none) and output, its final message. ' +
       'While assignments run, go on with work that does not depend on them; when only their results are left, alp_wait for them (mail from your requester or the user ends the wait early), or end your turn and ALP wakes you with their results and questions. ' +
       'Answer questions with alp_send kind answer and replyTo; use kind steer to change an instruction, note for information. ' +
+      'To stop an assignment, for example one parked on a usage limit whose work should go on now, use alp_cancel and delegate the rest, on another runtime (pass a model of claude: or codex:); its changes stay in the checkout or its worktree. ' +
       `At most ${mapping.workflow.maxPeers} peers may run concurrently. Concurrent peers must be read-only or isolated: pass isolation "worktree" to give a writing peer its own git worktree. ` +
       'A worktree result lists its branch and changed files; apply it with alp_merge (uncommitted, conflicts left as markers) or drop it with alp_discard, then verify. ' +
       'Writers in this shared checkout run one at a time. ' +
@@ -1061,7 +1079,7 @@ function nativeSessionConfig(
           },
         ]
       : []),
-      ...(targets.length ? [WAIT_TOOL, MERGE_TOOL, DISCARD_TOOL, VERIFY_TOOL, RECALL_TOOL] : []),
+      ...(targets.length ? [WAIT_TOOL, CANCEL_TOOL, MERGE_TOOL, DISCARD_TOOL, VERIFY_TOOL, RECALL_TOOL] : []),
       ...(targets.length || parentAgent ? [SEND_TOOL] : []),
       ...(parentAgent ? [HANDOFF_TOOL] : []),
       ...(supervised ? [LESSON_TOOL, SKILL_TOOL] : []),
@@ -1229,8 +1247,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   ) {
     if (item.type === 'agentMessage') {
       // The first words main shows after the user wrote: how long the user waited.
-      if (session.supervisor && session.userWaiting !== undefined && String(item.text ?? '').trim()) {
-        session.journal.push(stamp(`${session.mapping.agent.name} answered the user ${span(Date.now() - session.userWaiting)} after their message of ${clock(session.userWaiting)}`));
+      if (session.userWaiting !== undefined && String(item.text ?? '').trim()) {
+        if (session.supervisor) session.journal.push(stamp(`${session.mapping.agent.name} answered the user ${span(Date.now() - session.userWaiting)} after their message of ${clock(session.userWaiting)}`));
         session.userWaiting = undefined;
       }
       session.text.set(item.id, item.text);
@@ -2088,7 +2106,9 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     runLog(rootOf(sessionId), { event: 'assignment.parked', assignmentId: sessionId, agent: session.mapping.agent.name, reason: session.parked.reason });
     if (!parent || !assignment) return;
     emit(session.parent!, { type: 'assignment', assignment: assignmentSnapshot(assignment, 'parked') });
-    post(session.parent!, { kind: 'note', from: assignment.agent, assignment: sessionId, passive: true, body: `Parked: ${session.parked.reason}. ${then ?? `ALP continues this assignment where it stopped when ${label(session.runtimeKind)} is resumed (the user runs alp resume).`} Wait for it, or start other work.` });
+    // One that continues by itself is information; one held until the user resumes needs the requester's decision, so it wakes it.
+    if (then) post(session.parent!, { kind: 'note', from: assignment.agent, assignment: sessionId, passive: true, body: `Parked: ${session.parked.reason}. ${then} Wait for it, or start other work.` });
+    else post(session.parent!, { kind: 'stalled', from: assignment.agent, assignment: sessionId, body: `Parked: ${session.parked.reason}. ALP continues this assignment where it stopped when ${label(session.runtimeKind)} is resumed (the user runs alp resume). Wait for it, start other work, or stop it with alp_cancel and give the rest to an agent on another runtime (pass model claude:… or codex:…); what it changed stays in your checkout or its worktree.` });
   }
 
   function continueParked(sessionId: string, session: Session) {
@@ -2925,7 +2945,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
 
     if (
-      !['alp_delegate', 'alp_handoff', 'alp_wait', 'alp_send', 'alp_ask', 'alp_merge', 'alp_discard', 'alp_recall', 'alp_verify', 'alp_pin', 'alp_board', 'alp_unpin', 'alp_lesson', 'alp_skill', 'alp_issue', 'alp_task'].includes(params.tool) ||
+      !['alp_delegate', 'alp_handoff', 'alp_wait', 'alp_cancel', 'alp_send', 'alp_ask', 'alp_merge', 'alp_discard', 'alp_recall', 'alp_verify', 'alp_pin', 'alp_board', 'alp_unpin', 'alp_lesson', 'alp_skill', 'alp_issue', 'alp_task'].includes(params.tool) ||
       params.namespace != null ||
       typeof params.callId !== 'string'
     ) {
@@ -2955,12 +2975,29 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       : params.tool === 'alp_unpin' ? unpinTool(sessionId, session, args)
       : params.tool === 'alp_recall' ? recallTool(sessionId, session, args)
       : params.tool === 'alp_verify' ? verifyTool(sessionId, session, args)
+      : params.tool === 'alp_cancel' ? cancelTool(sessionId, session, args)
       : params.tool === 'alp_merge' || params.tool === 'alp_discard' ? worktreeTool(sessionId, session, args, params.tool === 'alp_merge' ? 'merge' : 'discard')
       : params.tool === 'alp_send' ? Promise.resolve(sendTool(sessionId, session, args))
       : hookedHandoff(sessionId, session, args);
 
-    session.toolCalls.set(params.callId, work);
-    return work;
+    // A root that keeps calling tools while the user waits for an answer is reminded on each result.
+    const reminded = !session.parent && params.tool !== 'alp_ask' ? work.then(result => remindUser(session, result)) : work;
+    session.toolCalls.set(params.callId, reminded);
+    return reminded;
+  }
+
+  /** Adds `userWaiting` to an ALP tool's result while the user has had no reply for a minute. */
+  function remindUser(session: Session, result: any) {
+    const since = session.userWaiting;
+    if (since === undefined || Date.now() - since < USER_REPLY_MS || !result?.contentItems?.[0]?.text) return result;
+    try {
+      const value = JSON.parse(result.contentItems[0].text);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+      value.userWaiting = `The user wrote to you at ${clock(since)} and has had no reply for ${span(Date.now() - since)}. Before more tool calls, answer them in a short message they can read; tool calls alone show them nothing.`;
+      return { ...result, contentItems: [{ ...result.contentItems[0], text: JSON.stringify(value) }, ...result.contentItems.slice(1)] };
+    } catch {
+      return result;
+    }
   }
 
   /** A blocking handoff hook can refuse the handoff, for example until the tests pass. */
@@ -2988,6 +3025,21 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
   const plainObject = (value: unknown, keys: string[]): value is Record<string, any> =>
     !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(key => keys.includes(key));
+
+  /** A requester stops one of its assignments; a parked one too, so the rest can go to another runtime. */
+  async function cancelTool(sessionId: string, session: Session, args: unknown) {
+    if (!plainObject(args, ['assignmentId', 'reason']) || typeof args.assignmentId !== 'string' || (args.reason !== undefined && typeof args.reason !== 'string')) {
+      return toolResult(false, { error: 'Cancel needs the assignmentId of one of your assignments' });
+    }
+    const named = [...session.assignments.values()].filter(candidate => candidate.agent === args.assignmentId);
+    const assignment = session.assignments.get(args.assignmentId) ?? (named.length === 1 ? named[0] : undefined);
+    if (!assignment || assignment.finished) return toolResult(false, { error: 'Not one of your running assignments' });
+    const reason = `Canceled by ${session.mapping.agent.name}${args.reason ? `: ${clip(args.reason, 300)}` : ''}`;
+    runLog(rootOf(sessionId), { event: 'assignment.canceled', assignmentId: assignment.id, agent: assignment.agent, by: session.mapping.agent.name, ...(args.reason ? { reason: clip(args.reason, 300) } : {}) });
+    // Quiet: the requester asked for it, so no result mail follows.
+    await finishAssignment(sessionId, session, assignment, 'canceled', new Error(reason), true);
+    return toolResult(true, { assignmentId: assignment.id, agent: assignment.agent, status: 'canceled', next: 'Its changes stay where it made them. Check them, then give the rest to another agent with alp_delegate, on another runtime when this one is limited or paused.' });
+  }
 
   async function waitTool(sessionId: string, session: Session, args: unknown) {
     if (!plainObject(args, ['assignments', 'timeoutMs'])) return toolResult(false, { error: 'Invalid wait' });
@@ -3380,8 +3432,15 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
     // From here every check runs without yielding again, so parallel calls cannot race.
     const parallel = (mode: string, kind: Assignment['isolation']) => mode === 'read-only' || kind === 'worktree';
-    if (session.assignments.size && (!['peer', 'advisor'].includes(roleOf(session.mapping, args.agent) ?? '') || !parallel(childMode, isolation) || [...session.assignments.values()].some(assignment => !parallel(assignment.mode, assignment.isolation)))) {
-      return toolResult(false, { error: 'A child assignment is already running; wait for its handoff. Only oracles, and peers that are read-only or use isolation "worktree", run in parallel' });
+    // Read-only peers and advisors (reviewer, oracle) never change files, so they run beside anything;
+    // writers run beside each other only when each has its own worktree. A parked writer still counts.
+    const writers = [...session.assignments.values()].filter(assignment => writes(assignment.mode));
+    if (session.assignments.size && (!['peer', 'advisor', 'reviewer'].includes(roleOf(session.mapping, args.agent) ?? '') || (writes(childMode) && writers.some(assignment => !parallel(assignment.mode, assignment.isolation) || !parallel(childMode, isolation))))) {
+      const parkedOnes = [...session.assignments.values()].filter(assignment => sessions.get(assignment.id)?.parked);
+      return toolResult(false, {
+        error: 'A child assignment is already running; wait for its handoff. Only read-only peers and advisors (reviewer, oracle), and peers in their own worktree, run beside it',
+        ...(parkedOnes.length ? { next: `${parkedOnes.map(assignment => `${assignment.agent} ${assignment.id}`).join(', ')} is parked; to go on without it, stop it with alp_cancel and delegate the rest, on another runtime if its runtime is limited` } : {}),
+      });
     }
 
     if (
@@ -4281,10 +4340,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
           text,
         },
       });
-      if (session.supervisor && origin === 'user') {
-        session.journal.push(stamp(`user ${prompt.delivery === 'steer' ? 'steered' : 'asked'} ${session.mapping.agent.name}: ${clip(text, 1500)}`));
-        session.userWaiting ??= Date.now();
-      }
+      if (origin === 'user' && !session.parent) session.userWaiting ??= Date.now();
+      if (session.supervisor && origin === 'user') session.journal.push(stamp(`user ${prompt.delivery === 'steer' ? 'steered' : 'asked'} ${session.mapping.agent.name}: ${clip(text, 1500)}`));
       // The steer reaches the model once its waiting tool returns; return it now, not when the work ends.
       if (prompt.delivery === 'steer' && origin === 'user' && !session.parent) releaseWaiters(session);
 
