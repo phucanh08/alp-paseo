@@ -1,6 +1,6 @@
 # ALP prototype
 
-Provider-neutral filesystem agent resolution with a server-side Paseo provider. Includes project initialization and the existing Phases 2–5 prototype. A standalone ACP server is not implemented.
+Provider-neutral filesystem agent resolution with a server-side Paseo provider. Includes project initialization and the existing Phases 2–5 prototype. Editors that speak the Agent Client Protocol use ALP through `alp acp`.
 
 ## Install
 
@@ -161,6 +161,26 @@ When a runtime hits its usage limit, ALP pauses it by itself. Assignments the li
 Agents and ALP write to you in the language set in Settings → ALP → General → Language, or with `alp language English`; unset, it is Vietnamese. That covers replies, questions, approval requests and notices. Details: [The user's language](docs/alp/team-workflow.md#the-users-language).
 
 Finished assignments stay recallable for 14 days: main, or the agent that assigned one, asks it with `alp_recall` why it did something, and you ask with `alp recall <assignment|task> "question"`. ALP forks the assignment's session read-only, asks, and drops the fork; the question never changes the assignment's own session. ALP keeps the native threads of assignments for this, and deletes them after 14 days. The Paseo plugin keeps the same daemon running while Paseo runs: it starts alpd with Paseo and again whenever alpd goes down, except after `alp daemon stop`, and its sessions reconnect.
+
+## Editors (ACP)
+
+`alp acp` serves ALP over the [Agent Client Protocol](https://agentclientprotocol.com) on stdio, so an editor such as Zed or a JetBrains IDE can use ALP as its agent. In Zed's `settings.json`:
+
+```json
+{
+  "agent_servers": {
+    "ALP": { "type": "custom", "command": "alp", "args": ["acp"], "env": {} }
+  }
+}
+```
+
+- Each editor thread is an ALP session in its project, worked by a team. Choose the team (Phở, Cafe, or your own) and the permission mode in the thread's options before the first prompt; the team is fixed after that.
+- Main's replies, commands and tool calls stream into the thread, and so do the steps its team reports back after the prompt ended. Delegations show as tool calls.
+- When an agent asks you something, the question appears in the thread: reply with `/answer <text>`, or `/dismiss`.
+- Stop cancels main's turn and the work it started. Closing the editor leaves running work to finish in alpd; the thread's history lists ALP sessions of the project, and opening one shows its history.
+- MCP servers the editor offers are given to the agents beside their own.
+
+Details: [ALPD §60](plans/reference/ALPD.md#60-alp-as-an-acp-agent-2026-10-10).
 
 ## Paseo
 

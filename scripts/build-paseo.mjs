@@ -24,6 +24,11 @@ for (const [entry, outfile] of [['src/runtime/index.ts', 'dist/runtime/index.js'
   await build({ entryPoints: [entry], outfile, bundle: true, format: 'esm', platform: 'node', target: 'node20', external: ['@anthropic-ai/claude-agent-sdk'] });
 }
 
+// alp acp: the ACP agent the CLI loads (ALPD §60).
+await build({ entryPoints: ['src/acp/main.ts'], outfile: 'dist/acp.js', bundle: true, format: 'esm', platform: 'node', target: 'node20', define: { __ALP_VERSION__: JSON.stringify(JSON.parse(await readFile('package.json', 'utf8')).version) } });
+// The ACP agent on its own, for tests.
+await build({ entryPoints: ['src/acp/agent.ts'], outfile: 'dist/acp/agent.js', bundle: true, format: 'esm', platform: 'node', target: 'node20' });
+
 // alpd: for the CLI, and next to the plugin bundle so an installed plugin can start it.
 const { version } = JSON.parse(await readFile('plugins/paseo/package.json', 'utf8'));
 for (const outfile of ['dist/alpd.js', 'plugins/paseo/server/dist/alpd.js']) {

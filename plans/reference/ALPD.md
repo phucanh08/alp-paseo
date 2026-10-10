@@ -1877,3 +1877,30 @@ Only the agent's own skills are listed or loaded; the others' files stay readabl
   - a read-only session may run Skill but not Write.
 - `test/skills.test.js`: the listing carries each shipped skill's description, and `skillDescription` handles plain, quoted, folded, missing and long text.
 - Live: a read-only Claude session given peer's skills listed `alp:bug-loop`, `alp:smart-commits` and `alp:xia`. Asked to debug, Haiku 4.5 ran `Skill {"skill":"alp:bug-loop"}`, and the plugin directory was gone after close.
+
+## 60. ALP as an ACP agent (2026-10-10)
+
+Goal (D30, step 1): editors that speak the Agent Client Protocol use ALP as their agent. `alp acp` serves ACP v1 on stdio with `@agentclientprotocol/sdk` 1.7.0, bundled into `dist/acp.js`. It is a client of alpd, as the Paseo plugin is (`src/acp/agent.ts`), and starts alpd when needed.
+
+- **Initialize.** `loadSession`, `sessionCapabilities.list` and `close`, embedded context in prompts, and http/sse MCP servers. No authentication: alpd uses the user's Codex and Claude logins.
+- **A new session** gets an id `acp-<uuid>` and a preview from the new `session.preview` RPC (`runtime.preview(spec)`): the project's teams, and the team, main, model and mode it would run with. The team is the one chosen, else settings' `workflow.mode`, else Phở (`DEFAULT_TEAM`), as Paseo does. Config options: `team` (category `model`) and `mode` (category `mode`, also as the legacy `modes`). The session opens in alpd on its first prompt (`session.create`, `persist: true`), so the team can change until then; after that only the mode can, through `session.configure`.
+- **Prompts.** Text, `@path` for a resource link, and an embedded resource inlined as `<file path>`. `session.prompt` with `delivery: 'auto'`, so a turn main started by itself takes the words as a steer. The prompt answers when its turn ends: `end_turn`, `cancelled`, or an error for a failed turn. `session/cancel` is `session.interrupt`, which stops the subtree.
+- **Updates**, from the root's events only; children show through main's `alp_delegate` tool call:
+  - assistant text as `agent_message_chunk`, only what is new since the last snapshot of the item;
+  - tool calls as `tool_call` then `tool_call_update`, with a kind from the tool or the command's first word (Claude's `Read {…}` is `read`, `Edit` is `edit`, a shell command is `execute`) and the output, clipped to 20,000 characters;
+  - mail and ALP's own prompts to main as a completed `other` tool call "ALP: …", not as the user's words; another viewer's prompt as `user_message_chunk`;
+  - notices and compactions as a quoted `ALP:` line, the task list as a `plan`.
+  Updates go out in order, and a prompt answers after its updates. Work after the prompt (wake turns) streams into the thread too.
+- **Questions to the user** appear as a message with the options. `/answer <text>` and `/dismiss [reason]` (offered as available commands) answer the oldest open question of the tree.
+- **List and load.** `session/list` lists persistent roots of the project. `session/load` attaches with replay: the history comes as updates before the answer, the user's prompts as `user_message_chunk`. A closed root reopens on its next prompt (`resume`). A session of another project is refused.
+- **Editor MCP servers** become `mcpServers` of the spec, beside the agents' own.
+- When the editor closes stdin, each open root is released: alpd closes it once idle and lets running work finish.
+
+**Evidence.** `test/acp-agent.test.js`, an editor over in-memory ndjson streams against an in-process alpd with scripted agents:
+- a new session lists Phở and Cafe, starts nothing until the first prompt, takes Cafe and read-only, and opens with them; text arrives as deltas, a command as a tool call with its output, the user's words are not echoed, and the team is fixed after;
+- a question from main reaches the thread and `/answer SQLite` answers it;
+- cancel ends a turn as `cancelled`; a second editor lists the session by its first prompt and loads its history, and a load from another project is refused;
+- prompt blocks and ACP MCP servers convert as expected.
+
+Live: `node src/cli.js acp` on a temp `ALP_HOME` answered `initialize` (version 0.6.0), `session/new` in an empty directory (set up as an ALP project; Phở and Cafe, full access) and `session/list`.
+

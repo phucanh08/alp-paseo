@@ -8,6 +8,7 @@
     "src/client",
     "src/core",
     "dist/alpd.js",
+    "dist/acp.js",
     "templates",
     "README.md"
   ],
@@ -44,6 +45,7 @@
     "node": ">=20"
   },
   "devDependencies": {
+    "@agentclientprotocol/sdk": "1.7.0",
     "@anthropic-ai/sdk": "^0.131.0",
     "@getpaseo/client": "0.11.1",
     "@getpaseo/plugin": "0.11.1",

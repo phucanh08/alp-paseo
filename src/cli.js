@@ -31,6 +31,7 @@ const USAGE = `Usage:
   alp <init|upgrade> [directory]
   alp daemon <start|stop|status|restart>
   alp daemon <install|uninstall>         run alpd as a login service that restarts after a crash
+  alp acp                                serve ALP to an editor (Zed, JetBrains) over the Agent Client Protocol on stdio
   alp doctor [--project DIR] [--fix] [--json]   check this machine and project; --fix repairs what is safe to
   alp run [--agent A] [--team pho|cafe|ID] [--model M] [--mode read-only|workspace-write|full-access] [--thinking T] [--project DIR] [--json] <prompt>
   alp ps [--all]
@@ -1142,6 +1143,14 @@ async function recall(args) {
   console.log(answer.answer);
 }
 
+/** alp acp: ALP as an ACP agent for editors; stdout carries only the protocol (ALPD §60). */
+async function acpCommand(args) {
+  if (args.length) throw new UsageError();
+  await built();
+  const { runAcp } = await import('../dist/acp.js');
+  await runAcp({ daemonEntry: DAEMON_ENTRY });
+}
+
 async function interrupt(args) {
   if (args.length !== 1) throw new UsageError();
   const client = await running();
@@ -1149,7 +1158,7 @@ async function interrupt(args) {
   console.log('Interrupted');
 }
 
-const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, doctor, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, agents: args => libraryCommand('agents', args), skills: args => libraryCommand('skills', args), mcp: args => ['add', 'rm', 'mv', 'cp', 'test', 'show', 'edit'].includes(args[0]) ? editCommand('mcp', args) : libraryCommand('mcp', args), hooks: args => libraryCommand('hooks', args), providers: args => libraryCommand('providers', args), provider: args => editCommand('providers', args), teams: teamsCommand, trust: trustCommand, agent: args => editCommand('agents', args), team: args => editCommand('teams', args), skill: args => editCommand('skills', args), hook: args => editCommand('hooks', args), verify, recall, pause, resume, language, interrupt };
+const commands = { init: args => project('init', args), upgrade: args => project('upgrade', args), daemon, doctor, run, ps, top, attach, send, questions, answer, log, board, tasks: tasksCommand, task: taskCommand, formula: formulaCommand, permissions: permissionsCommand, agents: args => libraryCommand('agents', args), skills: args => libraryCommand('skills', args), mcp: args => ['add', 'rm', 'mv', 'cp', 'test', 'show', 'edit'].includes(args[0]) ? editCommand('mcp', args) : libraryCommand('mcp', args), hooks: args => libraryCommand('hooks', args), providers: args => libraryCommand('providers', args), provider: args => editCommand('providers', args), teams: teamsCommand, trust: trustCommand, agent: args => editCommand('agents', args), team: args => editCommand('teams', args), skill: args => editCommand('skills', args), hook: args => editCommand('hooks', args), verify, recall, pause, resume, language, interrupt, acp: acpCommand };
 const [command, ...args] = process.argv.slice(2);
 try {
   if (!Object.hasOwn(commands, command)) throw new UsageError();
