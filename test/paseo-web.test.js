@@ -28,7 +28,7 @@ async function setup(t) {
   const runtime = createAlpRuntime({ language: 'English', transport: fakeTransport(agents), supervisor: false, libraryDir: home });
   const daemon = createDaemonServer({ runtime, socketPath: '', version: 'test' });
   let web;
-  const gateway = createPaseoBridge({ daemon, version: 'test', token: () => web.token, serverId: () => web.serverId });
+  const gateway = createPaseoBridge({ daemon, version: 'test', home, token: () => web.token, serverId: () => web.serverId });
   web = createWebServer({ daemon, home, port: 0, assets: {}, app: { dir, gateway } });
   const info = await web.listen();
   t.after(async () => { await web.close(); await runtime.shutdown(); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
@@ -68,7 +68,7 @@ async function setup(t) {
     session(client, message);
     return (await client.next(frame => frame.message?.payload?.requestId === message.requestId)).message;
   };
-  return { info, origin, socket, hello, session, connected, ask, root, agents };
+  return { info, origin, socket, hello, session, connected, ask, root, agents, home };
 }
 
 test('alpd serves the built app: compressed bundles, the page for any route, nothing outside it', async t => {
@@ -90,7 +90,7 @@ test('alpd serves the built app: compressed bundles, the page for any route, not
 });
 
 test('the socket wants the token at hello, then speaks Paseo: server_info, pongs, and "in development" for the rest', async t => {
-  const { socket, hello, session, info } = await setup(t);
+  const { socket, hello, session, info, home } = await setup(t);
   await assert.rejects(socket({ origin: 'https://attacker.example' }), /refused 403/);
 
   const anonymous = await socket();
@@ -107,13 +107,23 @@ test('the socket wants the token at hello, then speaks Paseo: server_info, pongs
   const serverInfo = await client.next(frame => frame.message?.payload?.status === 'server_info');
   assert.equal(serverInfo.message.payload.serverId, info.serverId);
   assert.match(info.serverId, /^alp-[0-9a-f]{16}$/);
+  // Paseo's buttons that only act on a click show, and answer "in development" until ALP has them.
+  assert.equal(serverInfo.message.payload.features.projectAdd, true);
+  assert.equal(serverInfo.message.payload.features.ownedSubscriptions, undefined);
+  // Voice and dictation say why they are off instead of waiting on an answer.
+  assert.deepEqual(serverInfo.message.payload.capabilities.voice.dictation, { enabled: false, reason: 'Tính năng đang phát triển' });
   client.send({ type: 'ping' });
   await client.next(frame => frame.type === 'pong');
   session(client, { type: 'ping', requestId: 'p1', clientSentAt: 5 });
   assert.equal((await client.next(frame => frame.message?.type === 'pong')).message.payload.clientSentAt, 5);
   session(client, { type: 'create_terminal_request', requestId: 'r1', cwd: '/' });
   const refused = await client.next(frame => frame.message?.type === 'rpc_error');
-  assert.deepEqual(refused.message.payload, { requestId: 'r1', requestType: 'create_terminal_request', error: 'create_terminal_request is not in ALP yet', code: 'not_implemented' });
+  // The app shows the text as it is, in the user's language: Vietnamese unless settings say.
+  assert.deepEqual(refused.message.payload, { requestId: 'r1', requestType: 'create_terminal_request', error: 'Tính năng đang phát triển', code: 'not_implemented' });
+  await mkdir(home, { recursive: true });
+  await writeFile(path.join(home, 'settings.json'), JSON.stringify({ language: 'English' }));
+  session(client, { type: 'create_terminal_request', requestId: 'r2', cwd: '/' });
+  assert.equal((await client.next(frame => frame.message?.payload?.requestId === 'r2')).message.payload.error, 'This feature is in development');
 });
 
 test('a browser may carry the token as the paseo.bearer subprotocol, and gets it echoed', async t => {
@@ -134,6 +144,8 @@ test('what the app reads by itself gets the empty answer of a daemon without tha
   assert.equal((await ask(client, { type: 'subscribe_terminals_request', requestId: 't2', cwd: root })).type, 'terminals_changed');
   assert.equal((await ask(client, { type: 'workspace_setup_status_request', requestId: 'w1', workspaceId: root })).payload.snapshot, null);
   assert.equal((await ask(client, { type: 'get_daemon_config_request', requestId: 'd1' })).payload.config.pluginsEnabled, false);
+  assert.deepEqual((await ask(client, { type: 'list_provider_features_request', requestId: 'p1', draftConfig: { provider: 'alp', cwd: root } })).payload.features, []);
+  assert.deepEqual((await ask(client, { type: 'directory_suggestions_request', requestId: 's1', query: 'src' })).payload.directories, []);
 });
 
 test('the app starts an ALP session as an agent, sees it stream, reads its timeline and talks to it', async t => {
@@ -166,6 +178,14 @@ test('the app starts an ALP session as an agent, sees it stream, reads its timel
   assert.deepEqual(items.filter(([type]) => type === 'user_message' || type === 'assistant_message'), [['user_message', 'List the files'], ['assistant_message', 'Two files: ALP.md and README.md.']]);
   assert.equal(timeline.entries.find(entry => entry.item.type === 'user_message').item.messageId, 'm1');
 
+  // Find in chat: the matching messages by their seq, with how often each matches, any case.
+  const found = (await ask(client, { type: 'agent.timeline.search.request', requestId: 'q1', agentId, query: 'readme.MD' })).payload;
+  assert.equal(found.error, null);
+  assert.equal(found.epoch, timeline.epoch);
+  assert.deepEqual(found.locations.map(location => [location.role, location.count]), [['assistant', 1]]);
+  assert.deepEqual((await ask(client, { type: 'agent.timeline.search.request', requestId: 'q2', agentId, query: 'files' })).payload.locations.map(location => location.role), ['user', 'assistant']);
+  assert.equal((await ask(client, { type: 'agent.timeline.search.request', requestId: 'q3', agentId: 'missing', query: 'x' })).payload.error, 'No agent missing');
+
   const sent = await ask(client, { type: 'send_agent_message_request', requestId: 's1', agentId, text: 'Thanks', messageId: 'm2' });
   assert.deepEqual(sent.payload, { requestId: 's1', agentId, accepted: true, error: null });
   await until(() => agents[0].started.length === 2, 'the second turn');
@@ -176,6 +196,18 @@ test('the app starts an ALP session as an agent, sees it stream, reads its timel
   const archived = await ask(client, { type: 'archive_agent_request', requestId: 'r1', agentId });
   assert.equal(archived.type, 'agent_archived');
   assert.deepEqual((await ask(client, { type: 'fetch_agents_request', requestId: 'f3' })).payload.entries, []);
+
+  // History keeps archived agents, and searches, sorts and pages them.
+  const second = (await ask(client, { type: 'create_agent_request', requestId: 'a2', config: { provider: 'alp', cwd: root, title: 'Write the docs' }, labels: {} })).payload.agentId;
+  const history = async (extra = {}) => (await ask(client, { type: 'fetch_agent_history_request', requestId: `h${Math.random()}`, ...extra })).payload;
+  assert.deepEqual((await history()).entries.map(entry => entry.agent.title), ['Write the docs', 'Files']);
+  assert.ok((await history()).entries[1].agent.archivedAt);
+  assert.deepEqual((await history({ search: 'FILES' })).entries.map(entry => entry.agent.id), [agentId]);
+  assert.deepEqual((await history({ sort: [{ key: 'title', direction: 'asc' }] })).entries.map(entry => entry.agent.id), [agentId, second]);
+  assert.deepEqual((await history({ filter: { includeArchived: false } })).entries.map(entry => entry.agent.id), [second]);
+  const first = await history({ page: { limit: 1 } });
+  assert.deepEqual([first.entries.length, first.pageInfo.hasMore, first.pageInfo.nextCursor], [1, true, '1']);
+  assert.equal((await history({ page: { limit: 1, cursor: '1' } })).entries[0].agent.id, agentId);
 });
 
 test('what an agent asks the user is a question card on its root, answered from the app or dismissed', async t => {
