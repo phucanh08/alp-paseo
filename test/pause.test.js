@@ -81,7 +81,10 @@ test('a usage limit pauses its runtime and parks the assignment it stopped, unti
   assert.deepEqual(state.parked.map(entry => [entry.assignmentId, entry.agent, entry.runtime]), [[assignmentId, 'peer', 'codex']]);
   assert.match(notices(events)[0].text, /^Codex usage limit reached; it resets .*ALP paused delegation to Codex agents and parked their assignments; Claude agents keep working\. Run alp resume codex when it has reset\.$/);
   assert.equal(notices(events)[0].level, 'error');
-  assert.deepEqual(JSON.parse(await readFile(path.join(path.dirname(root), 'home', 'state', 'pause.json'), 'utf8')).runtimes.codex.by, 'alpd');
+  // The pause file is written in the background.
+  const pauseFile = path.join(path.dirname(root), 'home', 'state', 'pause.json');
+  await until(() => readFile(pauseFile, 'utf8').then(() => true, () => false));
+  assert.deepEqual(JSON.parse(await readFile(pauseFile, 'utf8')).runtimes.codex.by, 'alpd');
 
   // The requester learns why, the task stays with the assignment, and the watchdog leaves it alone.
   // It is steered into main's running turn: main must decide, so it is not left for a later wait.
