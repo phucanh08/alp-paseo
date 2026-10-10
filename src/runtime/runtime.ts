@@ -4725,7 +4725,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       const settings = JSON.parse(await readFile(path.join(spec.cwd, '.alp', 'settings.json'), 'utf8').catch(() => '{}'));
       const named = typeof settings?.workflow?.mode === 'string' && settings.workflow.mode !== 'custom' ? settings.workflow.mode : undefined;
       const workflow = spec.workflow ?? named ?? DEFAULT_TEAM;
-      const mapping = await resolveSession({ ...spec, workflow }, resolveOptions);
+      // A preview only reads: a folder the user has not run anything in stays as it is.
+      const mapping = await resolveSession({ ...spec, workflow }, { ...resolveOptions, initialize: false });
       const teams = (await listTeams(spec.cwd, { library: options.libraryDir, templates: options.templates }))
         .filter(team => !team.error)
         .map(team => ({ id: team.id, label: team.label ?? team.id, ...(team.description ? { description: team.description } : {}) }));

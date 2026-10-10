@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { brotliCompressSync } from 'node:zlib';
@@ -139,7 +141,7 @@ test('what the app reads by itself gets the empty answer of a daemon without tha
   const client = await connected();
   assert.deepEqual((await ask(client, { type: 'project_icon_request', requestId: 'i1', cwd: root })).payload, { requestId: 'i1', cwd: root, icon: null, error: null });
   assert.equal((await ask(client, { type: 'checkout_status_request', requestId: 'c1', cwd: root })).payload.isGit, false);
-  assert.equal((await ask(client, { type: 'checkout_pr_status_request', requestId: 'c2', cwd: root })).payload.authState, 'unavailable');
+  assert.equal((await ask(client, { type: 'checkout_pr_status_request', requestId: 'c2', cwd: root })).payload.authState, 'no_remote');
   assert.deepEqual((await ask(client, { type: 'list_terminals_request', requestId: 't1', cwd: root })).payload.terminals, []);
   assert.equal((await ask(client, { type: 'subscribe_terminals_request', requestId: 't2', cwd: root })).type, 'terminals_changed');
   assert.equal((await ask(client, { type: 'workspace_setup_status_request', requestId: 'w1', workspaceId: root })).payload.snapshot, null);
@@ -402,4 +404,79 @@ test('the team members a root runs are its subagents, each with its own timeline
   assert.equal(timeline.error, null);
   assert.ok(timeline.rows.some(row => row.item.type === 'assistant_message' && row.item.text === 'Found it.'));
   assert.equal((await ask(client, { type: 'agent.provider_subagents.timeline.get.request', requestId: 's3', parentAgentId: agentId, subagentId: 'missing' })).payload.error, 'No subagent missing');
+});
+
+test("a checkout's branch, its changes as the Changes panel shows them, and its files, read-only", async t => {
+  const { connected, ask, root } = await setup(t);
+  const repo = path.join(path.dirname(root), 'repo');
+  await mkdir(path.join(repo, 'docs'), { recursive: true });
+  const run = (...args) => execFileSync('git', ['-C', repo, '-c', 'user.name=ALP', '-c', 'user.email=alp@example.com', ...args], { encoding: 'utf8' });
+  run('init', '-q', '-b', 'main');
+  await writeFile(path.join(repo, 'README.md'), 'one\ntwo\nthree\n');
+  await writeFile(path.join(repo, 'docs', 'guide.md'), '# Guide\n');
+  await writeFile(path.join(repo, 'old.txt'), 'moved\n');
+  run('add', '.');
+  run('commit', '-q', '-m', 'first');
+  await writeFile(path.join(repo, 'README.md'), 'one\n2\nthree\n');
+  await writeFile(path.join(repo, 'new.txt'), 'fresh\n');
+  await writeFile(path.join(repo, 'blob.bin'), Buffer.from([0, 1, 2, 3, 0, 5]));
+  await writeFile(path.join(repo, 'dot.png'), Buffer.from('89504e470d0a1a0a', 'hex'));
+  await symlink(path.dirname(root), path.join(repo, 'outside'));
+  const client = await connected();
+  // Asking for the teams of a folder only reads it: no ALP.md or .alp appear in someone's repository.
+  const teams = (await ask(client, { type: 'get_providers_snapshot_request', requestId: 'p0', cwd: repo })).payload.entries[0].models.map(model => model.id);
+  assert.ok(teams.includes('pho'));
+  assert.deepEqual([existsSync(path.join(repo, 'ALP.md')), existsSync(path.join(repo, '.alp'))], [false, false]);
+
+  const status = (await ask(client, { type: 'checkout_status_request', requestId: 'c1', cwd: repo })).payload;
+  assert.deepEqual([status.isGit, status.currentBranch, status.isDirty, status.baseRef, status.hasRemote, status.error], [true, 'main', true, 'main', false, null]);
+  assert.equal(status.repoRoot, execFileSync('git', ['-C', repo, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim());
+  assert.equal((await ask(client, { type: 'checkout_status_request', requestId: 'c2', cwd: root })).payload.isGit, false);
+
+  const diff = (await ask(client, { type: 'subscribe_checkout_diff_request', requestId: 'd1', subscriptionId: 'legacy:1', cwd: repo, compare: { mode: 'uncommitted' } })).payload;
+  assert.equal(diff.subscriptionId, 'legacy:1');
+  const byPath = Object.fromEntries(diff.files.map(file => [file.path, file]));
+  assert.deepEqual(Object.keys(byPath).sort(), ['README.md', 'blob.bin', 'dot.png', 'new.txt']);
+  assert.deepEqual([byPath['README.md'].additions, byPath['README.md'].deletions, byPath['README.md'].isNew], [1, 1, false]);
+  assert.deepEqual(byPath['README.md'].hunks[0].lines.map(line => [line.type, line.content]), [['header', '@@ -1,3 +1,3 @@'], ['context', 'one'], ['remove', 'two'], ['add', '2'], ['context', 'three']]);
+  assert.deepEqual([byPath['new.txt'].isNew, byPath['new.txt'].additions], [true, 1]);
+  assert.equal(byPath['blob.bin'].status, 'binary');
+
+  // A change goes out to the subscriber when the panel refreshes (and on alpd's own poll).
+  run('mv', 'old.txt', 'moved.txt');
+  const refreshed = (await ask(client, { type: 'checkout.refresh.request', requestId: 'r1', cwd: repo })).payload;
+  assert.equal(refreshed.success, true);
+  const pushed = client.frames.filter(frame => frame.message?.type === 'checkout_diff_update').at(-1).message.payload;
+  assert.equal(pushed.subscriptionId, 'legacy:1');
+  assert.equal(pushed.files.find(file => file.path === 'moved.txt')?.oldPath, 'old.txt');
+
+  // Against the base branch: what the branch committed since it left main.
+  run('checkout', '-q', '-b', 'feature');
+  run('add', '.');
+  run('commit', '-q', '-m', 'second');
+  const branch = (await ask(client, { type: 'checkout_status_request', requestId: 'c3', cwd: repo })).payload;
+  assert.deepEqual([branch.currentBranch, branch.baseRef, branch.aheadBehind, branch.isDirty], ['feature', 'main', { ahead: 1, behind: 0 }, false]);
+  const base = (await ask(client, { type: 'subscribe_checkout_diff_request', requestId: 'd2', subscriptionId: 'legacy:2', cwd: repo, compare: { mode: 'base', baseRef: 'main' } })).payload;
+  assert.deepEqual(base.files.map(file => file.path).sort(), ['README.md', 'blob.bin', 'dot.png', 'moved.txt', 'new.txt', 'outside']);
+  client.send({ type: 'session', message: { type: 'unsubscribe_checkout_diff_request', subscriptionId: 'legacy:2' } });
+
+  // The Files panel: entries with their kind, text, images, binaries; nothing outside the workspace.
+  const listing = (await ask(client, { type: 'file_explorer_request', requestId: 'f1', cwd: repo, path: '.', mode: 'list' })).payload;
+  assert.equal(listing.directory.path, '.');
+  const names = listing.directory.entries.map(entry => entry.name);
+  assert.ok(names.includes('docs') && names.includes('.git') && !names.includes('outside'));
+  assert.equal(listing.directory.entries.find(entry => entry.name === 'docs').kind, 'directory');
+  const docs = (await ask(client, { type: 'file_explorer_request', requestId: 'f2', cwd: repo, path: 'docs', mode: 'list' })).payload.directory;
+  assert.deepEqual([docs.path, docs.entries.map(entry => entry.path)], ['docs', ['docs/guide.md']]);
+  const text = (await ask(client, { type: 'file_explorer_request', requestId: 'f3', cwd: repo, path: 'docs/guide.md', mode: 'file', acceptBinary: true })).payload.file;
+  assert.deepEqual([text.kind, text.encoding, text.content, text.mimeType], ['text', 'utf-8', '# Guide\n', 'text/plain']);
+  const image = (await ask(client, { type: 'file_explorer_request', requestId: 'f4', cwd: repo, path: 'dot.png', mode: 'file' })).payload.file;
+  assert.deepEqual([image.kind, image.encoding, image.mimeType, image.content], ['image', 'base64', 'image/png', 'iVBORw0KGgo=']);
+  const binary = (await ask(client, { type: 'file_explorer_request', requestId: 'f5', cwd: repo, path: 'blob.bin', mode: 'file' })).payload.file;
+  assert.deepEqual([binary.kind, binary.encoding, binary.content], ['binary', 'none', undefined]);
+  assert.equal((await ask(client, { type: 'file_explorer_request', requestId: 'f6', cwd: repo, path: 'README.md', mode: 'file', maxBytes: 3 })).payload.error, 'File is too large to display');
+  assert.equal((await ask(client, { type: 'file_explorer_request', requestId: 'f7', cwd: repo, path: '../project', mode: 'list' })).payload.error, 'Access outside of workspace is not allowed');
+  assert.equal((await ask(client, { type: 'file_explorer_request', requestId: 'f8', cwd: repo, path: 'outside', mode: 'list' })).payload.error, 'Access outside of workspace is not allowed');
+  // Committing is not in ALP yet.
+  assert.equal((await ask(client, { type: 'checkout_commit_request', requestId: 'k1', cwd: repo, message: 'x', addAll: true })).payload.code, 'not_implemented');
 });

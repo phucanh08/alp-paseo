@@ -5,7 +5,8 @@ import { words } from '../../runtime/language.js';
 import { createAgents } from './agents.js';
 import { createPaseoGateway, type Handler } from './gateway.js';
 import { quietHandlers } from './quiet.js';
-import { directorySuggestions } from './files.js';
+import { createCheckouts } from './checkout.js';
+import { directorySuggestions, fileExplorer } from './files.js';
 import { createPlugins } from './plugins.js';
 import { createWorkspaces } from './workspaces.js';
 import type { DaemonServer } from '../server.js';
@@ -49,16 +50,17 @@ export function createPaseoBridge({ daemon, version, token, serverId, home, log 
   const inDevelopment = async () => words(await userLanguage(home)).inDevelopment;
   const gateway = createPaseoGateway({
     token, serverId, version, handlers, features, log, inDevelopment,
-    onClient: () => {
+    onClient: client => {
       void agents.start().then(() => workspaces.start()).catch(error => log?.(`agents failed to start: ${error?.message ?? error}`));
-      return () => {};
+      return () => checkouts.drop(client);
     },
   });
   const broadcast = (message: Parameters<typeof gateway.broadcast>[0]) => gateway.broadcast(message);
   const workspaces = createWorkspaces({ home, broadcast, agents: () => agents.view, inDevelopment, log });
   const agents = createAgents({ daemon, broadcast, directory: workspaces, log });
   const plugins = createPlugins({ log });
-  Object.assign(handlers, quietHandlers, agents.handlers, workspaces.handlers, plugins.handlers, { directory_suggestions_request: directorySuggestions });
-  Object.assign(features, ENTRY_POINTS, agents.features, workspaces.features, plugins.features);
-  return Object.assign(gateway, { close: () => { agents.close(); return workspaces.close(); }, scripts: { '/alp-plugins.js': plugins.script } });
+  const checkouts = createCheckouts({ broadcast, log });
+  Object.assign(handlers, quietHandlers, agents.handlers, workspaces.handlers, plugins.handlers, checkouts.handlers, { directory_suggestions_request: directorySuggestions, file_explorer_request: fileExplorer });
+  Object.assign(features, ENTRY_POINTS, agents.features, workspaces.features, plugins.features, checkouts.features);
+  return Object.assign(gateway, { close: () => { agents.close(); checkouts.close(); return workspaces.close(); }, scripts: { '/alp-plugins.js': plugins.script } });
 }

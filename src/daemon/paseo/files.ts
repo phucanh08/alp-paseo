@@ -1,4 +1,4 @@
-import { readdir } from 'node:fs/promises';
+import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { SessionInboundMessage, SessionOutboundMessage } from '@getpaseo/protocol/messages';
@@ -7,7 +7,8 @@ import { git } from './git.js';
 /**
  * Finding directories and files for the app (D31 step 6, ALPD §62): the folder to add as a
  * project, typed as a path or a name under home, and a workspace's files for `@` mentions, the
- * command center and file links. Read-only, as Paseo's daemon answers `directory_suggestions`.
+ * command center and file links, as Paseo's daemon answers `directory_suggestions`; and the
+ * read-only Files panel (step 8).
  */
 
 type Inbound<T extends SessionInboundMessage['type']> = Extract<SessionInboundMessage, { type: T }>;
@@ -132,5 +133,69 @@ export async function directorySuggestions(message: Inbound<'directory_suggestio
     return { type: 'directory_suggestions_response', payload: { requestId: message.requestId, directories: entries.filter(entry => entry.kind === 'directory').map(entry => entry.path), entries, error: null } };
   } catch (error: any) {
     return { type: 'directory_suggestions_response', payload: { requestId: message.requestId, directories: [], entries: [], error: error?.message ?? String(error) } };
+  }
+}
+
+const IMAGES: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml' };
+/** The most a preview reads when the app names no limit. */
+const PREVIEW_BYTES = 50 * 1024 * 1024;
+
+/** A path inside the workspace, links followed; anything that leads outside is refused. */
+async function inside(root: string, relative: string) {
+  const realRoot = await realpath(root);
+  const target = path.resolve(realRoot, relative || '.');
+  const real = await realpath(target);
+  if (real !== realRoot && !real.startsWith(realRoot + path.sep)) throw new Error('Access outside of workspace is not allowed');
+  return { realRoot, real, target };
+}
+
+const posixRelative = (root: string, target: string) => path.relative(root, target).split(path.sep).join('/') || '.';
+
+function textOf(buffer: Buffer) {
+  if (buffer.includes(0)) return undefined;
+  let control = 0;
+  const head = buffer.subarray(0, 16 * 1024);
+  for (const byte of head) if (byte < 9 || (byte > 13 && byte < 32)) control++;
+  if (head.length && control / head.length > 0.3) return undefined;
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(buffer); } catch { return undefined; }
+}
+
+/**
+ * The Files panel, read-only (D31 step 8): a directory's entries, links that stay inside included,
+ * and a file's content as text, an image, or only its size for anything binary. Editing, and new,
+ * renamed or deleted files, answer "in development".
+ */
+export async function fileExplorer(message: Inbound<'file_explorer_request'>): Promise<Outbound> {
+  const reply = (fields: Partial<Extract<Outbound, { type: 'file_explorer_response' }>['payload']>): Outbound =>
+    ({ type: 'file_explorer_response', payload: { requestId: message.requestId, cwd: message.cwd, path: message.path ?? '.', mode: message.mode, directory: null, file: null, error: null, ...fields } });
+  try {
+    const root = path.resolve(expand(message.cwd));
+    const { realRoot, real, target } = await inside(root, message.path ?? '.');
+    const relative = posixRelative(realRoot, real);
+    if (message.mode === 'list') {
+      const entries = [];
+      for (const entry of await readdir(real, { withFileTypes: true })) {
+        const child = path.join(real, entry.name);
+        const resolved = entry.isSymbolicLink() ? await inside(realRoot, path.relative(realRoot, child)).then(found => found.real, () => undefined) : child;
+        if (!resolved) continue;
+        const info = await stat(resolved).catch(() => undefined);
+        if (!info) continue;
+        entries.push({ name: entry.name, path: posixRelative(realRoot, child), kind: info.isDirectory() ? 'directory' as const : 'file' as const, size: info.size, modifiedAt: info.mtime.toISOString() });
+      }
+      entries.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+      return reply({ path: relative, directory: { path: relative, entries } });
+    }
+    const info = await stat(real);
+    if (!info.isFile()) throw new Error(`${posixRelative(root, target)} is not a file`);
+    if (info.size > (message.maxBytes ?? PREVIEW_BYTES)) throw new Error('File is too large to display');
+    const buffer = await readFile(real);
+    const base = { path: relative, size: info.size, modifiedAt: info.mtime.toISOString(), revision: `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}` };
+    const image = IMAGES[path.extname(real).toLowerCase()];
+    if (image) return reply({ path: relative, file: { ...base, kind: 'image', encoding: 'base64', content: buffer.toString('base64'), mimeType: image } });
+    const text = textOf(buffer);
+    if (text === undefined) return reply({ path: relative, file: { ...base, kind: 'binary', encoding: 'none', mimeType: 'application/octet-stream' } });
+    return reply({ path: relative, file: { ...base, kind: 'text', encoding: 'utf-8', content: text, mimeType: path.extname(real).toLowerCase() === '.json' ? 'application/json' : 'text/plain' } });
+  } catch (error: any) {
+    return reply({ error: error?.code === 'ENOENT' ? 'No such file or directory' : error?.message ?? String(error) });
   }
 }
