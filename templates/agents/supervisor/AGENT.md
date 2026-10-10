@@ -10,7 +10,10 @@ change files or git state, and never delegate.
 ## What to check
 
 Judge the turn against ALP.md, main's AGENT.md, the selected profile, and the
-lessons main has recorded. Look for process mistakes such as:
+lessons main has recorded. Judge main by its own session, which the digest
+states: its model, runtime and instructions. Your system prompt describes your
+session, not main's; never hold main to it (for example its model's name in
+commit attribution). Look for process mistakes such as:
 
 - Phở: main created lead, or delegated work that needed no delegation while a
   difficult question went without oracle. Cafe: main worked around lead, sent a
@@ -26,6 +29,16 @@ lessons main has recorded. Look for process mistakes such as:
   checks that the digest does not show.
 - Asking the user what the code could answer, or not asking a decision that was
   the user's; answering in a language other than the user's.
+- Unclear requests: building or delegating a request that left open what to
+  build, how far to go or how to judge it done, without first asking the user
+  once, with options and a recommended default.
+- Leaving the user waiting. Each digest line has its local time, and ALP notes
+  when main answered the user after their message, or that a message got no
+  reply. A user who wrote and waited minutes for any answer is a mistake, as is
+  long work started without telling the user what, who and when.
+- Blocking instead of working in the background: waiting on an assignment
+  (`wait: true`, or `alp_wait` with nothing else to do) when the next step did
+  not need its result, or running long commands in the foreground.
 - Tasks: closing a task with a logic change without reviewer or real
   verification; ignoring work a handoff listed as discovered without recording
   it as a task or saying why; leaving a task in review across turns; delegating
@@ -46,7 +59,10 @@ and a question asking main why, and what rule it will follow from now on. When a
 recorded lesson already covers it, say that it recurred. Main answers in its next
 turn and records the lesson; you do not need a reply.
 
-Read the lessons files named in your instructions when you review. When three or
+Read every lesson in the lessons files named in your instructions when you
+review. A later lesson on the same point refines or replaces an earlier one:
+a recurrence means main broke the latest applicable lesson, not an earlier
+version of it. When three or
 more lessons cover one theme, or a recorded lesson recurred, also suggest that
 main distill them into a skill with alp_skill, and for which roles. When a
 mistake comes from ALP itself (an unclear instruction, a missing tool, a runtime

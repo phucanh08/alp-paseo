@@ -250,6 +250,8 @@ type Session = {
   supervisor?: string;
   /** What happened in the tree during this root's turn, for its supervisor. */
   journal: string[];
+  /** A supervised root: when the user last wrote and has had no reply yet. */
+  userWaiting?: number;
   /** The turn answers only the supervisor's questions; it is not reviewed again. */
   supervisorWake?: boolean;
   /** A digest waits for the supervisor: queued, or behind its current review. */
@@ -716,6 +718,12 @@ const ISSUE_FOOTER = '\n\n---\n_Drafted by an ALP agent and posted with the user
 const LESSON_CHARS = 600;
 const DIGEST_CHARS = 12_000;
 const JOURNAL_LINE_CHARS = 400;
+/** Journal lines carry the local time, so the supervisor sees how long the user waited. */
+const clock = (at = Date.now()) => new Date(at).toTimeString().slice(0, 8);
+const stamp = (line: string, at = Date.now()) => `[${clock(at)}] ${line}`;
+const unstamped = (line: string) => line.replace(/^\[\d\d:\d\d:\d\d\] /, '');
+const span = (ms: number) => ms < 90_000 ? `${Math.max(1, Math.round(ms / 1000))} s` : `${Math.round(ms / 60_000)} min`;
+
 const clip = (text: string, limit = JOURNAL_LINE_CHARS) => {
   const flat = text.replace(/\s+/g, ' ').trim();
   return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat;
@@ -919,7 +927,7 @@ function nativeSessionConfig(
           `When you find process mistakes, send ${parentAgent} one alp_send to: "parent", kind note, asking about them; it answers and records a lesson. ` +
           'Otherwise send nothing. Read files, alp_board and alp_task when the digest is not enough; never change anything. End each review with a one-line verdict.',
         ...permissionNote(mapping),
-        `Lessons main has recorded: ${lessonFiles.join(' and ')}. Read them when you review. When three or more cover one theme, or a recorded lesson recurred, also suggest that ${parentAgent} distill them into a skill with alp_skill. When a mistake comes from ALP itself (an unclear instruction, a missing tool, a runtime bug), suggest that ${parentAgent} propose an ALP issue with alp_issue. The user approves both.`,
+        `Lessons main has recorded: ${lessonFiles.join(' and ')}. Read every lesson when you review; a later lesson on the same point refines or replaces an earlier one, and a recurrence means the latest applicable lesson was broken. When three or more cover one theme, or a recorded lesson recurred, also suggest that ${parentAgent} distill them into a skill with alp_skill. When a mistake comes from ALP itself (an unclear instruction, a missing tool, a runtime bug), suggest that ${parentAgent} propose an ALP issue with alp_issue. The user approves both.`,
       ].join('\n\n'),
       mcpServers: mapping.mcp,
       thinking: mapping.thinking,
@@ -1188,8 +1196,9 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
 
     if (session.supervisor) {
       const final = [...session.text.values()].at(-1);
-      if (final) session.journal.push(`${session.mapping.agent.name} final message: ${clip(final, 1500)}`);
-      session.journal.push(`turn ended: ${state}${error ? ` (${clip(errorData(error).message, 200)})` : ''}`);
+      if (final) session.journal.push(stamp(`${session.mapping.agent.name} final message: ${clip(final, 1500)}`));
+      if (session.userWaiting !== undefined && !final) session.journal.push(stamp(`the user's message of ${clock(session.userWaiting)} got no reply in this turn`));
+      session.journal.push(stamp(`turn ended: ${state}${error ? ` (${clip(errorData(error).message, 200)})` : ''}`));
       // Answering the supervisor is not reviewed again, or the two would loop.
       if (session.supervisorWake) session.journal.length = 0;
       else review(sessionId);
@@ -1219,6 +1228,11 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     item: any,
   ) {
     if (item.type === 'agentMessage') {
+      // The first words main shows after the user wrote: how long the user waited.
+      if (session.supervisor && session.userWaiting !== undefined && String(item.text ?? '').trim()) {
+        session.journal.push(stamp(`${session.mapping.agent.name} answered the user ${span(Date.now() - session.userWaiting)} after their message of ${clock(session.userWaiting)}`));
+        session.userWaiting = undefined;
+      }
       session.text.set(item.id, item.text);
       emit(sessionId, { type: 'item', item: { kind: 'assistant_message', id: item.id, text: item.text } });
       return;
@@ -1241,7 +1255,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
             ? 'failed'
             : 'completed';
       if (session.supervisor && status !== 'running' && item.tool !== 'alp_delegate') {
-        session.journal.push(`${session.mapping.agent.name} tool ${item.tool} ${status}: ${clip(JSON.stringify(item.arguments ?? {}))}`);
+        session.journal.push(stamp(`${session.mapping.agent.name} tool ${item.tool} ${status}: ${clip(JSON.stringify(item.arguments ?? {}))}`));
       }
 
       emit(sessionId, {
@@ -1271,7 +1285,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
             ? 'completed'
             : 'failed';
       if (session.supervisor && status !== 'running') {
-        session.journal.push(`${session.mapping.agent.name} shell ${status}${item.exitCode != null ? ` (exit ${item.exitCode})` : ''}: ${clip(String(item.command ?? ''))}`);
+        session.journal.push(stamp(`${session.mapping.agent.name} shell ${status}${item.exitCode != null ? ` (exit ${item.exitCode})` : ''}: ${clip(String(item.command ?? ''))}`));
       }
 
       emit(sessionId, {
@@ -1692,11 +1706,11 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       : entry.event === 'issue' ? `${entry.action === 'create' ? `opened issue "${clip(entry.title, 200)}"` : `commented on issue #${entry.issue}`} in ${entry.repo} with the user's approval: ${entry.url}`
       : entry.event?.startsWith('worktree.') ? `${entry.event.slice('worktree.'.length)} worktree of ${entry.assignmentId} (${entry.branch})${entry.status ? `: ${entry.status}` : ''}`
       : undefined;
-    if (line) root.journal.push(line);
+    if (line) root.journal.push(stamp(line));
   }
 
   /** Whether a journal holds more than the end of a turn that did nothing. */
-  const eventful = (journal: string[]) => journal.some(line => !line.startsWith('turn ended:'));
+  const eventful = (journal: string[]) => journal.some(line => !unstamped(line).startsWith('turn ended:'));
 
   /**
    * Sends a root's journal to its supervisor, or keeps it until the supervisor's
@@ -1737,7 +1751,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
         size += line.length + 3;
       }
       const agent = root.mapping.agent.name;
-      const text = `Digest of ${agent}'s turn (profile ${root.mapping.workflow.mode}), oldest first:\n${kept.join('\n')}\n\n` +
+      const text = `Digest of ${agent}'s turn (profile ${root.mapping.workflow.mode}), oldest first, each line with its local time:\n${kept.join('\n')}\n\n` +
+        `${agent}'s session: ${root.runtimeKind}:${root.mapping.model}, thinking ${root.mapping.thinking ?? 'default'}, mode ${root.mapping.mode}. Judge ${agent} by this session and its own instructions; your system prompt describes your session (your model, attribution lines, tools), not ${agent}'s.\n\n` +
         `Review the process against ALP.md, ${agent}'s AGENT.md and the recorded lessons. Ask ${agent} about each mistake with one alp_send to: "parent", kind note, or send nothing when the process was sound.`;
       await startPrompt(supervisorId, { clientMessageId: `alp-review-${randomUUID()}`, delivery: 'auto', content: [{ type: 'text', text }] }, 'assignment');
     }).catch(error => runLog(rootId, { event: 'supervisor.failed', error: errorData(error).message }));
@@ -2558,7 +2573,6 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     if (!late.length && !(userFacing && checkInMs > 0 && now - parent.checkInAt >= checkInMs)) return;
     for (const assignment of late) assignment.overdue = true;
     parent.checkInAt = now;
-    const span = (ms: number) => ms < 90_000 ? `${Math.max(1, Math.round(ms / 1000))} s` : `${Math.round(ms / 60_000)} min`;
     const lines = live.map(assignment => {
       const child = sessions.get(assignment.id);
       const parts = [
@@ -4267,7 +4281,10 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
           text,
         },
       });
-      if (session.supervisor && origin === 'user') session.journal.push(`user ${prompt.delivery === 'steer' ? 'steered' : 'asked'} ${session.mapping.agent.name}: ${clip(text, 1500)}`);
+      if (session.supervisor && origin === 'user') {
+        session.journal.push(stamp(`user ${prompt.delivery === 'steer' ? 'steered' : 'asked'} ${session.mapping.agent.name}: ${clip(text, 1500)}`));
+        session.userWaiting ??= Date.now();
+      }
       // The steer reaches the model once its waiting tool returns; return it now, not when the work ends.
       if (prompt.delivery === 'steer' && origin === 'user' && !session.parent) releaseWaiters(session);
 

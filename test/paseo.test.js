@@ -261,7 +261,7 @@ test('Paseo lists alpd roots for import and reopens one under its own id', async
   assert.match(events.find(e => e.type === 'request.failed' && e.requestId === 'gone').error.message, /no longer exists/);
 });
 
-test('a team session shows its team, and main starts its supervisor as a child on Sonnet 4.6', async t => {
+test('a team session shows its team, and main starts its supervisor as a child on Sonnet 5', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'alp-paseo-profile-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const runtimes = [];
@@ -280,7 +280,7 @@ test('a team session shows its team, and main starts its supervisor as a child o
   assert.equal(child.parentSessionId, 's');
   assert.equal(child.title, 'ALP supervisor (claude)');
   const childConfig = events.find(e => e.type === 'session.config' && e.sessionId === child.sessionId).config;
-  assert.equal(childConfig.model, 'claude:claude-sonnet-4-6');
+  assert.equal(childConfig.model, 'claude:claude-sonnet-5');
   assert.equal(childConfig.mode, 'read-only');
   const start = runtimes[1].calls.find(c => c.method === 'thread/start').params;
   assert.deepEqual(start.dynamicTools.map(tool => tool.name), ['alp_send', 'alp_board', 'alp_task']);

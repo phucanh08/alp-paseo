@@ -61,7 +61,7 @@ async function setup(t, settings, options = {}) {
   return { root, library, runtime, runtimes, prompt };
 }
 
-test('main starts a supervisor on Sonnet 4.6 that reviews each turn and asks main between turns', async t => {
+test('main starts a supervisor on Sonnet 5 that reviews each turn and asks main between turns', async t => {
   const { root, library, runtime, runtimes, prompt } = await setup(t);
   await runtime.open('root', { cwd: root });
   await until(() => runtimes.length === 2 && runtimes[1].calls.some(call => call.method === 'thread/start'));
@@ -69,7 +69,7 @@ test('main starts a supervisor on Sonnet 4.6 that reviews each turn and asks mai
   assert.deepEqual([main.kind, main.config.model, main.config.thinking, main.config.sandbox], ['claude', 'claude-opus-5-5', 'high', 'full-access']);
   assert.ok(main.config.dynamicTools.some(tool => tool.name === 'alp_lesson'));
   assert.match(main.config.developerInstructions, /A supervisor reviews your process after each turn/);
-  assert.deepEqual([supervisor.kind, supervisor.config.model, supervisor.config.thinking, supervisor.config.sandbox], ['claude', 'claude-sonnet-4-6', 'medium', 'read-only']);
+  assert.deepEqual([supervisor.kind, supervisor.config.model, supervisor.config.thinking, supervisor.config.sandbox], ['claude', 'claude-sonnet-5', 'medium', 'read-only']);
   assert.deepEqual(supervisor.config.dynamicTools.map(tool => tool.name), ['alp_send', 'alp_board', 'alp_task']);
   assert.match(supervisor.config.developerInstructions, /Supervisor — process reviewer for main/);
   assert.ok(supervisor.config.developerInstructions.includes(`Lessons main has recorded: ${path.join(root, '.alp/lessons.md')} and ${path.join(library, 'lessons.md')}`));
@@ -96,6 +96,12 @@ test('main starts a supervisor on Sonnet 4.6 that reviews each turn and asks mai
   assert.match(digest, /main shell completed \(exit 1\): npm test/);
   assert.match(digest, /main pinned decision: Keep the session cookie/);
   assert.match(digest, /main final message: Fixed it, tests pass/);
+  // Each line has its local time; ALP notes how long the user waited, and states main's own session.
+  assert.ok(digest.split('\n').filter(line => line.startsWith('- ')).every(line => /^- \[\d\d:\d\d:\d\d\] /.test(line)), digest);
+  assert.match(digest, /main answered the user \d+ s after their message of \d\d:\d\d:\d\d/);
+  assert.match(digest, /main's session: claude:claude-opus-5-5, thinking high, mode full-access\. Judge main by this session and its own instructions; your system prompt describes your session/);
+  assert.match(supervisor.config.developerInstructions, /a later lesson on the same point refines or replaces an earlier one/);
+  assert.match(supervisor.config.developerInstructions, /Leaving the user waiting\./);
   // The tree stays busy while its supervisor reviews.
   assert.equal(runtime.snapshot('root').busy, true);
 
@@ -259,4 +265,16 @@ test('main searches, then opens or comments on GitHub issues only with the user\
   assert.equal(delegated.status, 'running');
   execFileSync('git', ['remote', 'set-url', 'origin', 'https://gitlab.com/acme/widgets.git'], { cwd: root });
   assert.match((await main.call('alp_issue', { action: 'search', target: 'project', query: 'x' })).error, /not on GitHub/);
+});
+
+test('the digest says when the user\'s message got no reply in main\'s turn', async t => {
+  const { root, runtime, runtimes, prompt } = await setup(t);
+  await runtime.open('root', { cwd: root });
+  await until(() => runtimes.length === 2 && runtimes[1].calls.some(call => call.method === 'thread/start'));
+  const [main, supervisor] = runtimes;
+  await prompt('m1', 'Build the site');
+  main.shell('npm run build', 0);
+  main.finish('');
+  await until(() => supervisor.started.length === 1);
+  assert.match(supervisor.started[0].params.input.at(-1).text, /the user's message of \d\d:\d\d:\d\d got no reply in this turn/);
 });

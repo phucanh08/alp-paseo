@@ -221,7 +221,7 @@ If loading fails, inspect the plugin process output with `paseo plugin logs alp-
 
 New projects default to Phở: main works directly or delegates to peer. Cafe
 keeps main as supervisor while lead implements or delegates. In both, main runs on
-Opus 5.5 with high effort and full access, and starts a supervisor on Sonnet 4.6
+Opus 5.5 with high effort and full access, and starts a supervisor on Sonnet 5
 that reviews its process after each turn and asks main about mistakes; main records
 lessons it follows in later sessions. Main can distill recurring lessons into a
 skill for the roles it chooses, and open or comment on GitHub issues of the
