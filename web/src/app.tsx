@@ -6,8 +6,9 @@ import { apply, forget } from './store';
 import type { PauseState, SessionSummary } from './types';
 import { SessionScreen } from './session';
 import { NewSession, ProjectPicker } from './start';
-import { Icon, ago, projectName, statusOf } from './ui';
-import { AlpdContext, attached, follow, forgetProject, go, parse, rememberProject, savedProjects, type Route } from './context';
+import { Icon } from './ui';
+import { applyTheme, DEFAULT_WIDTH, HistoryScreen, SearchPalette, Sidebar, type Theme } from './sidebar';
+import { AlpdContext, attached, follow, go, parse, rememberProject, savedProjects } from './context';
 
 /**
  * The ALP web app (ALPD §61), shaped after Paseo's: projects and their sessions on the
@@ -24,66 +25,29 @@ function useHashRoute() {
   return route;
 }
 
-/** alpd's sessions and pauses, asked again every few seconds. */
+/** alpd's sessions, pauses and the roots whose agents wait for the user, asked again every few seconds. */
 function useSessions(alpd: Alpd) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [pauses, setPauses] = useState<PauseState | null>(null);
+  const [asking, setAsking] = useState<Set<string>>(new Set());
   const [tick, setTick] = useState(0);
   useEffect(() => {
     let live = true;
     const load = () => Promise.all([
       alpd.request<{ sessions: SessionSummary[] }>('session.list', { rootsOnly: true, includeClosed: true }),
       alpd.request<PauseState>('daemon.pauses'),
-    ]).then(([list, paused]) => { if (live) { setSessions(list.sessions); setPauses(paused); } }).catch(() => {});
+      alpd.request<{ questions: Array<{ rootId: string }> }>('question.list'),
+    ]).then(([list, paused, questions]) => {
+      if (!live) return;
+      setSessions(list.sessions);
+      setPauses(paused);
+      setAsking(new Set(questions.questions.map(question => question.rootId)));
+    }).catch(() => {});
     void load();
     const timer = setInterval(load, 4000);
     return () => { live = false; clearInterval(timer); };
   }, [alpd, tick]);
-  return { sessions, pauses, refresh: useCallback(() => setTick(value => value + 1), []) };
-}
-
-function Sidebar({ sessions, route, onOpenProject }: { sessions: SessionSummary[]; route: Route; onOpenProject(): void }) {
-  const [, rerender] = useState(0);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const projects = useMemo(() => {
-    const byProject = new Map<string, SessionSummary[]>();
-    for (const project of savedProjects()) byProject.set(project, []);
-    for (const session of sessions) {
-      const list = byProject.get(session.projectRoot) ?? [];
-      list.push(session);
-      byProject.set(session.projectRoot, list);
-    }
-    const latest = (list: SessionSummary[]) => list.reduce((at, session) => (session.updatedAt ?? '') > at ? session.updatedAt ?? '' : at, '');
-    return [...byProject].sort((a, b) => latest(b[1]).localeCompare(latest(a[1])) || a[0].localeCompare(b[0]));
-  }, [sessions]);
-  const current = route.screen === 'session' ? route.id : undefined;
-  return (
-    <aside className="sidebar">
-      <div className="brand"><span className="logo">ALP</span><span className="muted">local</span></div>
-      <button className="nav-row" onClick={onOpenProject}><Icon name="plus" /> Open a project</button>
-      <div className="projects">
-        {projects.length === 0 && <p className="muted pad">No projects yet. Open one to start a session.</p>}
-        {projects.map(([project, list]) => (
-          <section key={project} className="project">
-            <div className="project-head">
-              <button className="project-name" title={project} onClick={() => setCollapsed(state => ({ ...state, [project]: !state[project] }))}>
-                <Icon name={collapsed[project] ? 'chevron-right' : 'chevron-down'} /> {projectName(project)}
-              </button>
-              <button className="icon-button" title="New session" onClick={() => go({ screen: 'new', project })}><Icon name="edit" /></button>
-              {list.length === 0 && <button className="icon-button" title="Remove from the list" onClick={() => { forgetProject(project); rerender(value => value + 1); }}><Icon name="x" /></button>}
-            </div>
-            {!collapsed[project] && list.slice(0, 40).map(session => (
-              <button key={session.id} className={`session-row${current === session.id ? ' active' : ''}`} onClick={() => go({ screen: 'session', id: session.id })}>
-                <span className={`dot ${statusOf(session)}`} />
-                <span className="session-title">{session.title ?? `${session.agent} session`}</span>
-                <span className="muted small">{session.updatedAt ? ago(session.updatedAt) : ''}</span>
-              </button>
-            ))}
-          </section>
-        ))}
-      </div>
-    </aside>
-  );
+  return { sessions, pauses, asking, refresh: useCallback(() => setTick(value => value + 1), []) };
 }
 
 function Banner({ pauses }: { pauses: PauseState | null }) {
@@ -104,23 +68,55 @@ function Home({ onOpenProject }: { onOpenProject(): void }) {
   );
 }
 
+const stored = (key: string, fallback: string) => { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } };
+const store = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch {} };
+
 function Shell({ alpd }: { alpd: Alpd }) {
   const route = useHashRoute();
-  const { sessions, pauses, refresh } = useSessions(alpd);
+  const { sessions, pauses, asking, refresh } = useSessions(alpd);
   const [picking, setPicking] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [width, setWidth] = useState(() => Number(stored('alp.sidebar.width', String(DEFAULT_WIDTH))) || DEFAULT_WIDTH);
+  const [hidden, setHidden] = useState(() => stored('alp.sidebar.hidden', '0') === '1');
   const [link, setLink] = useState<LinkState>(alpd.state);
   useEffect(() => alpd.onState(setLink), [alpd]);
+  useEffect(() => { store('alp.sidebar.width', String(width)); }, [width]);
+  useEffect(() => { store('alp.sidebar.hidden', hidden ? '1' : '0'); }, [hidden]);
+
+  // The project a new session starts in: the one on screen, else the latest worked in; else choose one.
+  const current = route.screen === 'session' ? sessions.find(session => session.id === route.id)?.projectRoot : route.screen === 'new' ? route.project : undefined;
+  const newSession = useCallback((project?: string) => {
+    const where = project ?? current ?? sessions[0]?.projectRoot ?? savedProjects()[0];
+    if (where) go({ screen: 'new', project: where });
+    else setPicking(true);
+  }, [current, sessions]);
+
+  useEffect(() => {
+    const keys = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === 'k') { event.preventDefault(); setSearching(value => !value); }
+      else if (key === 'b') { event.preventDefault(); setHidden(value => !value); }
+      else if (key === 'o' && event.shiftKey) { event.preventDefault(); newSession(); }
+    };
+    addEventListener('keydown', keys);
+    return () => removeEventListener('keydown', keys);
+  }, [newSession]);
+
   return (
     <div className="shell">
-      <Sidebar sessions={sessions} route={route} onOpenProject={() => setPicking(true)} />
+      {!hidden && <Sidebar sessions={sessions} asking={asking} route={route} width={width} onWidth={setWidth} onCollapse={() => setHidden(true)} onOpenProject={() => setPicking(true)} onSearch={() => setSearching(true)} onNewSession={newSession} />}
       <main className="main">
+        {hidden && <button className="row-icon sidebar-reopen" title="Show the sidebar (⌘B)" onClick={() => setHidden(false)}><Icon name="panel-left" size={16} /></button>}
         {link !== 'open' && <div className={`banner ${link === 'unauthorized' ? 'error' : 'info'}`}>{link === 'unauthorized' ? 'alpd refused this page. Open it again with: alp web' : link === 'closed' ? 'Lost alpd; reconnecting…' : 'Connecting to alpd…'}</div>}
         <Banner pauses={pauses} />
         {route.screen === 'home' && <Home onOpenProject={() => setPicking(true)} />}
+        {route.screen === 'history' && <HistoryScreen sessions={sessions} />}
         {route.screen === 'new' && <NewSession key={route.project} project={route.project} onStarted={refresh} />}
         {route.screen === 'session' && <SessionScreen key={route.id} id={route.id} summary={sessions.find(session => session.id === route.id)} onChanged={refresh} />}
       </main>
-      {picking && <ProjectPicker onClose={() => setPicking(false)} onChoose={project => { rememberProject(project); setPicking(false); go({ screen: 'new', project }); }} />}
+      {picking && <ProjectPicker onClose={() => setPicking(false)} onChoose={project => { rememberProject(project); setPicking(false); dispatchEvent(new Event('alp-projects')); go({ screen: 'new', project }); }} />}
+      {searching && <SearchPalette sessions={sessions} onClose={() => setSearching(false)} onNewSession={project => go({ screen: 'new', project })} />}
     </div>
   );
 }
@@ -140,4 +136,5 @@ function App() {
   return <AlpdContext.Provider value={alpd}><Shell alpd={alpd} /></AlpdContext.Provider>;
 }
 
+applyTheme(stored('alp.theme', 'system') as Theme);
 createRoot(document.getElementById('root')!).render(<App />);
