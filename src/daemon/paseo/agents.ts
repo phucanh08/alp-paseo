@@ -8,6 +8,7 @@ import type { Envelope, UserQuestion } from '../../runtime/index.js';
 import type { DaemonServer, SessionSummary } from '../server.js';
 import { connectInProcess, type AlpClient } from './alp-client.js';
 import type { ClientContext, Handler } from './gateway.js';
+import type { AgentsView, CreateAgentInput, Placement } from './workspaces.js';
 import { searchTimeline } from './chat-search.js';
 import { TimelineDeltas } from './timeline-items.js';
 import { InMemoryAgentTimelineStore } from './timeline-store.js';
@@ -18,15 +19,24 @@ import { InMemoryAgentTimelineStore } from './timeline-store.js';
  * timeline is the root's own events, kept in Paseo's timeline store; live changes go to every
  * client as agent_update and agent_stream, as a Paseo daemon does for clients without owned
  * subscriptions. What ALP asks the user (alp_ask, a permission, a trust or approval prompt) is
- * a question card on the root it belongs to (step 4).
+ * a question card on the root it belongs to (step 4). Each root sits in one of the workspaces
+ * the bridge keeps (step 6, workspaces.ts).
  */
+
+/** Where the agents' workspaces are kept (workspaces.ts). */
+export type Directory = {
+  load(): Promise<void>;
+  workspaceIdFor(session: SessionSummary): string;
+  placement(session: SessionSummary): Placement;
+  assign(sessionId: string, workspaceId: string): void;
+  changed(): void;
+};
 
 export const PROVIDER = 'alp';
 const POLL_MS = 2_000;
 
 type Inbound<T extends SessionInboundMessage['type']> = Extract<SessionInboundMessage, { type: T }>;
 type Outbound = SessionOutboundMessage;
-type Placement = Extract<Outbound, { type: 'fetch_agents_response' }>['payload']['entries'][number]['project'];
 
 const capabilities = {
   supportsStreaming: true,
@@ -41,9 +51,10 @@ const availableModes = modes.map(mode => ({ id: mode.id, label: mode.label }));
 /** A team's id stands for the model Paseo shows; a custom root shows its own runtime and model. */
 const modelOf = (session: SessionSummary) => session.workflow.mode === 'custom' ? `${session.runtime}:${session.model}` : session.workflow.mode;
 
-export function createAgents({ daemon, broadcast, log = () => {} }: {
+export function createAgents({ daemon, broadcast, directory, log = () => {} }: {
   daemon: DaemonServer;
   broadcast(message: Outbound): void;
+  directory: Directory;
   log?: (message: string) => void;
 }) {
   let alp: AlpClient | undefined;
@@ -75,6 +86,7 @@ export function createAgents({ daemon, broadcast, log = () => {} }: {
       id: session.id,
       provider: PROVIDER,
       cwd: session.projectRoot,
+      workspaceId: directory.workspaceIdFor(session),
       model: modelOf(session),
       createdAt: session.createdAt ?? updatedAt,
       updatedAt,
@@ -97,13 +109,7 @@ export function createAgents({ daemon, broadcast, log = () => {} }: {
     };
   }
 
-  function placement(session: SessionSummary): Placement {
-    return {
-      projectKey: session.projectRoot,
-      projectName: path.basename(session.projectRoot) || session.projectRoot,
-      checkout: { cwd: session.projectRoot, worktreeRoot: null, isGit: false, currentBranch: null, remoteUrl: null, isPaseoOwnedWorktree: false, mainRepoRoot: null },
-    };
-  }
+  const placement = (session: SessionSummary) => directory.placement(session);
 
   /**
    * An ALP question as Paseo's question card: its text, its choices, and a field for any other
@@ -149,7 +155,10 @@ export function createAgents({ daemon, broadcast, log = () => {} }: {
     return answered.get(questionId) ?? { behavior: 'deny', message: outcome === 'dismissed' ? 'Dismissed' : outcome === 'timeout' ? 'No answer in time' : 'Canceled' };
   }
 
-  const upsert = (session: SessionSummary) => broadcast({ type: 'agent_update', payload: { kind: 'upsert', agent: agentOf(session), project: placement(session) } });
+  function upsert(session: SessionSummary) {
+    broadcast({ type: 'agent_update', payload: { kind: 'upsert', agent: agentOf(session), project: placement(session) } });
+    directory.changed();
+  }
 
   /** Reads alpd's roots again and tells clients what changed. */
   async function refresh() {
@@ -164,7 +173,7 @@ export function createAgents({ daemon, broadcast, log = () => {} }: {
       // A live root's events come to the bridge, so its timeline stays current.
       if ((session.status === 'idle' || session.status === 'running') && !timelines.has(session.id)) void ensureTimeline(session.id).catch(() => {});
     }
-    for (const id of [...roots.keys()]) if (!seen.has(id)) { roots.delete(id); broadcast({ type: 'agent_update', payload: { kind: 'remove', agentId: id } }); }
+    for (const id of [...roots.keys()]) if (!seen.has(id)) { roots.delete(id); broadcast({ type: 'agent_update', payload: { kind: 'remove', agentId: id } }); directory.changed(); }
     // Questions come as events from attached trees; the list catches any other and any missed end.
     const { questions: waiting } = await alp.request<{ questions: UserQuestion[] }>('question.list', {});
     for (const question of waiting) asked(question);
@@ -261,6 +270,41 @@ export function createAgents({ daemon, broadcast, log = () => {} }: {
     return preview;
   }
 
+  /** A new root of the chosen team, in the workspace the app names (or its directory's), with its first prompt. */
+  async function create(input: Omit<CreateAgentInput, 'workspaceId'> & { workspaceId?: string }) {
+    const { config } = input;
+    if (config.provider !== PROVIDER) throw new Error(`ALP runs its own teams; ${config.provider} is not one of them`);
+    const sessionId = `web-${randomUUID()}`;
+    if (input.workspaceId) directory.assign(sessionId, input.workspaceId);
+    await alp!.request('session.create', { sessionId, spec: { cwd: config.cwd, persist: true, ...(config.model ? { workflow: config.model } : {}), ...(config.modeId ? { mode: config.modeId } : {}) } });
+    if (config.title) await alp!.request('session.rename', { sessionId, title: config.title });
+    await refresh();
+    await ensureTimeline(sessionId);
+    const prompt = input.initialPrompt?.trim();
+    if (prompt) await alp!.request('session.prompt', { sessionId, clientMessageId: input.clientMessageId ?? randomUUID(), content: [{ type: 'text', text: prompt }] });
+    return agentOf(known(sessionId));
+  }
+
+  const view: AgentsView = {
+    roots: () => [...roots.values()],
+    snapshot: agentOf,
+    async archive(sessionId) {
+      await alp!.request('session.archive', { sessionId });
+      await refresh();
+    },
+    markUnread(sessionId) {
+      attention.set(sessionId, { reason: 'finished', at: new Date().toISOString() });
+      const session = roots.get(sessionId);
+      if (session) upsert(session);
+    },
+    clearAttention(sessionIds) {
+      const cleared = sessionIds.filter(id => attention.delete(id));
+      for (const id of cleared) { const session = roots.get(id); if (session) upsert(session); }
+      return cleared;
+    },
+    create: input => create(input),
+  };
+
   const handlers: Record<string, Handler> = {
     async fetch_agents_request(message: Inbound<'fetch_agents_request'>) {
       await started;
@@ -288,7 +332,7 @@ export function createAgents({ daemon, broadcast, log = () => {} }: {
       const search = message.search?.trim().toLowerCase();
       const rows = [...roots.values()]
         .filter(session => filter.includeArchived !== false || !session.archived)
-        .filter(session => !filter.projectKeys?.length || filter.projectKeys.includes(session.projectRoot))
+        .filter(session => !filter.projectKeys?.length || filter.projectKeys.includes(placement(session).projectKey) || filter.projectKeys.includes(session.projectRoot))
         .map(session => ({ session, agent: agentOf(session) }))
         .filter(({ agent }) => !filter.statuses?.length || filter.statuses.includes(agent.status))
         .filter(({ agent }) => filter.requiresAttention === undefined || !!agent.requiresAttention === filter.requiresAttention)
@@ -394,16 +438,11 @@ export function createAgents({ daemon, broadcast, log = () => {} }: {
     async create_agent_request(message: Inbound<'create_agent_request'>, client: ClientContext) {
       const { config } = message;
       const fail = (error: unknown): Outbound => ({ type: 'status', payload: { status: 'agent_create_failed', requestId: message.requestId, error: error instanceof Error ? error.message : String(error) } });
-      if (config.provider !== PROVIDER) return fail(`ALP runs its own teams; ${config.provider} is not one of them`);
       try {
-        const sessionId = `web-${randomUUID()}`;
-        await alp!.request('session.create', { sessionId, spec: { cwd: config.cwd, persist: true, ...(config.model ? { workflow: config.model } : {}), ...(config.modeId ? { mode: config.modeId } : {}) } });
-        if (config.title) await alp!.request('session.rename', { sessionId, title: config.title });
-        await refresh();
-        await ensureTimeline(sessionId);
-        const prompt = message.initialPrompt?.trim();
-        if (prompt) await alp!.request('session.prompt', { sessionId, clientMessageId: message.clientMessageId ?? randomUUID(), content: [{ type: 'text', text: prompt }] });
-        client.emit({ type: 'status', payload: { status: 'agent_created', requestId: message.requestId, agentId: sessionId, agent: agentOf(known(sessionId)) } });
+        await started;
+        const workspaceId = message.workspaceId;
+        const agent = await create({ config, ...(workspaceId ? { workspaceId } : {}), ...(message.initialPrompt ? { initialPrompt: message.initialPrompt } : {}), ...(message.clientMessageId ? { clientMessageId: message.clientMessageId } : {}) });
+        client.emit({ type: 'status', payload: { status: 'agent_created', requestId: message.requestId, agentId: agent.id, agent } });
       } catch (error) {
         return fail(error);
       }
@@ -504,9 +543,11 @@ export function createAgents({ daemon, broadcast, log = () => {} }: {
 
   return {
     handlers,
+    view,
     features: { providersSnapshot: true },
     start() {
       started ??= (async () => {
+        await directory.load();
         alp = await connectInProcess(daemon, onEvent);
         await refresh();
         timer = setInterval(() => void refresh().catch(error => log(`agents refresh failed: ${error?.message ?? error}`)), POLL_MS);

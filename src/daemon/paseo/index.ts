@@ -5,6 +5,8 @@ import { words } from '../../runtime/language.js';
 import { createAgents } from './agents.js';
 import { createPaseoGateway, type Handler } from './gateway.js';
 import { quietHandlers } from './quiet.js';
+import { directorySuggestions } from './files.js';
+import { createWorkspaces } from './workspaces.js';
 import type { DaemonServer } from '../server.js';
 
 export { createPaseoGateway, NOT_IMPLEMENTED, PASEO_PROTOCOL_VERSION } from './gateway.js';
@@ -23,8 +25,7 @@ export function webAppDir(alpdFile: string, configured?: string) {
  * the app ask for something by itself, or change the protocol, stay off.
  */
 const ENTRY_POINTS = {
-  projectAdd: true, stableProjectIdentity: true, projectGithubClone: true, workspaceGithubRepositorySearch: true, projectCreateDirectory: true,
-  projectRemove: true, workspacePinning: true, workspaceMarkUnread: true, agentDetach: true, agentForkContext: true, agentForkContextCursor: true,
+  projectGithubClone: true, workspaceGithubRepositorySearch: true, agentDetach: true, agentForkContext: true, agentForkContextCursor: true,
   providerRemoval: true, importSessionWorkspaceTarget: true, importSessionSearch: true, fsEntryOps: true, fsEntryDuplicate: true, workspaceSetupRun: true,
 };
 
@@ -44,13 +45,18 @@ export function createPaseoBridge({ daemon, version, token, serverId, home, log 
 }) {
   const handlers: Record<string, Handler> = {};
   const features: Record<string, boolean> = {};
+  const inDevelopment = async () => words(await userLanguage(home)).inDevelopment;
   const gateway = createPaseoGateway({
-    token, serverId, version, handlers, features, log,
-    inDevelopment: async () => words(await userLanguage(home)).inDevelopment,
-    onClient: () => { void agents.start().catch(error => log?.(`agents failed to start: ${error?.message ?? error}`)); return () => {}; },
+    token, serverId, version, handlers, features, log, inDevelopment,
+    onClient: () => {
+      void agents.start().then(() => workspaces.start()).catch(error => log?.(`agents failed to start: ${error?.message ?? error}`));
+      return () => {};
+    },
   });
-  const agents = createAgents({ daemon, broadcast: message => gateway.broadcast(message), log });
-  Object.assign(handlers, quietHandlers, agents.handlers);
-  Object.assign(features, ENTRY_POINTS, agents.features);
-  return Object.assign(gateway, { close: () => agents.close() });
+  const broadcast = (message: Parameters<typeof gateway.broadcast>[0]) => gateway.broadcast(message);
+  const workspaces = createWorkspaces({ home, broadcast, agents: () => agents.view, inDevelopment, log });
+  const agents = createAgents({ daemon, broadcast, directory: workspaces, log });
+  Object.assign(handlers, quietHandlers, agents.handlers, workspaces.handlers, { directory_suggestions_request: directorySuggestions });
+  Object.assign(features, ENTRY_POINTS, agents.features, workspaces.features);
+  return Object.assign(gateway, { close: () => { agents.close(); return workspaces.close(); } });
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { brotliCompressSync } from 'node:zlib';
@@ -145,7 +145,7 @@ test('what the app reads by itself gets the empty answer of a daemon without tha
   assert.equal((await ask(client, { type: 'workspace_setup_status_request', requestId: 'w1', workspaceId: root })).payload.snapshot, null);
   assert.equal((await ask(client, { type: 'get_daemon_config_request', requestId: 'd1' })).payload.config.pluginsEnabled, false);
   assert.deepEqual((await ask(client, { type: 'list_provider_features_request', requestId: 'p1', draftConfig: { provider: 'alp', cwd: root } })).payload.features, []);
-  assert.deepEqual((await ask(client, { type: 'directory_suggestions_request', requestId: 's1', query: 'src' })).payload.directories, []);
+  assert.deepEqual((await ask(client, { type: 'directory_suggestions_request', requestId: 's1', query: '' })).payload.directories, []);
 });
 
 test('the app starts an ALP session as an agent, sees it stream, reads its timeline and talks to it', async t => {
@@ -244,4 +244,98 @@ test('what an agent asks the user is a question card on its root, answered from 
   session(client, { type: 'agent_permission_response', agentId, requestId: second.request.id, response: { behavior: 'deny', message: 'Dismissed by user' } });
   assert.equal((await dismissed).status, 'dismissed');
   await client.next(frame => frame.message?.type === 'agent_permission_resolved' && frame.message.payload.requestId === second.request.id);
+});
+
+test('projects and workspaces are kept by alpd: add, create with an agent, title, pin, labels, unread, archive, remove', async t => {
+  const { connected, ask, root, agents, home } = await setup(t);
+  const client = await connected();
+  const empty = (await ask(client, { type: 'fetch_workspaces_request', requestId: 'w0' })).payload;
+  assert.deepEqual([empty.entries, empty.emptyProjects, empty.pageInfo.hasMore], [[], [], false]);
+
+  // The folder to add: typed as a path, its parent's folders that start so; a workspace's files by name.
+  await mkdir(path.join(root, 'docs', 'guide'), { recursive: true });
+  await writeFile(path.join(root, 'docs', 'guide', 'intro.md'), '# Intro');
+  const typed = (await ask(client, { type: 'directory_suggestions_request', requestId: 's1', query: `${root}/do`, includeDirectories: true, includeFiles: false })).payload;
+  assert.deepEqual(typed.entries, [{ path: path.join(root, 'docs'), kind: 'directory' }]);
+  const files = (await ask(client, { type: 'directory_suggestions_request', requestId: 's2', cwd: root, query: 'intro', includeFiles: true, includeDirectories: false })).payload;
+  assert.deepEqual(files.entries, [{ path: 'docs/guide/intro.md', kind: 'file' }]);
+  const suffix = (await ask(client, { type: 'directory_suggestions_request', requestId: 's3', cwd: root, query: 'guide/intro.md', matchMode: 'suffix', includeFiles: true })).payload;
+  assert.deepEqual(suffix.entries.map(entry => entry.path), ['docs/guide/intro.md']);
+
+  // A project is a directory; one that is not there says so.
+  const missing = (await ask(client, { type: 'project.add.request', requestId: 'p0', cwd: path.join(root, 'nope') })).payload;
+  assert.deepEqual([missing.project, missing.errorCode], [null, 'directory_not_found']);
+  const project = (await ask(client, { type: 'project.add.request', requestId: 'p1', cwd: root })).payload.project;
+  assert.match(project.projectId, /^prj_[0-9a-f]{16}$/);
+  assert.deepEqual([project.projectRootPath, project.projectDisplayName, project.projectKind], [root, 'project', 'non_git']);
+  await client.next(frame => frame.message?.type === 'project.update' && frame.message.payload.project?.projectId === project.projectId);
+  assert.equal((await ask(client, { type: 'project.add.request', requestId: 'p2', cwd: root })).payload.project.projectId, project.projectId);
+  assert.deepEqual((await ask(client, { type: 'project.list.request', requestId: 'l1' })).payload.projects.map(entry => entry.projectId), [project.projectId]);
+  assert.deepEqual((await ask(client, { type: 'fetch_workspaces_request', requestId: 'w1' })).payload.emptyProjects.map(entry => entry.projectId), [project.projectId]);
+
+  // A workspace made with its first agent: the agent runs in it.
+  const made = (await ask(client, { type: 'workspace.create.request', requestId: 'c1', source: { kind: 'directory', path: root, projectId: project.projectId }, agent: { config: { provider: 'alp', cwd: root }, initialPrompt: 'Hello', labels: {} } })).payload;
+  assert.equal(made.error, null);
+  const workspaceId = made.workspace.id;
+  assert.match(workspaceId, /^wks_[0-9a-f]{16}$/);
+  assert.deepEqual([made.workspace.projectId, made.workspace.name, made.workspace.workspaceKind], [project.projectId, 'project', 'directory']);
+  assert.equal(made.agent.workspaceId, workspaceId);
+  await until(() => agents[0]?.started.length === 1, 'the first turn');
+  agents[0].finish('Hi.');
+  await client.next(frame => frame.message?.type === 'workspace_update' && frame.message.payload.workspace?.status === 'attention');
+  const listed = (await ask(client, { type: 'fetch_agents_request', requestId: 'f1' })).payload.entries;
+  assert.deepEqual(listed.map(entry => [entry.agent.workspaceId, entry.project.projectKey]), [[workspaceId, project.projectId]]);
+  // A worktree from the app is not in ALP yet.
+  assert.equal((await ask(client, { type: 'workspace.create.request', requestId: 'c2', source: { kind: 'worktree', cwd: root } })).payload.error, 'Tính năng đang phát triển');
+
+  const titled = await ask(client, { type: 'workspace.title.set.request', requestId: 't1', workspaceId, title: 'Docs' });
+  assert.deepEqual([titled.payload.accepted, titled.payload.title], [true, 'Docs']);
+  await client.next(frame => frame.message?.type === 'workspace_update' && frame.message.payload.workspace?.name === 'Docs');
+  const pinned = (await ask(client, { type: 'workspace.pin.set.request', requestId: 'pin1', workspaceId, pinned: true })).payload;
+  assert.ok(pinned.accepted && pinned.pinnedAt);
+  await client.next(frame => frame.message?.type === 'workspace_update' && frame.message.payload.workspace?.pinnedAt === pinned.pinnedAt);
+
+  // Labels: one catalog, each change the next seq of its generation.
+  const assigned = (await ask(client, { type: 'workspace.label.assignment.set.request', requestId: 'lb1', workspaceId, label: { name: ' Urgent  work ', color: 'red' }, assigned: true })).payload;
+  assert.deepEqual(assigned.workspaceLabels, ['Urgent work']);
+  const first = (await client.next(frame => frame.message?.type === 'workspace.label.update')).message.payload;
+  assert.deepEqual([first.kind, first.label, first.seq], ['upsert', { name: 'Urgent work', color: 'red' }, 1]);
+  const catalog = (await ask(client, { type: 'workspace.label.list.request', requestId: 'lb2' })).payload;
+  assert.deepEqual([catalog.labels, catalog.sync.mode, catalog.sync.headSeq, catalog.sync.generation], [[{ name: 'Urgent work', color: 'red' }], 'snapshot', 1, first.generation]);
+  const renamed = (await ask(client, { type: 'workspace.label.update.request', requestId: 'lb3', name: 'urgent work', newName: 'Soon', color: 'amber' })).payload;
+  assert.deepEqual([renamed.label, renamed.affectedWorkspaceCount], [{ name: 'Soon', color: 'amber' }, 1]);
+  assert.equal((await client.next(frame => frame.message?.type === 'workspace.label.update' && frame.message.payload.seq === 2)).message.payload.previousName, 'Urgent work');
+  assert.equal((await ask(client, { type: 'workspace.label.delete.inspect.request', requestId: 'lb4', name: 'SOON' })).payload.affectedWorkspaceCount, 1);
+  assert.equal((await ask(client, { type: 'workspace.label.delete.request', requestId: 'lb5', name: 'Soon' })).payload.affectedWorkspaceCount, 1);
+  assert.deepEqual((await ask(client, { type: 'fetch_workspaces_request', requestId: 'w2' })).payload.entries[0].labels, []);
+
+  // Read, then unread again: the finished agent wants a look.
+  const read = (await ask(client, { type: 'workspace.clear_attention.request', requestId: 'r1', workspaceId })).payload;
+  assert.deepEqual([read.success, read.clearedAgentIds], [true, [made.agent.id]]);
+  await client.next(frame => frame.message?.type === 'workspace_update' && frame.message.payload.workspace?.status === 'done');
+  const unread = (await ask(client, { type: 'workspace.mark_unread.request', requestId: 'u1', workspaceId })).payload;
+  assert.deepEqual([unread.success, unread.markedAgentId], [true, made.agent.id]);
+  assert.equal((await ask(client, { type: 'fetch_agent_request', requestId: 'g1', agentId: made.agent.id })).payload.agent.requiresAttention, true);
+
+  // Kept across restarts.
+  const stored = JSON.parse(await readFile(path.join(home, 'state', 'web-workspaces.json'), 'utf8'));
+  assert.deepEqual([stored.workspaces[0].id, stored.workspaces[0].title, stored.sessions[made.agent.id]], [workspaceId, 'Docs', workspaceId]);
+
+  // Archiving archives its agents, and the project stays with no workspace.
+  const archived = (await ask(client, { type: 'archive_workspace_request', requestId: 'a1', workspaceId })).payload;
+  assert.ok(archived.archivedAt);
+  const removal = (await client.next(frame => frame.message?.type === 'workspace_update' && frame.message.payload.kind === 'remove')).message.payload;
+  assert.deepEqual([removal.id, removal.emptyProject?.projectId], [workspaceId, project.projectId]);
+  assert.deepEqual((await ask(client, { type: 'fetch_agents_request', requestId: 'f2' })).payload.entries, []);
+  const after = (await ask(client, { type: 'fetch_workspaces_request', requestId: 'w3' })).payload;
+  assert.deepEqual([after.entries, after.emptyProjects.map(entry => entry.projectId)], [[], [project.projectId]]);
+
+  // A folder made from the app is a project; removing one takes it away.
+  const folder = (await ask(client, { type: 'project.create_directory.request', requestId: 'd1', parentPath: path.dirname(root), name: 'fresh' })).payload;
+  assert.equal(folder.directoryPath, path.join(path.dirname(root), 'fresh'));
+  assert.equal((await ask(client, { type: 'project.create_directory.request', requestId: 'd2', parentPath: path.dirname(root), name: '../x' })).payload.errorCode, 'invalid_name');
+  const removed = (await ask(client, { type: 'project.remove.request', requestId: 'x1', projectId: folder.project.projectId })).payload;
+  assert.equal(removed.accepted, true);
+  await client.next(frame => frame.message?.type === 'project.update' && frame.message.payload.kind === 'remove' && frame.message.payload.projectId === folder.project.projectId);
+  assert.deepEqual((await ask(client, { type: 'project.list.request', requestId: 'l2' })).payload.projects.map(entry => entry.projectId), [project.projectId]);
 });
