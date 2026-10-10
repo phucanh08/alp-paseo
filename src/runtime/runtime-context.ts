@@ -30,3 +30,18 @@ export function claudeUsage(result: any) {
         remainingPercent: typeof window.utilization === 'number' ? Math.max(0, 100 - window.utilization) : null,
         resetsAt: window.resets_at }] : []) };
 }
+
+/**
+ * Whether a runtime's usage report (codexUsage or claudeUsage) lets it work again (ALPD §58):
+ * true when every window has room, false when one is used up or spending is capped, and
+ * undefined when the report says nothing either way.
+ */
+export function usageAllows(usage: any): boolean | undefined {
+  if (!usage?.available) return undefined;
+  const limits: any[] = Array.isArray(usage.limits) ? usage.limits : [];
+  if (limits.some(limit => limit?.spendControlReached === true)) return false;
+  const windows: any[] = limits.length ? limits.flatMap(limit => limit?.windows ?? []) : usage.windows ?? [];
+  const known = windows.filter(window => typeof window?.usedPercent === 'number');
+  if (!known.length) return undefined;
+  return known.every(window => window.usedPercent < 100);
+}

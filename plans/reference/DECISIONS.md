@@ -252,3 +252,11 @@ Decided by the user on 2026-10-10, after a study of Amp. Amp replaced compaction
 - ALP sees each compaction, shows it in Paseo and the run log, and afterwards gives the session ALP's state again: an assignment's brief, its open assignments, changes waiting to merge, questions to the user, and a root's tasks and board.
 - An agent may set the context it works with before compaction: `auto` (the model's) by default, or a number of tokens. Claude Opus 5.5, Fable 5.1 and Sonnet 5.5 work with 1M.
 - Later: `alp_recall` over a session's own full transcript, including what was compacted away; `/compact` from Paseo.
+
+## D28 — ALP asks a paused runtime about its limit
+
+Decided by the user on 2026-10-10, after main could not delegate to Codex for almost an hour after Codex's limit had reset.
+
+- While a usage limit pauses a runtime, alpd asks the runtime about its limit every minute, and at once when an agent delegates to it.
+- When the runtime says the limit lifted, ALP resumes it and the parked work continues. This is now the default. `"limits": { "autoResume": false }` keeps the resume with the user, who is then told when the limit lifts.
+- Pauses the user makes are never lifted by ALP.

@@ -25,6 +25,7 @@ import { createRecallBook, recallPrompt, RECALL_KEEP_MS, RECALL_QUESTION_CHARS, 
 import { branchExists, checkoutFingerprint, checkoutKey, commitWorktree, createCopy, createWorktree, linkModules, mergeWorktree, reattachWorktree, removeCopy, removeWorktree, type Copy, type Worktree, type WorktreeChange } from './workspace.js';
 import { claudeSandboxAvailable } from './claude-transport.js';
 import { ALP_REPO, gh, projectRepo, type GitHubRunner } from './github.js';
+import { usageAllows } from './runtime-context.js';
 import { parse as toml } from 'smol-toml';
 import { findFormula, formulaDirs, listFormulas, pourFormula } from '../core/formulas.js';
 import { ADVISORS, addAllowRule, capMode, commandDecision, profileFor, unwrapShell, type PermissionProfile } from '../core/permissions.js';
@@ -95,8 +96,13 @@ export type RuntimeOptions = {
   /** Where pauses are kept across restarts. Omitted keeps them in memory. */
   pauseFile?: string;
 
-  /** Resume a runtime a usage limit paused, a minute after the limit resets. Default false: the user resumes. */
+  /**
+   * Resume a runtime a usage limit paused as soon as the runtime says the limit lifted
+   * (ALPD §58). Default true; false tells the user instead, who resumes it.
+   */
   autoResume?: boolean;
+  /** How often alpd asks a runtime a usage limit paused whether the limit lifted. Default LIMIT_CHECK_MS. */
+  limitCheckMs?: number;
 
   /** Where running assignments are kept, so the next alpd continues them (ALPD §31). Omitted keeps them in memory. */
   liveFile?: string;
@@ -174,7 +180,7 @@ export type AlpRuntime = {
 /** What became of one assignment an earlier alpd left running. */
 export type RecoveryOutcome = { assignmentId: string; agent: string; outcome: 'resumed' | 'parked' | 'failed'; error?: string };
 
-export type Pause = { since: string; by: string; reason: string; resetsAt?: string };
+export type Pause = { since: string; by: string; reason: string; resetsAt?: string; /** When alpd last asked the runtime about the limit (ALPD §58). */ checkedAt?: string };
 export type PauseState = {
   all?: Pause;
   runtimes: Partial<Record<RuntimeKind, Pause>>;
@@ -323,6 +329,10 @@ const CHECKED_IN = 'Not a result: the assignment keeps running. Act on this mail
 /** A session's native process is restarted at most RESTART_LIMIT times within RESTART_WINDOW_MS unless it makes progress meanwhile. */
 const RESTART_LIMIT = 3;
 const RESTART_WINDOW_MS = 10 * 60_000;
+/** How often alpd asks a runtime a usage limit paused whether the limit lifted (ALPD §58). */
+const LIMIT_CHECK_MS = 60_000;
+/** A check this recent answers a delegation without asking the runtime again. */
+const LIMIT_FRESH_MS = 15_000;
 /**
  * The context advisory (ALPD §57): the runtime compacts a full context and keeps going, so
  * ALP says nothing until a session's fill reaches CONTEXT_SOON of the point where its
@@ -1161,7 +1171,11 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   /** The latest usage report of each runtime, and the warnings already given, by runtime and reset time. */
   const usage = new Map<RuntimeKind, any>();
   const warned = new Set<string>();
-  const resumeTimers = new Map<RuntimeKind, NodeJS.Timeout>();
+  /** The check of each runtime's limit running now, and when the last one ended (ALPD §58). */
+  const limitChecks = new Map<RuntimeKind, { at: number; running?: Promise<void> }>();
+  let limitWatch: NodeJS.Timeout | undefined;
+  /** Limit pauses whose lifting the user was told of, when ALP does not resume by itself. */
+  const liftTold = new WeakSet<Pause>();
   /** Write leases: one writing assignment per checkout across all trees, unless nested under the holder. */
   const leases = new Map<string, { assignment: string; agent: string }>();
   const worktreeRoot = options.worktreeDir ?? path.join(os.tmpdir(), 'alp-worktrees');
@@ -2106,19 +2120,68 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     }
   }
 
-  function scheduleResume(kind: RuntimeKind, pause: Pause) {
-    clearTimeout(resumeTimers.get(kind));
-    resumeTimers.delete(kind);
-    if (!options.autoResume || pause.by !== 'alpd' || !pause.resetsAt) return;
-    const timer = setTimeout(() => { resumeTimers.delete(kind); if (paused.runtimes[kind] === pause) resumeRuntime(kind, 'alpd, after the limit reset'); }, Math.max(0, Date.parse(pause.resetsAt) - Date.now() + 60_000));
-    timer.unref?.();
-    resumeTimers.set(kind, timer);
+  /**
+   * While a usage limit pauses a runtime, alpd asks the runtime every LIMIT_CHECK_MS whether
+   * the limit lifted (ALPD §58), so a reset, or a limit the user reset early, is seen without
+   * anyone resuming it by hand. Pauses the user made are theirs to lift.
+   */
+  function watchLimits() {
+    const needed = !closed && RUNTIMES.some(kind => paused.runtimes[kind]?.by === 'alpd');
+    if (needed && !limitWatch) {
+      limitWatch = setInterval(() => { for (const kind of RUNTIMES) void checkLimit(kind); }, options.limitCheckMs ?? LIMIT_CHECK_MS);
+      limitWatch.unref?.();
+    } else if (!needed && limitWatch) {
+      clearInterval(limitWatch);
+      limitWatch = undefined;
+    }
+  }
+
+  /** Asks the runtime about the limit that paused it, unless it was asked within `fresh` ms, and resumes it when lifted. */
+  function checkLimit(kind: RuntimeKind, fresh = 0): Promise<void> {
+    const pause = paused.runtimes[kind];
+    const last = limitChecks.get(kind);
+    if (!pause || pause.by !== 'alpd' || closed) return Promise.resolve();
+    if (last?.running) return last.running;
+    if (last && Date.now() - last.at < fresh) return Promise.resolve();
+    const running = (async () => {
+      const lifted = await limitLifted(kind).catch(() => undefined);
+      limitChecks.set(kind, { at: Date.now() });
+      if (paused.runtimes[kind] !== pause || closed) return;
+      pause.checkedAt = new Date().toISOString();
+      // When the runtime cannot say, the reset time it gave earlier decides, a minute after.
+      const free = lifted ?? (pause.resetsAt ? Date.parse(pause.resetsAt) + 60_000 <= Date.now() : false);
+      if (!free) { savePauses(); return; }
+      if (options.autoResume !== false) { resumeRuntime(kind, 'alpd, after the limit lifted'); return; }
+      savePauses();
+      if (liftTold.has(pause)) return;
+      liftTold.add(pause);
+      notice('info', say => say.limitLifted(label(kind), kind));
+    })();
+    limitChecks.set(kind, { at: last?.at ?? 0, running });
+    return running;
+  }
+
+  /** Whether the runtime says its usage limit lifted: from a session open on it, else from a short-lived process of it. */
+  async function limitLifted(kind: RuntimeKind): Promise<boolean | undefined> {
+    const open = [...sessions.values()].find(session => !session.closed && !session.pending && session.runtimeKind === kind);
+    if (open) return usageAllows(((await open.runtime.orchestrationContext?.().catch(() => undefined)) as any)?.usage);
+    const transport = createTransport(options, kind, os.tmpdir(), nativeEnvironment(options));
+    transport.onFailure(() => {});
+    try {
+      await transport.initialize();
+      return usageAllows(((await transport.orchestrationContext?.().catch(() => undefined)) as any)?.usage);
+    } catch {
+      return undefined;
+    } finally {
+      await transport.close().catch(() => {});
+    }
   }
 
   function pauseRuntime(scope: RuntimeKind | 'all', pause: Pause, now = false) {
     if (scope === 'all') paused.all = pause;
-    else { paused.runtimes[scope] = pause; scheduleResume(scope, pause); }
+    else { paused.runtimes[scope] = pause; limitChecks.delete(scope); }
     savePauses();
+    watchLimits();
     if (now) {
       for (const [id, session] of sessions) {
         if (!session.parent || session.closed || !session.active || session.role === 'supervisor' || (scope !== 'all' && session.runtimeKind !== scope)) continue;
@@ -2130,9 +2193,10 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
   }
 
   function resumeRuntime(scope: RuntimeKind | 'all', by: string) {
-    if (scope === 'all') { paused = { runtimes: {} }; for (const timer of resumeTimers.values()) clearTimeout(timer); resumeTimers.clear(); }
-    else { delete paused.runtimes[scope]; clearTimeout(resumeTimers.get(scope)); resumeTimers.delete(scope); }
+    if (scope === 'all') paused = { runtimes: {} };
+    else delete paused.runtimes[scope];
     savePauses();
+    watchLimits();
     const free = RUNTIMES.filter(kind => !pauseOf(kind));
     if (free.length) notice('info', say => say.resumed(scope === 'all' ? 'ALP' : label(scope), by, pauseState().parked.length > 0));
     for (const [id, session] of sessions) {
@@ -2156,7 +2220,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     emit(session.parent!, { type: 'assignment', assignment: assignmentSnapshot(assignment, 'parked') });
     // One that continues by itself is information; one held until the user resumes needs the requester's decision, so it wakes it.
     if (then) post(session.parent!, { kind: 'note', from: assignment.agent, assignment: sessionId, passive: true, body: `Parked: ${session.parked.reason}. ${then} Wait for it, or start other work.` });
-    else post(session.parent!, { kind: 'stalled', from: assignment.agent, assignment: sessionId, body: `Parked: ${session.parked.reason}. ALP continues this assignment where it stopped when ${label(session.runtimeKind)} is resumed (the user runs alp resume). Wait for it, start other work, or stop it with alp_cancel and give the rest to an agent on another runtime (pass model claude:… or codex:…); what it changed stays in your checkout or its worktree.` });
+    else post(session.parent!, { kind: 'stalled', from: assignment.agent, assignment: sessionId, body: `Parked: ${session.parked.reason}. ALP continues this assignment where it stopped when ${label(session.runtimeKind)} is resumed (${options.autoResume !== false && (pauseOf(session.runtimeKind)?.by ?? 'alpd') === 'alpd' ? `ALP resumes it as soon as ${label(session.runtimeKind)} says the limit lifted` : 'the user runs alp resume'}). Wait for it, start other work, or stop it with alp_cancel and give the rest to an agent on another runtime (pass model claude:… or codex:…); what it changed stays in your checkout or its worktree.` });
   }
 
   function continueParked(sessionId: string, session: Session) {
@@ -2199,7 +2263,7 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     const pause: Pause = { since: new Date().toISOString(), by: 'alpd', reason: `${label(kind)} usage limit reached`, ...(resetsAt ? { resetsAt } : {}) };
     pauseRuntime(kind, pause);
     const other = RUNTIMES.find(candidate => candidate !== kind && !pauseOf(candidate));
-    notice('error', say => say.limitReached(label(kind), resetsAt, other && label(other), Boolean(options.autoResume), kind));
+    notice('error', say => say.limitReached(label(kind), resetsAt, other && label(other), options.autoResume !== false, kind));
   }
 
   /**
@@ -2289,7 +2353,9 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     notice('warning', say => say.usageWarning(label(kind), used, high.resetsAt ? new Date(high.resetsAt * 1000).toISOString() : undefined));
   }
 
-  for (const [kind, pause] of Object.entries(paused.runtimes) as Array<[RuntimeKind, Pause]>) scheduleResume(kind, pause);
+  // A limit pause an earlier alpd left is checked at once: the limit may have lifted meanwhile.
+  watchLimits();
+  for (const kind of RUNTIMES) void checkLimit(kind);
 
   /** Projects whose tasks this runtime checked for assignments an earlier alpd left behind. */
   const orphanChecks = new Map<string, Promise<void>>();
@@ -3483,6 +3549,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
     if (args.agent === 'oracle' && !ORACLE_MODELS.includes(args.model)) return toolResult(false, { error: `Oracle runs on ${ORACLE_MODELS.join(' or ')}; pass one as model. For two opinions, start one on each with wait: false` });
     // A paused runtime takes no new assignments; another runtime may.
     const childRuntime = (args.model?.split(':')[0] ?? session.runtimeKind) as RuntimeKind;
+    // A limit may have lifted since the last check: ask the runtime before refusing (ALPD §58).
+    if (!paused.all && paused.runtimes[childRuntime]?.by === 'alpd') await checkLimit(childRuntime, LIMIT_FRESH_MS);
     const hold = pauseOf(childRuntime);
     if (hold) {
       const other = RUNTIMES.find(kind => kind !== childRuntime && !pauseOf(kind));
@@ -4671,7 +4739,8 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       await forgetting;
       await recalls.flush();
       await inFlight.flush();
-      for (const timer of resumeTimers.values()) clearTimeout(timer);
+      if (limitWatch) clearInterval(limitWatch);
+      await Promise.all([...limitChecks.values()].map(check => check.running));
       await pauseWrites;
 
       listeners.clear();

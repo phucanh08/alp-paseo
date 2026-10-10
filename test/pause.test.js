@@ -79,7 +79,7 @@ test('a usage limit pauses its runtime and parks the assignment it stopped, unti
   const state = runtime.pauses();
   assert.deepEqual([state.runtimes.codex.by, state.runtimes.codex.reason, state.runtimes.codex.resetsAt], ['alpd', 'Codex usage limit reached', new Date(resetsAt * 1000).toISOString()]);
   assert.deepEqual(state.parked.map(entry => [entry.assignmentId, entry.agent, entry.runtime]), [[assignmentId, 'peer', 'codex']]);
-  assert.match(notices(events)[0].text, /^Codex usage limit reached; it resets .*ALP paused delegation to Codex agents and parked their assignments; Claude agents keep working\. Run alp resume codex when it has reset\.$/);
+  assert.match(notices(events)[0].text, /^Codex usage limit reached; it resets .*ALP paused delegation to Codex agents and parked their assignments; Claude agents keep working\. ALP asks Codex every minute and resumes it as soon as the limit lifts\.$/);
   assert.equal(notices(events)[0].level, 'error');
   // The pause file is written in the background.
   const pauseFile = path.join(path.dirname(root), 'home', 'state', 'pause.json');

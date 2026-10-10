@@ -6,6 +6,7 @@ export { resolveSession, InstructionsAdapter } from './resolve.js';
 export type { SessionSpec, HostMcpServer, ResolvedSession, RuntimeKind } from './resolve.js';
 export { DEFAULT_MODEL, DEFAULT_CLAUDE_MODEL, models, modes, thinkingOptions, thinkingOptionsFor } from './catalog.js';
 export { CodexTransport } from './transport.js';
+export { usageAllows } from './runtime-context.js';
 export { AcpTransport, acpDecision, acpPermission } from './acp-transport.js';
 export type { AcpProvider } from './acp-transport.js';
 export { ClaudeTransport, claudePermissions, claudeSandboxAvailable, toolShapes as claudeToolShapes } from './claude-transport.js';

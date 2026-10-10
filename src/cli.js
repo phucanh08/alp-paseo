@@ -1035,7 +1035,7 @@ function printTask(task, tasks) {
 
 /** Pauses and parked assignments, one line each; `always` also says when nothing is paused. */
 function printPauses({ all, runtimes, parked }, always = true) {
-  const line = (name, pause) => console.log(`⏸ ${name} paused since ${pause.since.slice(0, 16).replace('T', ' ')} by ${pause.by}: ${pause.reason}${pause.resetsAt ? `; the limit resets ${pause.resetsAt}` : ''}`);
+  const line = (name, pause) => console.log(`⏸ ${name} paused since ${pause.since.slice(0, 16).replace('T', ' ')} by ${pause.by}: ${pause.reason}${pause.resetsAt ? `; the limit resets ${pause.resetsAt}` : ''}${pause.checkedAt ? `; ${name} last asked ${ago(pause.checkedAt)} ago` : ''}`);
   if (all) line('ALP', all);
   for (const [kind, pause] of Object.entries(runtimes)) line(kind, pause);
   for (const entry of parked) console.log(`  parked ${entry.agent} ${entry.assignmentId} (${entry.runtime}): ${entry.reason}`);

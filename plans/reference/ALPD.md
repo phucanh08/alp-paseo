@@ -1829,3 +1829,28 @@ Goal (D27): §35 measured a Claude session against a 200k window it guessed unti
 - `ClaudeTransport` reports no guessed window, then the measured one over a result's, and a compaction from start to boundary, and a failed one.
 
 `test/golden/log.txt` shows the advisory, the compaction and the restore note.
+
+## 58. Asking a paused runtime about its limit (2026-10-10)
+
+Goal (D28): a Codex limit paused Codex at 07:55. The limit reset at 12:35, but with `autoResume` off by default, Codex stayed paused until the user noticed at 13:28 that main could not delegate to it. The reset time was also only a guess: a limit can lift early.
+
+- While a pause `by: 'alpd'` holds a runtime, `watchLimits` runs one interval timer (`LIMIT_CHECK_MS`, 60 s; `limitCheckMs` in tests). Each tick runs `checkLimit` for each paused runtime. The timer stops when no limit pause is left.
+- `limitLifted` asks the runtime through the `orchestrationContext` of a session open on it. Without such a session, it starts a short-lived transport in the temp directory and closes it after. `ClaudeTransport` answers without a session by starting a Claude process that sends no prompt: `usage_EXPERIMENTAL…`, about 1.8 s. Codex answers `account/rateLimits/read`, about 1 s. No model call is made.
+- `usageAllows` (in `runtime-context.ts`) is `true` when every known window is below 100% and Codex's spend control is not reached, `false` when one is used up, and `undefined` when the report says nothing.
+- When it is lifted, or unknown and the earlier reset time is a minute past:
+  - `autoResume` (now default true in alpd): resume, so parked assignments continue, with the notice "resumed by alpd, after the limit lifted";
+  - `autoResume: false`: one notice per pause (`limitLifted`), and the user resumes.
+- Each check stamps `checkedAt` on the pause, saved with it; `alp ps` prints "last asked … ago".
+- `alp_delegate` to a runtime a limit paused calls `checkLimit` first, unless the last check was under 15 s ago (`LIMIT_FRESH_MS`).
+- At start, pauses an earlier alpd left are checked at once.
+- Pauses the user made are never checked or lifted.
+- The limit notice and the parked note say that ALP resumes by itself, or that the user runs `alp resume` when `autoResume` is off.
+
+**Evidence.** `test/limit-watch.test.js`:
+- `usageAllows` on Codex and Claude reports, spend control, and unknown;
+- a limit pause is checked each interval and resumed when the report clears;
+- a delegation asks at once and goes ahead, and the parked peer continues;
+- with `autoResume` off, one notice and the pause stays;
+- at start, a left pause is checked by a probe process, which is closed after; a report that clears before the reset time resumes it, and a user pause is left alone.
+
+Live: a probe of the real Codex (28% / 59%) and Claude (9% / 48%) without a session answered `true` in about 1 s and 1.8 s.
