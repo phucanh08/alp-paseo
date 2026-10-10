@@ -1,6 +1,6 @@
 {
   "name": "@anhlp/alp",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "ALP command line and alpd, the per-user daemon that runs filesystem-defined Codex and Claude Code agent teams",
   "type": "module",
   "files": [
