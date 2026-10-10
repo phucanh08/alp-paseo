@@ -9,4 +9,5 @@ patches/ applied, and serves it from alpd. Each patch says what it changes;
 in short: the app connects to the alpd that serves it, with the token that
 `alp web` gives it, is named ALP, and shows ALP's logo in place of Paseo's
 mark, favicons and icons, and says ALP where it said Paseo, linking to ALP's
-repository instead of Paseo's GitHub, sponsor page and Discord.
+repository instead of Paseo's GitHub, sponsor page and Discord. It shows alpd's "in development" answer as a
+toast and leaves out "What's new", which listed Paseo's release notes.

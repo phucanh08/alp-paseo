@@ -1,0 +1,58 @@
+From 4d779bd30a49c0af24be458232d5522d629e2037 Mon Sep 17 00:00:00 2001
+From: anhlp <phucanhdn08@gmail.com>
+Date: Sat, 10 Oct 2026 22:14:44 +0700
+Subject: [PATCH 6/7] ALP: show alpd's "in development" answer as a toast, once
+ per kind of request
+
+---
+ packages/app/src/contexts/session-context.tsx | 14 ++++++++++++++
+ packages/client/src/daemon-client.ts          |  8 ++++++--
+ 2 files changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/packages/app/src/contexts/session-context.tsx b/packages/app/src/contexts/session-context.tsx
+index bd7a988..36e6a30 100644
+--- a/packages/app/src/contexts/session-context.tsx
++++ b/packages/app/src/contexts/session-context.tsx
+@@ -217,6 +217,20 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
+   isConnectedRef.current = isConnected;
+   const toast = useToast();
+ 
++  // ALP: alpd answers a Paseo feature it has not got with not_implemented and the text to show
++  // ("Tính năng đang phát triển"); show it once for each kind of request, however many fail.
++  useEffect(() => {
++    const shown = new Map<string, number>();
++    return client.on("rpc_error", (message) => {
++      if (message.payload.code !== "not_implemented") return;
++      const key = message.payload.requestType ?? "";
++      const now = Date.now();
++      if (now - (shown.get(key) ?? 0) < 5000) return;
++      shown.set(key, now);
++      toast.show(message.payload.error, { variant: "info", testID: "alp-in-development-toast" });
++    });
++  }, [client, toast]);
++
+   // Zustand store actions
+   const setIsPlayingAudio = useSessionStore((state) => state.setIsPlayingAudio);
+   const setAgentStreamTail = useSessionStore((state) => state.setAgentStreamTail);
+diff --git a/packages/client/src/daemon-client.ts b/packages/client/src/daemon-client.ts
+index f900fe4..a60f2c7 100644
+--- a/packages/client/src/daemon-client.ts
++++ b/packages/client/src/daemon-client.ts
+@@ -1009,8 +1009,12 @@ class DaemonRpcError extends Error {
+ 
+   constructor(params: { requestId: string; error: string; requestType?: string; code?: string }) {
+     const parts = [params.error];
+-    if (params.requestType) parts.push(`requestType=${params.requestType}`);
+-    if (params.code) parts.push(`code=${params.code}`);
++    // ALP: alpd's not_implemented text is written for the user ("Tính năng đang phát triển"),
++    // so screens that show the error show it as it is.
++    if (params.code !== "not_implemented") {
++      if (params.requestType) parts.push(`requestType=${params.requestType}`);
++      if (params.code) parts.push(`code=${params.code}`);
++    }
+     super(parts.join(" "));
+     this.name = "DaemonRpcError";
+     this.requestId = params.requestId;
+-- 
+2.54.0 (Apple Git-157)
+

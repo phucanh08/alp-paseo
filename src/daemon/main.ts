@@ -163,7 +163,7 @@ async function run(home: string) {
   const webLog = (message: string) => console.log(`${new Date().toISOString()} web: ${message}`);
   // The built ALP web app (Paseo's app, ALPD §62) when it is here; else the classic page.
   const appDir = settings?.web?.app === 'classic' ? undefined : webAppDir(fileURLToPath(import.meta.url));
-  const gateway = appDir ? createPaseoBridge({ daemon: server, version: VERSION, token: () => web?.token ?? '', serverId: () => web?.serverId ?? '', log: webLog }) : undefined;
+  const gateway = appDir ? createPaseoBridge({ daemon: server, version: VERSION, home, token: () => web?.token ?? '', serverId: () => web?.serverId ?? '', log: webLog }) : undefined;
   web = settings?.web?.enabled === false ? undefined : createWebServer({ daemon: server, assets: webAssets, app: appDir && gateway ? { dir: appDir, gateway } : undefined, home, port: settings?.web?.port, log: webLog });
   await web?.listen()
     .then(info => console.log(`${new Date().toISOString()} web app on ${info.url}`))

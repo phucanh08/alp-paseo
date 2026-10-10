@@ -8,6 +8,7 @@ import type { Envelope, UserQuestion } from '../../runtime/index.js';
 import type { DaemonServer, SessionSummary } from '../server.js';
 import { connectInProcess, type AlpClient } from './alp-client.js';
 import type { ClientContext, Handler } from './gateway.js';
+import { searchTimeline } from './chat-search.js';
 import { TimelineDeltas } from './timeline-items.js';
 import { InMemoryAgentTimelineStore } from './timeline-store.js';
 
@@ -280,6 +281,43 @@ export function createAgents({ daemon, broadcast, log = () => {} }: {
       } satisfies Outbound;
     },
 
+    /** History: every root, archived ones too unless the filter says, searched, sorted and paged. */
+    async fetch_agent_history_request(message: Inbound<'fetch_agent_history_request'>) {
+      await started;
+      const filter = message.filter ?? {};
+      const search = message.search?.trim().toLowerCase();
+      const rows = [...roots.values()]
+        .filter(session => filter.includeArchived !== false || !session.archived)
+        .filter(session => !filter.projectKeys?.length || filter.projectKeys.includes(session.projectRoot))
+        .map(session => ({ session, agent: agentOf(session) }))
+        .filter(({ agent }) => !filter.statuses?.length || filter.statuses.includes(agent.status))
+        .filter(({ agent }) => filter.requiresAttention === undefined || !!agent.requiresAttention === filter.requiresAttention)
+        .filter(({ session }) => !search || [session.title, session.projectRoot, path.basename(session.projectRoot)].some(text => text?.toLowerCase().includes(search)));
+      const busy = (status: string) => status === 'running' ? 0 : status === 'initializing' ? 1 : status === 'error' ? 2 : 3;
+      const sort = message.sort?.length ? message.sort : [{ key: 'updated_at' as const, direction: 'desc' as const }];
+      rows.sort((a, b) => {
+        for (const { key, direction } of sort) {
+          const order = key === 'status_priority' ? busy(a.agent.status) - busy(b.agent.status)
+            : key === 'created_at' ? a.agent.createdAt.localeCompare(b.agent.createdAt)
+            : key === 'title' ? (a.agent.title ?? '').localeCompare(b.agent.title ?? '')
+            : a.agent.updatedAt.localeCompare(b.agent.updatedAt);
+          if (order) return direction === 'asc' ? order : -order;
+        }
+        return 0;
+      });
+      const offset = Number(message.page?.cursor ?? 0) || 0;
+      const limit = message.page?.limit ?? rows.length;
+      const more = offset + limit < rows.length;
+      return {
+        type: 'fetch_agent_history_response',
+        payload: {
+          requestId: message.requestId,
+          entries: rows.slice(offset, offset + limit).map(({ session, agent }) => ({ agent, project: placement(session) })),
+          pageInfo: { nextCursor: more ? String(offset + limit) : null, prevCursor: offset ? String(Math.max(0, offset - limit)) : null, hasMore: more },
+        },
+      } satisfies Outbound;
+    },
+
     async fetch_agent_request(message: Inbound<'fetch_agent_request'>) {
       await started;
       const session = roots.get(message.agentId);
@@ -314,6 +352,21 @@ export function createAgents({ daemon, broadcast, log = () => {} }: {
         } satisfies Outbound;
       } catch (error: any) {
         return { type: 'fetch_agent_timeline_response', payload: { ...empty, agent: null, epoch: '', window: { minSeq: 0, maxSeq: 0, nextSeq: 0 }, startCursor: null, endCursor: null, entries: [], error: error?.message ?? String(error) } } satisfies Outbound;
+      }
+    },
+
+    /** Find in chat: the user and assistant messages that match, as Paseo's daemon finds them. */
+    async 'agent.timeline.search.request'(message: Inbound<'agent.timeline.search.request'>) {
+      const reply = (fields: Partial<Extract<Outbound, { type: 'agent.timeline.search.response' }>['payload']>): Outbound =>
+        ({ type: 'agent.timeline.search.response', payload: { requestId: message.requestId, agentId: message.agentId, epoch: '', locations: [], nextCursor: null, error: null, ...fields } });
+      try {
+        await started;
+        const session = known(message.agentId);
+        await ensureTimeline(session.id);
+        const epoch = timelines.getEpoch(session.id);
+        return reply({ epoch, ...searchTimeline({ rows: timelines.getRows(session.id), query: message.query, cursor: message.cursor }) });
+      } catch (error: any) {
+        return reply({ error: error?.message ?? String(error) });
       }
     },
 

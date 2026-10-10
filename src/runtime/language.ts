@@ -34,6 +34,8 @@ const en = {
     `${runtime} usage limit reached${resetsAt ? `; it resets ${resetsAt}` : ''}. ALP paused delegation to ${runtime} agents and parked their assignments${other ? `; ${other} agents keep working` : ''}. ${autoResume ? `ALP asks ${runtime} every minute and resumes it as soon as the limit lifts.` : `ALP asks ${runtime} every minute and tells you when the limit lifts; then run alp resume ${kind}.`}`,
   limitLifted: (runtime: string, kind: string) => `${runtime} says its usage limit has lifted. Run alp resume ${kind} to continue its work.`,
   usageWarning: (runtime: string, used: string, resetsAt: string | undefined) => `${runtime} has used ${used} of a usage window${resetsAt ? ` that resets ${resetsAt}` : ''}.`,
+  /** The web app's answer to a Paseo feature ALP has not got yet (ALPD §62). */
+  inDevelopment: 'This feature is in development',
   resumed: (what: string, by: string, parked: boolean) => `${what} resumed by ${by}.${parked ? ' Parked assignments continue.' : ''}`,
   paused: (what: string, reason: string | undefined, runtime: string | undefined, now: boolean) =>
     `${what} paused by the user${reason ? `: ${reason}` : ''}. Delegation${runtime ? ` to ${runtime} agents` : ''} waits${now ? ', and running assignments park where they are' : '; running turns finish'}. alp resume continues.`,
@@ -72,6 +74,7 @@ const vi: Words = {
     `${runtime} đã hết hạn mức sử dụng${resetsAt ? `; hạn mức đặt lại lúc ${resetsAt}` : ''}. ALP tạm dừng giao việc cho các agent ${runtime} và tạm giữ việc của chúng${other ? `; các agent ${other} vẫn làm tiếp` : ''}. ${autoResume ? `ALP hỏi ${runtime} mỗi phút và tự chạy lại ngay khi có hạn mức.` : `ALP hỏi ${runtime} mỗi phút và báo khi có hạn mức trở lại; khi đó chạy alp resume ${kind}.`}`,
   limitLifted: (runtime, kind) => `${runtime} báo đã có hạn mức trở lại. Chạy alp resume ${kind} để làm tiếp việc của nó.`,
   usageWarning: (runtime, used, resetsAt) => `${runtime} đã dùng ${used} hạn mức của kỳ này${resetsAt ? `, kỳ đặt lại lúc ${resetsAt}` : ''}.`,
+  inDevelopment: 'Tính năng đang phát triển',
   resumed: (what, by, parked) => `${what} đã chạy lại, bởi ${by}.${parked ? ' Các việc đang tạm giữ được làm tiếp.' : ''}`,
   paused: (what, reason, runtime, now) =>
     `${what} đã bị người dùng tạm dừng${reason ? `: ${reason}` : ''}. Việc giao${runtime ? ` cho các agent ${runtime}` : ''} phải chờ${now ? ', các việc đang chạy được tạm giữ tại chỗ' : '; các lượt đang chạy vẫn chạy hết'}. Chạy alp resume để tiếp tục.`,

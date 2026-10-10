@@ -1,0 +1,78 @@
+From a39d1e095434c01141e58342556354ba76a6aa4b Mon Sep 17 00:00:00 2001
+From: anhlp <phucanhdn08@gmail.com>
+Date: Sat, 10 Oct 2026 22:27:47 +0700
+Subject: [PATCH 7/7] ALP: no What's new, since Paseo's release notes are not
+ ALP's
+
+---
+ .../src/components/sidebar/sidebar-help-menu.tsx  | 15 ++-------------
+ packages/app/src/screens/settings-screen.tsx      |  2 +-
+ 2 files changed, 3 insertions(+), 14 deletions(-)
+
+diff --git a/packages/app/src/components/sidebar/sidebar-help-menu.tsx b/packages/app/src/components/sidebar/sidebar-help-menu.tsx
+index 3d2a257..ccbedb1 100644
+--- a/packages/app/src/components/sidebar/sidebar-help-menu.tsx
++++ b/packages/app/src/components/sidebar/sidebar-help-menu.tsx
+@@ -1,6 +1,6 @@
+ import { useCallback, useState } from "react";
+ import { Text, View } from "react-native";
+-import { Activity, CircleHelp, Gift, Keyboard } from "lucide-react-native";
++import { Activity, CircleHelp, Keyboard } from "lucide-react-native";
+ import { useTranslation } from "react-i18next";
+ import { StyleSheet, withUnistyles } from "react-native-unistyles";
+ import { GitHubIcon } from "@/components/icons/github-icon";
+@@ -25,13 +25,11 @@ import { ICON_SIZE, type Theme } from "@/styles/theme";
+ import type { HostProfile } from "@/types/host-connection";
+ import { formatVersionWithPrefix } from "@/desktop/updates/desktop-updates";
+ import { resolveAppVersion } from "@/utils/app-version";
+-import { openChangelog } from "@/changelog";
+ import { openExternalUrl } from "@/utils/open-external-url";
+ 
+ const GITHUB_ISSUE_URL = "https://github.com/phucanh08/alp-paseo/issues/new";
+ const ThemedActivity = withUnistyles(Activity);
+ const ThemedCircleHelp = withUnistyles(CircleHelp);
+-const ThemedGift = withUnistyles(Gift);
+ const ThemedKeyboard = withUnistyles(Keyboard);
+ const ThemedGitHubIcon = withUnistyles(GitHubIcon);
+ const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
+@@ -47,9 +45,6 @@ const shortcutsLeadingIcon = (
+ const githubLeadingIcon = (
+   <ThemedGitHubIcon size={ICON_SIZE.sm} uniProps={foregroundMutedColorMapping} />
+ );
+-const changelogLeadingIcon = (
+-  <ThemedGift size={ICON_SIZE.sm} uniProps={foregroundMutedColorMapping} />
+-);
+ 
+ function HostVersionHint({ host }: { host: HostProfile }) {
+   const { t } = useTranslation();
+@@ -126,13 +121,7 @@ export function SidebarHelpMenu() {
+             {t("sidebar.help.shortcuts")}
+           </DropdownMenuItem>
+         ) : null}
+-        <DropdownMenuItem
+-          testID="sidebar-help-changelog"
+-          leading={changelogLeadingIcon}
+-          onSelect={openChangelog}
+-        >
+-          {t("sidebar.help.whatsNew")}
+-        </DropdownMenuItem>
++        {/* ALP: no "What's new"; Paseo's release notes are not ALP's. */}
+         <DropdownMenuItem
+           testID="sidebar-help-diagnostics"
+           leading={diagnosticLeadingIcon}
+diff --git a/packages/app/src/screens/settings-screen.tsx b/packages/app/src/screens/settings-screen.tsx
+index 925607a..00711e8 100644
+--- a/packages/app/src/screens/settings-screen.tsx
++++ b/packages/app/src/screens/settings-screen.tsx
+@@ -463,7 +463,7 @@ function AboutSection({ appVersion, appVersionText, isDesktopApp }: AboutSection
+             </View>
+             <Text style={styles.aboutValue}>{appVersionText}</Text>
+           </View>
+-          <WhatsNewRow />
++          {/* ALP: no "What's new"; Paseo's release notes are not ALP's. */}
+           {isDesktopApp ? <DesktopAppUpdateRow /> : null}
+         </View>
+       </SettingsSection>
+-- 
+2.54.0 (Apple Git-157)
+

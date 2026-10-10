@@ -6,8 +6,8 @@ import type { WebSocket } from 'ws';
  * The ALP web app is Paseo's app (D31, ALPD §62), so alpd speaks Paseo's daemon protocol to it
  * on the page's own origin: a `hello` with the token as its password (or the `paseo.bearer.*`
  * subprotocol), then `server_info`, then session messages. ALP answers what it has and refuses the
- * rest with `rpc_error` code `not_implemented`, which the app shows as "feature in development",
- * so no request waits out the client's timeout.
+ * rest with `rpc_error` code `not_implemented`, whose text the app shows as it is ("Tính năng đang
+ * phát triển" in the user's language), so no request waits out the client's timeout.
  */
 
 /** Paseo's protocol version and close codes (packages/server/src/server/websocket-server.ts there). */
@@ -41,6 +41,8 @@ export type GatewayOptions = {
   /** What the app may light up; anything absent stays hidden or answers "in development". */
   features: Record<string, boolean>;
   onClient?(client: ClientContext): () => void;
+  /** The text of a not_implemented answer, in the user's language. */
+  inDevelopment?: () => string | Promise<string>;
   log?: (message: string) => void;
 };
 
@@ -54,9 +56,12 @@ export function bearerOf(protocols: Iterable<string>) {
 
 export function createPaseoGateway(options: GatewayOptions) {
   const { handlers, log = () => {} } = options;
+  const inDevelopment = async () => { try { return await options.inDevelopment?.() ?? 'This feature is in development'; } catch { return 'This feature is in development'; } };
   const clients = new Set<ClientContext>();
 
-  function serverInfo() {
+  async function serverInfo() {
+    // Voice and dictation say why they are off, so the app shows it instead of waiting on them.
+    const off = { enabled: false, reason: await inDevelopment() };
     return {
       type: 'status',
       payload: {
@@ -66,6 +71,7 @@ export function createPaseoGateway(options: GatewayOptions) {
         hostname: os.hostname(),
         version: options.version,
         features: options.features,
+        capabilities: { voice: { dictation: off, voice: off } },
       },
     };
   }
@@ -78,7 +84,7 @@ export function createPaseoGateway(options: GatewayOptions) {
     const timer = setTimeout(() => { if (!client) close(CLOSE_AUTH_FAILED, 'Hello timed out'); }, HELLO_TIMEOUT_MS);
     const bearerOk = bearer !== undefined && same(bearer.slice(BEARER_PREFIX.length), options.token());
 
-    function hello(message: any) {
+    async function hello(message: any) {
       if (typeof message.clientId !== 'string' || !message.clientId.trim()) return close(CLOSE_INVALID_HELLO, 'Invalid hello');
       const reject = (reason: 'password_required' | 'incorrect_password' | 'incompatible_protocol') => {
         send({ type: 'hello.rejected', reason, accepts: ['password'] });
@@ -94,7 +100,7 @@ export function createPaseoGateway(options: GatewayOptions) {
         clients.add(client);
         detach = options.onClient?.(client);
       }
-      client.emit(serverInfo());
+      client.emit(await serverInfo());
     }
 
     async function session(message: SessionMessage) {
@@ -109,7 +115,7 @@ export function createPaseoGateway(options: GatewayOptions) {
       const requestId = typeof message.requestId === 'string' ? message.requestId : undefined;
       if (!handler) {
         // One-way messages ALP has no use for are dropped; a request gets an answer at once.
-        if (requestId) client.emit({ type: 'rpc_error', payload: { requestId, requestType: message.type, error: `${message.type} is not in ALP yet`, code: NOT_IMPLEMENTED } });
+        if (requestId) client.emit({ type: 'rpc_error', payload: { requestId, requestType: message.type, error: await inDevelopment(), code: NOT_IMPLEMENTED } });
         return;
       }
       try {
@@ -127,7 +133,7 @@ export function createPaseoGateway(options: GatewayOptions) {
       try { frame = JSON.parse(String(data)); } catch { return; }
       if (process.env.ALP_PASEO_DEBUG && frame?.type !== 'session') log(`paseo <= ${frame?.type}`);
       if (frame?.type === 'ping') send({ type: 'pong' });
-      else if (frame?.type === 'hello') hello(frame);
+      else if (frame?.type === 'hello') void hello(frame);
       else if (frame?.type === 'session') void session(frame.message);
     });
     if (process.env.ALP_PASEO_DEBUG) ws.on('close', (code, reason) => log(`paseo socket closed ${code} ${String(reason)} (client ${client?.clientId ?? 'none'})`));
