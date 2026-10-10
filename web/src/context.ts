@@ -7,18 +7,19 @@ import type { SessionSummary } from './types';
 export const AlpdContext = createContext<Alpd>(null!);
 export const useAlpd = () => useContext(AlpdContext);
 
-export type Route = { screen: 'home' } | { screen: 'session'; id: string } | { screen: 'new'; project: string };
+export type Route = { screen: 'home' } | { screen: 'history' } | { screen: 'session'; id: string } | { screen: 'new'; project: string };
 
 export function parse(hash: string): Route {
   const session = /^#\/s\/([\w.:-]+)$/.exec(hash);
   if (session) return { screen: 'session', id: session[1] };
   const fresh = /^#\/new\?project=(.+)$/.exec(hash);
   if (fresh) return { screen: 'new', project: decodeURIComponent(fresh[1]) };
+  if (hash === '#/history') return { screen: 'history' };
   return { screen: 'home' };
 }
 
 export const go = (route: Route) => {
-  location.hash = route.screen === 'session' ? `#/s/${route.id}` : route.screen === 'new' ? `#/new?project=${encodeURIComponent(route.project)}` : '#/';
+  location.hash = route.screen === 'session' ? `#/s/${route.id}` : route.screen === 'new' ? `#/new?project=${encodeURIComponent(route.project)}` : route.screen === 'history' ? '#/history' : '#/';
 };
 
 const PROJECTS_KEY = 'alp.projects';
