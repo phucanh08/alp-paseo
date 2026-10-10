@@ -32,7 +32,7 @@ On a phone, where the workspace's panels are out of reach, the same board opens
 as a full screen from the chat:
 - the **Tasks** pill in the composer of each ALP agent (for example "Tasks · 3")
   lists the open tasks. Tapping one opens it; **All tasks** opens the board.
-- `/tasks` opens the board, and `/tasks <id>` opens that task.
+- `/alp-tasks` opens the board, and `/alp-tasks <id>` opens that task.
 
 ## Install
 

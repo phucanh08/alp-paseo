@@ -110,13 +110,13 @@ test('the client entry bundles with only the modules Paseo supplies and register
   assert.deepEqual(host.panels.filter(panel => panel.id === 'alp-tasks').map(panel => [panel.id, panel.title, panel.icon, panel.context, typeof panel.Component]), [['alp-tasks', 'Tasks', 'ListTodo', 'workspace', 'function']]);
   assert.deepEqual(host.screens.map(screen => [screen.id, screen.title({}), screen.title({ taskId: 't-0003' }), typeof screen.Component]), [['alp-tasks', 'ALP tasks', 'ALP task t-0003', 'function']]);
 
-  // The desktop opens the panel; the full-screen item and /tasks open the screen, which phones reach.
+  // The desktop opens the panel; the full-screen item and /alp-tasks open the screen, which phones reach.
   const workspace = { id: 'ws1', directory: '/w/ws1', projectRootPath: '/w' };
   const opened = [];
   host.commands.find(item => item.id === 'alp-open-tasks').onSelect({ openPanel: id => opened.push(id) });
   host.commands.find(item => item.id === 'alp-open-tasks-screen').onSelect({ workspace, openScreen: input => opened.push(input) });
   const [slash] = host.slash;
-  assert.deepEqual([slash.name, slash.context, slash.argumentHint], ['tasks', 'agent', '[task id]']);
+  assert.deepEqual([slash.name, slash.context, slash.argumentHint], ['alp-tasks', 'agent', '[task id]']);
   slash.onSubmit({ workspace, agent: { id: 'a1' }, args: '', openScreen: input => opened.push(input) });
   slash.onSubmit({ workspace: { ...workspace, directory: '' }, agent: { id: 'a1' }, args: ' t-0003 ', openScreen: input => opened.push(input) });
   assert.deepEqual(opened, [
