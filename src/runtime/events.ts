@@ -61,7 +61,8 @@ export type AssignmentSnapshot = {
   worktree?: { branch: string; path: string };
 };
 
-export type TurnOrigin = 'user' | 'wake' | 'assignment';
+/** runtime: a turn the native runtime started by itself, such as Claude after a background task ended. */
+export type TurnOrigin = 'user' | 'wake' | 'assignment' | 'runtime';
 
 /** A question an agent asked the user with alp_ask to: "user". */
 export type UserQuestion = {
