@@ -12,6 +12,7 @@ import { modes, ORACLE_MODELS, withinMode, writes } from './catalog.js';
 import { runHook } from '../core/hook-run.js';
 import { hookMatches } from '../core/hooks.js';
 import { isTrusted, trustProject } from '../core/trust.js';
+import { listTeams } from '../core/teams.js';
 import { LESSONS_FILE, READ_ONLY_AGENTS, resolveSession, type ResolvedSession, type RuntimeKind, type SessionSpec } from './resolve.js';
 import { MAIL_BODY_CHARS, publicEvent, renderMail, takeBatch, USER, type MailEvent } from './mailbox.js';
 import type { AlpEvent, AssignmentSnapshot, Envelope, SessionSnapshot, TreeStatus, TurnOrigin, UserQuestion } from './events.js';
@@ -139,6 +140,8 @@ export type AlpRuntime = {
   onEvent(listener: (envelope: Envelope) => void): () => void;
   /** Opens a root session under a client-chosen id. */
   open(sessionId: string, spec: SessionSpec, options?: OpenOptions): Promise<SessionSnapshot>;
+  /** What a new root would run as, before it opens, and the teams it may choose (ALPD §60). */
+  preview(spec: SessionSpec): Promise<SessionPreview>;
   /** Failures are reported as prompt.failed, once per clientMessageId. */
   prompt(sessionId: string, input: PromptInput): Promise<void>;
   /** Cancels the running turn and closes the whole subtree. */
@@ -176,6 +179,22 @@ export type AlpRuntime = {
   /** Closes everything; assignments still running stay in the live file, so the next alpd continues them. */
   shutdown(): Promise<void>;
 };
+
+/** A root before it opens: the team and main it would run with, for viewers that let the user choose first (ALPD §60). */
+export type SessionPreview = {
+  teams: Array<{ id: string; label: string; description?: string }>;
+  /** The team the spec selects, else settings' workflow.mode, else Phở. */
+  team: string;
+  teamLabel?: string;
+  agent: string;
+  runtime: RuntimeKind;
+  model: string;
+  mode: string;
+  thinking: string;
+};
+
+/** The team a viewer starts a root in when neither it nor the project's settings choose one, as Paseo does. */
+export const DEFAULT_TEAM = 'pho';
 
 /** What became of one assignment an earlier alpd left running. */
 export type RecoveryOutcome = { assignmentId: string; agent: string; outcome: 'resumed' | 'parked' | 'failed'; error?: string };
@@ -4698,6 +4717,28 @@ export function createAlpRuntime(options: RuntimeOptions = {}): AlpRuntime {
       const answer = await askRecalled(entry, 'The user', question);
       runLog(entry.rootId, { event: 'recall', agent: 'user', assignmentId: entry.assignmentId, recalled: entry.agent, question: clip(question, 500), answer: clip(answer, 500) });
       return { assignmentId: entry.assignmentId, agent: entry.agent, ...(entry.taskId ? { taskId: entry.taskId } : {}), finishedAt: entry.finishedAt, answer };
+    },
+
+    async preview(spec) {
+      const resolveOptions = { templates: options.templates, library: options.libraryDir, language: options.language };
+      // As Paseo: the team settings name, else Phở; a new project's settings name Phở.
+      const settings = JSON.parse(await readFile(path.join(spec.cwd, '.alp', 'settings.json'), 'utf8').catch(() => '{}'));
+      const named = typeof settings?.workflow?.mode === 'string' && settings.workflow.mode !== 'custom' ? settings.workflow.mode : undefined;
+      const workflow = spec.workflow ?? named ?? DEFAULT_TEAM;
+      const mapping = await resolveSession({ ...spec, workflow }, resolveOptions);
+      const teams = (await listTeams(spec.cwd, { library: options.libraryDir, templates: options.templates }))
+        .filter(team => !team.error)
+        .map(team => ({ id: team.id, label: team.label ?? team.id, ...(team.description ? { description: team.description } : {}) }));
+      return {
+        teams,
+        team: mapping.workflow.mode,
+        ...(mapping.team?.label ? { teamLabel: mapping.team.label } : {}),
+        agent: mapping.agent.name,
+        runtime: mapping.runtimeKind,
+        model: mapping.model,
+        mode: mapping.mode,
+        thinking: mapping.thinking,
+      };
     },
 
     async board(projectRoot) {

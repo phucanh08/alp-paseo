@@ -269,3 +269,12 @@ Decided by the user on 2026-10-10, after transcripts showed Claude agents rarely
 - Claude agents also get their skills as Claude Code skills (`alp:<name>`), which they run with the Skill tool.
 - ALP logs each skill an agent uses, so how much skills are used can be checked from `alp log`.
 - An agent sees only its own role's skills.
+
+## D30 — ALP as an ACP agent, and a local web app
+
+Decided by the user on 2026-10-10: "turn ALP into ACP, then make a local web app modelled on Paseo's, so that installing ALP is enough to code from a browser".
+
+- **ACP (step 1).** `alp acp` speaks the Agent Client Protocol on stdio as an agent, so editors such as Zed and JetBrains use ALP. It is a client of alpd, like the Paseo plugin: each ACP session is a root in alpd, with its team chosen before the first prompt. This is phase 9 of the plan.
+- **Web (steps 2–3).** alpd serves a local web app on 127.0.0.1, on by default, guarded by a token and an Origin check. The browser speaks alpd's own JSON-RPC over a WebSocket, so it sees the whole tree, tasks and questions, which ACP cannot carry. The app is React, bundled with esbuild and shipped in the npm package; `alp web` opens it. Its layout follows Paseo's: projects and sessions on the left, the chat with tool rows and the composer in the middle, tasks on the right.
+- Paseo stays supported; this lifts the earlier "no custom desktop UI" non-goal for a local web app only.
+

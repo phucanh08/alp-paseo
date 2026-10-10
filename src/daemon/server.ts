@@ -483,6 +483,12 @@ export function createDaemonServer({ runtime, socketPath, version, onShutdown, s
       }
     },
 
+    /** The team and main a new root would run with, and the teams it may choose (ALPD §60). */
+    async 'session.preview'(_connection, { spec }) {
+      if (!spec || typeof spec !== 'object' || typeof spec.cwd !== 'string') throw new RpcError(-32602, 'spec.cwd is required');
+      return { preview: await runtime.preview(spec) };
+    },
+
     async 'session.attach'(connection, { sessionId, replay = true }) {
       const found = known(sessionId);
       const root = rootOf.get(sessionId) ?? records.get(sessionId)?.rootId ?? sessionId;

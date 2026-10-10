@@ -17,16 +17,17 @@ Build a small provider-neutral ALP core, integrate it with Paseo first, then sta
 | 6 | Claude/Codex native adapter experiments | `phases/06-native-providers.md` |
 | 7 | Multi-agent/custom-agent support | `phases/07-custom-agents.md` |
 | 8 | Session/event model stabilization | `phases/08-session-model.md` |
-| 9 | Standalone ALP ACP implementation | `phases/09-acp.md` |
+| 9 | Standalone ALP ACP implementation — D30 step 1, `alp acp` | `phases/09-acp.md`, `reference/ALPD.md` §60 |
 | 10 | Native `alpd` daemon (D12): runtime extraction, daemon + CLI, persistence | `reference/ALPD.md` §11 |
 | 11 | Gas City hardening (D21): crash resilience, hardening, then the next seven | `reference/DECISIONS.md` D21, `reference/ALPD.md` §31 and after |
 | 12 | Later, on demand (D21): event journal, orders, retries, review quorum, reload, PR monitor, mail dedupe, D20 leftovers | `phases/12-gascity-later.md` |
 | 13 | D23, building: ALP settings in Paseo — teams (Phở and Cafe become teams), agents, skills, MCP, ALP-run hooks, ACP providers | `phases/13-settings-teams-acp.md` |
 | 14 | Noted for later: mains of different teams working together | `phases/14-team-of-teams.md` |
+| 15 | D30: ALP as an ACP agent (step 1), then a local web app served by alpd (steps 2–3) | `reference/DECISIONS.md` D30, `reference/ALPD.md` §60 |
 
 ## Non-goals for early phases
 
-Do not build a marketplace, broad preset role library, distributed scheduler, or custom desktop UI. The Paseo plugin path is validated (v0.2.0); the native `alpd` daemon is now authorized by D12. The explicitly requested main/lead/peer starter is in scope.
+Do not build a marketplace, broad preset role library, distributed scheduler, or custom desktop UI (D30 allows a local web app). The Paseo plugin path is validated (v0.2.0); the native `alpd` daemon is now authorized by D12. The explicitly requested main/lead/peer starter is in scope.
 
 ## Authorized team workflow update — 2026-10-07
 

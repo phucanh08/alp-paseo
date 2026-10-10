@@ -1,6 +1,6 @@
 // The ALP runtime: native harnesses, sessions, delegation and mail. Viewer-neutral; never imports a viewer SDK.
-export { createAlpRuntime } from './runtime.js';
-export type { AlpRuntime, RuntimeOptions, OpenOptions, RuntimeTransport, PromptInput, PromptContent } from './runtime.js';
+export { createAlpRuntime, DEFAULT_TEAM } from './runtime.js';
+export type { AlpRuntime, RuntimeOptions, OpenOptions, RuntimeTransport, PromptInput, PromptContent, SessionPreview } from './runtime.js';
 export type { AlpEvent, AlpError, Envelope, SessionSnapshot, TimelineItem, TurnOrigin, AssignmentSnapshot, UserQuestion, TreeStatus, SessionState } from './events.js';
 export { resolveSession, InstructionsAdapter, skillDescription } from './resolve.js';
 export type { SessionSpec, HostMcpServer, ResolvedSession, RuntimeKind } from './resolve.js';
